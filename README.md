@@ -1,0 +1,1 @@
+# BeagleBoneAI64-linux-zephyr-pru-c7x-c66x-demo
