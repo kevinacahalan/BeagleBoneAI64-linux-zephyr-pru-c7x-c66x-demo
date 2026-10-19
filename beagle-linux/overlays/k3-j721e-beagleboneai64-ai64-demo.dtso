@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: MIT
+// BeagleBone AI-64 demo: the ICSSG0 slice-0 pins and the RTU0 vring IRQ.
+//
+//   PRU0     P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, the SLIP UART
+//   Tx_PRU0  P9.25  W26   pad 0x1a4  mode 7  GPIO0_104, the pulse train
+//            P9.25  AC4   pad 0x200  held off, shorted to W26
+//
+// Zephyr muxes its own pins (UART2 on P8.34/P8.22, SPI7 on P9.28/P9.30/
+// P9.31) from its devicetree. They are not in this overlay. PINMUX.md lists
+// every pin the demo uses.
+//
+// This overlay replaces k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo, which
+// muxes the same W26 ball for EHRPWM4. install-beagle.sh drops that one from
+// the boot entry.
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include "ti/k3-pinctrl.h"
+
+&{/chosen} {
+	overlays {
+		k3-j721e-beagleboneai64-ai64-demo.kernel = __TIMESTAMP__;
+	};
+};
+
+&main_pmx0 {
+	ai64_pru0_pins: ai64-pru0-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x0f4, PIN_OUTPUT, 0) /* (AB24) P8.11 PRG0_PRU0_GPO17 */
+		>;
+	};
+
+	ai64_txpru0_pins: ai64-txpru0-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x1a4, PIN_OUTPUT, 7) /* (W26) P9.25b RGMII6_RXC.GPIO0_104 */
+			J721E_IOPAD(0x200, PIN_DISABLE, 7) /* (AC4) P9.25a UART1_CTSn.GPIO0_127, held off */
+		>;
+	};
+};
+
+/* The pad belongs to PRU0. pru_rproc applies it when the core probes. */
+&pru0_0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_pru0_pins>;
+};
+
+/*
+ * RTU0's RPMsg: system event 20 (RTU0 to Linux) through channel 4 to host
+ * interrupt 4, which reaches the A72. The 6.18 J721E tree has no vring
+ * interrupt for any ICSSG core, and pru_rproc needs one for a core with RPMsg.
+ */
+&rtu0_0 {
+	interrupt-parent = <&icssg0_intc>;
+	interrupts = <20 4 4>;
+	interrupt-names = "vring";
+};
+
+/*
+ * Tx_PRU0 writes GPIO0_104 through the GPIO0 module, so the pad is a plain
+ * GPIO. The pinctrl sits on the Tx_PRU0 node because that core is the user.
+ */
+&tx_pru0_0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_txpru0_pins>;
+};
+
+/* Linux sets the direction once. Tx_PRU0 only writes SET_DATA and CLR_DATA. */
+&main_gpio0 {
+	ai64-txpru0-pulse-hog {
+		gpio-hog;
+		gpios = <104 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "ai64-txpru0-pulse";
+	};
+};

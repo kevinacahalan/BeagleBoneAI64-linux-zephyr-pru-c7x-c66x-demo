@@ -1,0 +1,515 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Run the BeagleBone AI-64 demo on the board. This does not start at boot.
+#
+#   ai64-demo                 (re)start the four main-domain R5F cores, RTU0,
+#                             PRU0, Tx_PRU0, and the DSPs with their firmware,
+#                             then one merged console
+#   ai64-demo --tmux          same start, in tmux session ai64 (eleven windows)
+#   ai64-demo --attach        do not stop or start any core
+#   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
+#
+# Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
+# [RTU0], [PRU0], [TxPRU0], [C66x0], [C66x1], or [C7x].
+
+set -euo pipefail
+
+SESSION=ai64
+RUN=/tmp/ai64-demo
+# The main-domain R5F cores, as remoteproc name:firmware:label. In split
+# mode a cluster's core 1 cannot power up before its core 0, or core 0 power
+# down before core 1, so cores start in this order and stop in reverse.
+R5_CORES=(
+	5c00000.r5f:ai64_r5f0_0.elf:r5f0_0
+	5e00000.r5f:ai64_r5f1_0.elf:r5f1_0
+	5d00000.r5f:ai64_r5f0_1.elf:r5f0_1
+	5f00000.r5f:ai64_r5f1_1.elf:r5f1_1
+)
+R5_NAMES=" ${R5_CORES[*]%%:*} "
+# The DSPs, as remoteproc name:firmware:label. They run the hello images
+# and only log; their windows follow the trace buffers.
+DSP_CORES=(
+	4d80800000.dsp:ai64-c66x.elf:c66x0
+	4d81800000.dsp:ai64-c66x.elf:c66x1
+	64800000.dsp:ai64-c7x.elf:c7x
+)
+DSP_NAMES=" ${DSP_CORES[*]%%:*} "
+C7X_NAME=64800000.dsp
+RTU0_NAME=b004000.rtu
+PRU0_NAME=b034000.pru
+TXPRU0_NAME=b00a000.txpru
+# The MCU R5F cluster runs the board's device manager. Never touch it.
+MCU_R5_NAMES="41000000.r5f 41400000.r5f"
+
+usage() {
+	cat <<'EOF'
+usage: ai64-demo [--tmux] [--attach]
+
+  (default)  Restart the four R5F cores, RTU0, PRU0, Tx_PRU0, and the
+             DSPs with their firmware. Then print one console. Each line
+             is prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
+             [RTU0], [PRU0], [TxPRU0], [C66x0], [C66x1], or [C7x].
+  --tmux     Same start, in tmux session ai64. Windows: linux, zephyr,
+             rtu0, pru0, txpru0, r5f0_1, r5f1_0, r5f1_1, c66x0, c66x1, c7x.
+  --attach   Do not stop or start any core. Connect to what is already
+             running. If session ai64 exists, attach to it.
+EOF
+}
+
+ATTACH=0
+USE_TMUX=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--attach) ATTACH=1 ;;
+	--tmux) USE_TMUX=1 ;;
+	-h|--help) usage; exit 0 ;;
+	*)
+		echo "unknown option: $1" >&2
+		usage >&2
+		exit 2
+		;;
+	esac
+	shift
+done
+
+as_root() {
+	if [[ $(id -u) -eq 0 ]]; then
+		"$@"
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo "$@"
+	else
+		echo "need root or sudo" >&2
+		exit 1
+	fi
+}
+
+# Ask for the sudo password once, up front. Without this, a failed sudo in
+# the middle shows up later as a core that "stayed running".
+if [[ $(id -u) -ne 0 ]]; then
+	if ! command -v sudo >/dev/null 2>&1 || ! sudo -v; then
+		echo "ai64-demo needs root or sudo" >&2
+		exit 1
+	fi
+fi
+
+# One write. BusyBox tee stores sysfs a byte at a time, and remoteproc
+# rejects a firmware name whose first byte is a newline.
+write_sysfs() {
+	local value=$1 dest=$2
+	as_root sh -c 'printf "%s\n" "$1" > "$2"' _ "$value" "$dest"
+}
+
+is_demo_core() {
+	case $1 in
+	"$RTU0_NAME"|"$PRU0_NAME"|"$TXPRU0_NAME") return 0 ;;
+	esac
+	[[ $R5_NAMES == *" $1 "* || $DSP_NAMES == *" $1 "* ]]
+}
+
+is_r5() {
+	[[ $R5_NAMES == *" $1 "* ]]
+}
+
+rproc_by_name() {
+	local want=$1 d name
+	if [[ " $MCU_R5_NAMES " == *" $want "* ]]; then
+		echo "refusing to use $want" >&2
+		return 1
+	fi
+	for d in /sys/class/remoteproc/remoteproc*; do
+		[[ -e $d/name ]] || continue
+		name=$(cat "$d/name")
+		if [[ " $MCU_R5_NAMES " == *" $name "* ]]; then
+			continue
+		fi
+		if [[ $name == "$want" ]]; then
+			echo "$d"
+			return 0
+		fi
+	done
+	echo "remoteproc $want not found" >&2
+	return 1
+}
+
+# The stock BeagleBoard 6.18 (arm64-k3) R5F driver powers a stopped core
+# off, and on J721E that leaves the core stuck until a power cycle.
+# install-beagle.sh puts a patched module in /lib/modules/<kernel>/updates.
+# It is out of tree, so the kernel marks it with taint flag O. TI-based
+# kernels (the Yocto image's 6.12) stop the core with a shutdown handshake
+# the Zephyr app answers, so their stock driver is fine.
+r5_restartable() {
+	grep -q O /sys/module/ti_k3_r5_remoteproc/taint 2>/dev/null && return 0
+	[[ $(uname -r) != *-k3-* ]]
+}
+
+# One stop write. A second stop on a core that did not go offline can hang.
+stop_core() {
+	local name=$1 rproc state i
+	if ! is_demo_core "$name"; then
+		echo "refusing to stop $name" >&2
+		exit 1
+	fi
+	rproc=$(rproc_by_name "$name")
+	state=$(cat "$rproc/state")
+	if [[ $state == offline ]]; then
+		return 0
+	fi
+	if is_r5 "$name" && ! r5_restartable; then
+		echo "$name is $state, and the stock ti_k3_r5_remoteproc cannot start it again after a stop." >&2
+		echo "Run install-beagle.sh (it installs the patched module) and reboot, or reboot to reload the R5F." >&2
+		exit 1
+	fi
+	write_sysfs stop "$rproc/state" || true
+	for i in $(seq 1 25); do
+		state=$(cat "$rproc/state")
+		if [[ $state == offline ]]; then
+			return 0
+		fi
+		sleep 0.2
+	done
+	echo "$name stayed $state. Power-cycle the board instead of stopping it again." >&2
+	exit 1
+}
+
+load_fw() {
+	local name=$1 fwname=$2 src=$3 rproc dest
+	if ! is_demo_core "$name"; then
+		echo "refusing to load $name" >&2
+		exit 1
+	fi
+	case $fwname in
+	ai64_r5f[01]_[01].elf|ai64-icssg0-rtu0.elf|ai64-icssg0-pru0.elf|ai64-icssg0-txpru0.elf) ;;
+	ai64-c66x.elf|ai64-c7x.elf) ;;
+	*)
+		echo "refusing to install $fwname" >&2
+		exit 1
+		;;
+	esac
+	if [[ ! -f $src ]]; then
+		echo "missing $src" >&2
+		exit 1
+	fi
+	dest=/lib/firmware/$fwname
+	# A core U-Boot started before Linux shows up as "attached". Linux did
+	# not load it, and stopping it from there is not tested, so leave it.
+	rproc=$(rproc_by_name "$name")
+	state=$(cat "$rproc/state")
+	if [[ $state == attached ]]; then
+		if ! cmp -s "$src" "$dest"; then
+			as_root cp "$src" "$dest"
+		fi
+		echo "$name was started by U-Boot (attached). Leaving it; $fwname loads on the next boot."
+		return 0
+	fi
+	stop_core "$name"
+	rproc=$(rproc_by_name "$name")
+	if [[ $(readlink -f "$src") != $(readlink -f "$dest") ]]; then
+		as_root cp "$src" "$dest"
+	fi
+	write_sysfs "$fwname" "$rproc/firmware"
+	write_sysfs start "$rproc/state"
+}
+
+# The 6.18 DSP driver stops a C71x core by powering its module off, and the
+# device manager refuses (module-reset assert failed). The core keeps
+# running. So a C7x that already runs the hello image is left as it is, and
+# a new C7x image takes a reboot.
+restart_dsps() {
+	local entry name fw label src rproc
+	for entry in "${DSP_CORES[@]}"; do
+		IFS=: read -r name fw label <<<"$entry"
+		src=$(firmware_path "$fw" "/lib/firmware/$fw" "dsp/build/$fw")
+		rproc=$(rproc_by_name "$name")
+		if [[ $name == "$C7X_NAME" && $(cat "$rproc/state") == running ]]; then
+			if [[ $(cat "$rproc/firmware") == "$fw" ]] && cmp -s "$src" "/lib/firmware/$fw"; then
+				echo "The C7x already runs $fw. This kernel cannot stop a C7x, so it keeps running."
+			else
+				echo "The C7x runs $(cat "$rproc/firmware"), and this kernel cannot stop it. Reboot to load $fw." >&2
+				[[ $(readlink -f "$src") != $(readlink -f "/lib/firmware/$fw") ]] && as_root cp "$src" "/lib/firmware/$fw"
+			fi
+			continue
+		fi
+		load_fw "$name" "$fw" "$src"
+	done
+}
+
+# Stop the R5F cores in reverse start order, then start them in order.
+restart_r5_cores() {
+	local i entry name fw label src
+	for ((i = ${#R5_CORES[@]} - 1; i >= 0; i--)); do
+		name=${R5_CORES[i]%%:*}
+		[[ $(cat "$(rproc_by_name "$name")/state") == attached ]] && continue
+		stop_core "$name"
+	done
+	for entry in "${R5_CORES[@]}"; do
+		IFS=: read -r name fw label <<<"$entry"
+		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr-main_$label/zephyr/$fw")
+		load_fw "$name" "$fw" "$src"
+	done
+}
+
+# find_rpmsg CORE DST: the /dev/rpmsgN whose device path is under remoteproc
+# CORE and whose remote address is DST.
+find_rpmsg() {
+	local substr=$1 dst_want=$2 d dest dev
+	for d in /sys/class/rpmsg/rpmsg*; do
+		[[ -e $d/dst ]] || continue
+		dest=$(cat "$d/dst")
+		dev=$(readlink -f "$d/device")
+		if [[ $dev == *"/$substr/"* && $dest == "$dst_want" ]]; then
+			echo "/dev/$(basename "$d")"
+			return 0
+		fi
+	done
+	return 1
+}
+
+wait_rpmsg() {
+	local substr=$1 dst_want=$2 dev
+	for _ in $(seq 1 30); do
+		if dev=$(find_rpmsg "$substr" "$dst_want"); then
+			echo "$dev"
+			return 0
+		fi
+		sleep 0.2
+	done
+	return 1
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# Prefer the copies sitting next to this script (/root on the image).
+# Otherwise use /lib/firmware, then a Debian build tree relative to cwd.
+firmware_path() {
+	local beside=$1 packaged=$2 built=$3
+	if [[ -f $SCRIPT_DIR/$beside ]]; then
+		echo "$SCRIPT_DIR/$beside"
+		return 0
+	fi
+	if [[ -f $packaged ]]; then
+		echo "$packaged"
+		return 0
+	fi
+	if [[ -f $built ]]; then
+		echo "$built"
+		return 0
+	fi
+	echo "missing $beside" >&2
+	return 1
+}
+
+ensure_pru_kick() {
+	if grep -q 'pru_rproc_kick' /proc/kallsyms; then
+		return 0
+	fi
+	echo "The loaded pru_rproc has no pru_rproc_kick, so RTU0's RPMsg cannot start." >&2
+	echo "Build it with ./beagle-linux/scripts/build.sh kmod, run install-beagle.sh, and reboot." >&2
+	exit 1
+}
+
+# tmux refuses to start without a UTF-8 locale. A serial console login is
+# usually LANG=C, so ask for C.UTF-8 unless a UTF-8 locale is already set.
+case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in
+*[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) ;;
+*) export LC_CTYPE=C.UTF-8 ;;
+esac
+
+if [[ $ATTACH -eq 1 ]] && command -v tmux >/dev/null 2>&1 \
+	&& tmux has-session -t "$SESSION" 2>/dev/null; then
+	exec tmux attach -t "$SESSION"
+fi
+
+if [[ $USE_TMUX -eq 1 ]] && ! command -v tmux >/dev/null 2>&1; then
+	echo "tmux is not installed" >&2
+	exit 1
+fi
+
+if [[ -x $SCRIPT_DIR/ai64 ]]; then
+	BIN=$SCRIPT_DIR/ai64
+else
+	BIN=$(command -v ai64 || true)
+fi
+if [[ -z $BIN ]]; then
+	echo "ai64 is not on PATH" >&2
+	exit 1
+fi
+
+viewer_pids() {
+	local pid cmd
+	for pid in /proc/[0-9]*; do
+		pid=${pid#/proc/}
+		[[ -r /proc/$pid/cmdline ]] || continue
+		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+		case $cmd in
+		*ai64\ peer*|*ai64\ erpc*|*ai64\ watch*|*ai64\ trace*|*ai64\ linux*)
+			echo "$pid"
+			;;
+		esac
+	done
+}
+
+stop_viewers() {
+	local pid
+	for pid in $(viewer_pids); do
+		kill "$pid" 2>/dev/null || true
+	done
+}
+
+if [[ $ATTACH -eq 0 ]]; then
+	if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$SESSION" 2>/dev/null; then
+		tmux kill-session -t "$SESSION"
+	fi
+	stop_viewers
+	sleep 0.3
+	ensure_pru_kick
+	RTU0_FW=$(firmware_path ai64-icssg0-rtu0.elf /lib/firmware/ai64-icssg0-rtu0.elf pru/build/ai64-icssg0-rtu0.elf)
+	PRU0_FW=$(firmware_path ai64-icssg0-pru0.elf /lib/firmware/ai64-icssg0-pru0.elf pru/build/ai64-icssg0-pru0.elf)
+	TXPRU0_FW=$(firmware_path ai64-icssg0-txpru0.elf /lib/firmware/ai64-icssg0-txpru0.elf pru/build/ai64-icssg0-txpru0.elf)
+	# PRU0 and Tx_PRU0 adopt the record seq they find when they start, and
+	# RTU0 clears both records when its channel comes up. So stop the two
+	# workers, bring RTU0 up first, and start the workers after.
+	stop_core "$PRU0_NAME"
+	stop_core "$TXPRU0_NAME"
+	load_fw "$RTU0_NAME" ai64-icssg0-rtu0.elf "$RTU0_FW"
+	if ! wait_rpmsg "$RTU0_NAME" 30 >/dev/null; then
+		echo "RTU0's RPMsg channel did not show up. Look at dmesg | grep -i -E 'rtu|vring|kick'." >&2
+		exit 1
+	fi
+	load_fw "$PRU0_NAME" ai64-icssg0-pru0.elf "$PRU0_FW"
+	load_fw "$TXPRU0_NAME" ai64-icssg0-txpru0.elf "$TXPRU0_FW"
+	# Not the kernels' default names (j7-main-r5f0_0-fw and so on), so
+	# nothing boots the R5F cores until this script does.
+	restart_r5_cores
+	restart_dsps
+elif [[ -n $(viewer_pids) ]]; then
+	echo "demo viewers are already running. --attach does not restart them." >&2
+	echo "Use the console that started them, or run ai64-demo without --attach." >&2
+	exit 1
+fi
+
+# R5_DEV[label] is that core's eRPC channel, /dev/rpmsgN.
+declare -A R5_DEV
+missing=0
+for entry in "${R5_CORES[@]}"; do
+	IFS=: read -r name fw label <<<"$entry"
+	R5_DEV[$label]=$(wait_rpmsg "$name" 1024 || true)
+	if [[ -z ${R5_DEV[$label]} ]]; then
+		state=$(cat "$(rproc_by_name "$name")/state" 2>/dev/null || true)
+		echo "$label ($name) is ${state:-missing}, and its RPMsg channel did not show up. Is $fw a Zephyr image with RPMsg?" >&2
+		missing=1
+	fi
+done
+RTU0_DEV=$(wait_rpmsg "$RTU0_NAME" 30 || true)
+if [[ -z $RTU0_DEV ]]; then
+	echo "RTU0's RPMsg channel did not show up" >&2
+	missing=1
+fi
+if [[ $missing -eq 1 ]]; then
+	echo "RPMsg devices did not show up" >&2
+	exit 1
+fi
+ZEPHYR_DEV=${R5_DEV[r5f0_0]}
+
+as_root chmod a+rw "${R5_DEV[@]}" "$RTU0_DEV"
+# ai64 watch and ai64 chunk read /dev/mem. Root can already; other users get
+# CAP_SYS_RAWIO on the binary.
+if [[ $(id -u) -ne 0 ]]; then
+	SETCAP=$(command -v setcap || true)
+	if [[ -z $SETCAP && -x /usr/sbin/setcap ]]; then
+		SETCAP=/usr/sbin/setcap
+	fi
+	if [[ -n $SETCAP ]]; then
+		as_root "$SETCAP" cap_sys_rawio+ep "$BIN"
+	else
+		echo "setcap is not installed; /dev/mem access may fail" >&2
+	fi
+fi
+as_root chmod 0660 /dev/mem
+
+mkdir -p "$RUN"
+rm -f "$RUN"/*.in
+mkfifo "$RUN/zephyr.in" "$RUN/rtu0.in" "$RUN/r5f0_1.in" "$RUN/r5f1_0.in" "$RUN/r5f1_1.in"
+
+if [[ $USE_TMUX -eq 1 ]]; then
+	tmux kill-session -t "$SESSION" 2>/dev/null || true
+	tmux new-session -d -s "$SESSION" -n linux
+	tmux new-window -d -t "$SESSION" -n zephyr
+	tmux new-window -d -t "$SESSION" -n rtu0
+	tmux new-window -d -t "$SESSION" -n pru0
+	tmux new-window -d -t "$SESSION" -n txpru0
+	for label in r5f0_1 r5f1_0 r5f1_1; do
+		tmux new-window -d -t "$SESSION" -n "$label"
+		tmux send-keys -t "$SESSION:$label" "$BIN erpc $label ${R5_DEV[$label]} $RUN/$label.in" C-m
+	done
+	for entry in "${DSP_CORES[@]}"; do
+		IFS=: read -r name fw label <<<"$entry"
+		tmux new-window -d -t "$SESSION" -n "$label"
+		tmux send-keys -t "$SESSION:$label" "$BIN trace $name" C-m
+	done
+	tmux send-keys -t "$SESSION:zephyr" "$BIN erpc $ZEPHYR_DEV $RUN/zephyr.in" C-m
+	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
+	tmux send-keys -t "$SESSION:pru0" "$BIN watch pru0" C-m
+	tmux send-keys -t "$SESSION:txpru0" "$BIN watch txpru0" C-m
+	tmux send-keys -t "$SESSION:linux" "$BIN linux $RUN" C-m
+	tmux select-window -t "$SESSION:linux"
+	echo "tmux session '$SESSION' is up"
+	for label in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
+		echo "  $label ${R5_DEV[$label]}"
+	done
+	echo "  rtu0   $RTU0_DEV"
+	echo "  pru0   shared ram"
+	echo "  txpru0 shared ram"
+	if [[ -t 0 && -t 1 ]]; then
+		exec tmux attach -t "$SESSION"
+	fi
+	exit 0
+fi
+
+prefix() {
+	local tag=$1 line
+	while IFS= read -r line || [[ -n ${line:-} ]]; do
+		printf '%s %s\n' "$tag" "$line"
+	done
+}
+
+pids=()
+cleanup() {
+	local pid
+	if [[ ${#pids[@]} -eq 0 ]]; then
+		return 0
+	fi
+	for pid in "${pids[@]}"; do
+		kill "$pid" 2>/dev/null || true
+	done
+}
+trap cleanup EXIT INT TERM
+
+spawn_prefixed() {
+	local tag=$1 out=$2
+	shift 2
+	rm -f "$out"
+	mkfifo "$out"
+	prefix "$tag" < "$out" &
+	pids+=("$!")
+	"$@" > "$out" 2>&1 &
+	pids+=("$!")
+}
+
+spawn_prefixed '[R5F0_0]' "$RUN/r5f0_0.out" "$BIN" erpc "$ZEPHYR_DEV" "$RUN/zephyr.in"
+for label in r5f0_1 r5f1_0 r5f1_1; do
+	spawn_prefixed "[${label^^}]" "$RUN/$label.out" "$BIN" erpc "$label" "${R5_DEV[$label]}" "$RUN/$label.in"
+done
+spawn_prefixed '[RTU0]' "$RUN/rtu0.out" "$BIN" peer rtu0 "$RTU0_DEV" "$RUN/rtu0.in"
+spawn_prefixed '[PRU0]' "$RUN/pru0.out" "$BIN" watch pru0
+spawn_prefixed '[TxPRU0]' "$RUN/txpru0.out" "$BIN" watch txpru0
+for entry in "${DSP_CORES[@]}"; do
+	IFS=: read -r name fw label <<<"$entry"
+	tag=${label/c66x/C66x}
+	spawn_prefixed "[${tag/c7x/C7x}]" "$RUN/$label.out" "$BIN" trace "$name"
+done
+
+rm -f "$RUN/linux.out"
+mkfifo "$RUN/linux.out"
+prefix '[Linux]' < "$RUN/linux.out" &
+pids+=("$!")
+"$BIN" linux "$RUN" > "$RUN/linux.out" 2>&1
