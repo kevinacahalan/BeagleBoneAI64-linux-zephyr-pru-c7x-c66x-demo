@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <zephyr/dt-bindings/pinctrl/ti-k3-pinctrl.h>
 #include <freq.h>
+#include <zephyr/dt-bindings/interrupt-controller/ti-vim.h>
 
 /*
  * Carve the bulk chunk region and the small RTU0 mailbox out of R5F0_0 DDR.
@@ -79,4 +80,30 @@
 		/* P9.30b AE28, shorted to P9.30a */
 		pinmux = <K3_PINMUX(0x00b4, AI64_PIN_OFF, MUX_MODE_7)>;
 	};
+};
+
+/*
+ * The mailbox interrupt route this core asks the device manager for at boot
+ * (src/ai64_tisci.c). NAVSS0_MAILBOX_1 user 2 arrives on NAVSS0_INTR_ROUTER_0
+ * (device 213) input 434. Output 196 is the first of this host's range
+ * (k3conf dump rm 213) and lands on this core's VIM input 228. Host 35's
+ * threads on main_sec_proxy0 are 63 (low_priority, write) and 61 (response,
+ * read; k3conf show threads).
+ */
+/ {
+	ai64_tisci: tisci-route@32c00000 {
+		compatible = "ai64,tisci-irq-route";
+		reg = <0x32c00000 0x100000>, <0x32400000 0x100000>;
+		host-id = <35>;
+		tx-thread = <63>;
+		rx-thread = <61>;
+		ir-id = <213>;
+		ir-input = <434>;
+		ir-output = <196>;
+	};
+};
+
+/* The board puts the mailbox on VIM 256, which nothing routes to. */
+&mbox1 {
+	interrupts = <0 228 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 };

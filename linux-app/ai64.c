@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ai64_erpc_linux.h"
@@ -33,6 +34,10 @@
  * ai64 pads
  *   Prints the pad registers of every pin the demo muxes, next to the value
  *   the overlay and the Zephyr devicetree ask for.
+ *
+ * ai64 bench <rpmsg-dev> [count]
+ *   Times eRPC say round trips to one Zephyr core. Run it with the demo's
+ *   eRPC windows stopped; two clients on one channel mix up replies.
  *
  * ai64 trace <remoteproc-name>
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
@@ -86,6 +91,7 @@ static void print_usage(const char *prog)
 	printf("  shm                       print the shared-RAM records once\n");
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
+	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
 	printf("\n");
 	printf("In the linux window, ");
 	print_help();
@@ -594,6 +600,47 @@ static int trace_main(int argc, char **argv)
 	}
 }
 
+static double now_us(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1e6 + ts.tv_nsec / 1e3;
+}
+
+static int bench_main(int argc, char **argv)
+{
+	int count = argc > 3 ? atoi(argv[3]) : 1000;
+	double min = 1e12, max = 0, total = 0;
+	char reply[200];
+	int dev, i;
+
+	if (argc < 3 || count <= 0) {
+		fprintf(stderr, "usage: %s bench <rpmsg-dev> [count]\n", argv[0]);
+		return 2;
+	}
+	dev = open(argv[2], O_RDWR);
+	if (dev < 0 || ai64_erpc_open(dev)) {
+		perror(argv[2]);
+		return 1;
+	}
+	for (i = 0; i < count; i++) {
+		double t0 = now_us(), dt;
+
+		if (ai64_erpc_say("x", reply, sizeof(reply))) {
+			fprintf(stderr, "call %d failed\n", i);
+			return 1;
+		}
+		dt = now_us() - t0;
+		total += dt;
+		min = dt < min ? dt : min;
+		max = dt > max ? dt : max;
+	}
+	printf("%d eRPC say round trips on %s: mean %.0f us, min %.0f us, max %.0f us\n",
+	       count, argv[2], total / count, min, max);
+	return 0;
+}
+
 static uint32_t chunk_seq = 1;
 
 static int do_chunk(const char *text)
@@ -1066,7 +1113,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|bench|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1090,6 +1137,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "trace")) {
 		return trace_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "bench")) {
+		return bench_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

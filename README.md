@@ -296,11 +296,28 @@ The board files are upstream Zephyr's `beaglebone_ai64/j721e/main_r5f0_0` (and `
 
 In split mode a cluster's core 1 cannot power up before its core 0, and core 0 cannot power down before core 1. `ai64-demo` starts R5F0_0, R5F1_0, R5F0_1, R5F1_1 in that order and stops them in reverse.
 
-### Linux to Zephyr: the mailbox kick, polled
+### Linux to Zephyr: the mailbox interrupt
 
-RPMsg rings sit in shared DDR. Each side tells the other "look at the rings" through a TI mailbox FIFO; each R5F core has its own pair of FIFOs. Zephyr's kick to Linux works as is. Linux's kick to Zephyr arrives in the FIFO, but on J721E the mailbox interrupt only reaches the R5F once the device manager routes it through the NAVSS interrupt router, and nothing does that. The upstream board leaves it as a TODO.
+RPMsg rings sit in shared DDR. Each side tells the other "look at the rings" through a TI mailbox FIFO; each R5F core has its own pair of FIFOs. Zephyr's kick to Linux works as is. Linux's kick to Zephyr arrives in the FIFO, but on J721E the mailbox interrupt only reaches the R5F once the device manager routes it through the NAVSS interrupt router, and the upstream board does not ask for that.
 
-So each R5F core's RPMsg thread polls its FIFO once a millisecond (`mbox_rx_drain()` in `zephyr/r5/src/main.c`) and pops what it finds. That adds up to 1 ms to each Linux-to-Zephyr message. A `TISCI_MSG_RM_IRQ_SET` request from the R5F, over its own secure proxy threads, is answered with a NACK on this board's firmware (11.02.08), so the interrupt is not routed yet.
+So each R5F core asks at boot (`zephyr/r5/src/ai64_tisci.c`). It sends `TISCI_MSG_RM_IRQ_SET` over its own secure proxy threads, polling for the answer, because Zephyr's TI-SCI driver needs a receive interrupt that nothing routes either. The request names the router as both source and destination, with a router input and an output from the core's own range, the way Linux's `ti,sci-intr` and Zephyr PR [#121379](https://github.com/zephyrproject-rtos/zephyr/pull/121379) program it. Each core's numbers are in its board overlay:
+
+| Core | TI-SCI host | Mailbox user | Router 213 input | Router output | VIM input |
+| --- | --- | --- | --- | --- | --- |
+| R5F0_0 | 35 | `NAVSS0_MAILBOX_1` user 2 | 434 | 196 | 228 |
+| R5F0_1 | 37 | `NAVSS0_MAILBOX_1` user 1 | 433 | 228 | 228 |
+| R5F1_0 | 40 | `NAVSS0_MAILBOX_2` user 1 | 429 | 260 | 228 |
+| R5F1_1 | 42 | `NAVSS0_MAILBOX_2` user 2 | 430 | 292 | 228 |
+
+The overlays also move the board's mailbox interrupt from VIM 256 to 228. If the request fails, the core logs it and its RPMsg thread polls the FIFO once a millisecond instead (`mbox_rx_drain()` in `zephyr/r5/src/main.c`).
+
+### R5F caches
+
+The J721E SoC code maps all of DDR as non-cacheable for the R5F, and leaves both caches off unless `CONFIG_CACHE_MANAGEMENT` is set. The image runs from DDR, so every instruction fetch went to DDR, and an eRPC call took about 1.3 ms.
+
+`zephyr/r5/src/ai64_mpu.c` adds MPU regions at the first init level, before the caches come on: device memory for the peripherals in the low 2 GiB, the TCMs, and the core's 16 MiB carveout as write-through, so that every write still reaches DDR. The vrings, the resource table, the mailbox, and the bulk buffer stay non-cacheable. `prj.conf` turns on `CONFIG_CACHE_MANAGEMENT`.
+
+`ai64 bench <rpmsg-dev>` times eRPC calls. On the bench, an eRPC `say` round trip went from 1263 µs to 85 µs on R5F0_1, R5F1_0, and R5F1_1, and to 160 µs on R5F0_0, which also logs each call on its UART. For comparison, an RPMsg echo from RTU0, which busy-polls, takes 35 µs.
 
 ### Linux to Zephyr: the bulk buffer
 
@@ -473,7 +490,6 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
 
 - **DSP compute offload.** The DSP images only log. A shared-memory job queue (Linux writes input, a DSP computes, Linux reads the result) is the next step.
 - **Restarting the C7x** without a reboot.
-- **The R5F mailbox interrupt.** Linux-to-Zephyr kicks are polled; see [the mailbox kick](#linux-to-zephyr-the-mailbox-kick-polled).
 - **A tested Yocto image.**
 
 ## Repository

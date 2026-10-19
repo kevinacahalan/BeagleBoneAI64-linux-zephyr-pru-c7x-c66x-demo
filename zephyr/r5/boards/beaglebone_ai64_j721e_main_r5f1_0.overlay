@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: MIT
+#include <zephyr/dt-bindings/interrupt-controller/ti-vim.h>
+
+/*
+ * The mailbox interrupt route this core asks the device manager for at boot
+ * (src/ai64_tisci.c). NAVSS0_MAILBOX_2 user 1 arrives on NAVSS0_INTR_ROUTER_0
+ * (device 213) input 429. Output 260 is the first of this host's range
+ * (k3conf dump rm 213) and lands on this core's VIM input 228. Host 40's
+ * threads on main_sec_proxy0 are 83 (low_priority, write) and 81 (response,
+ * read; k3conf show threads).
+ */
+/ {
+	ai64_tisci: tisci-route@32c00000 {
+		compatible = "ai64,tisci-irq-route";
+		reg = <0x32c00000 0x100000>, <0x32400000 0x100000>;
+		host-id = <40>;
+		tx-thread = <83>;
+		rx-thread = <81>;
+		ir-id = <213>;
+		ir-input = <429>;
+		ir-output = <260>;
+	};
+};
+
+/* The board puts the mailbox on VIM 256, which nothing routes to. */
+&mbox2 {
+	interrupts = <0 228 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+};

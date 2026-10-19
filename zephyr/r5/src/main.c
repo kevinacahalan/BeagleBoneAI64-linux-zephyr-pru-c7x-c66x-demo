@@ -30,6 +30,7 @@
 
 #include "ai64_shm.h"
 #include "ai64_erpc.h"
+#include "ai64_tisci.h"
 
 LOG_MODULE_REGISTER(ai64_r5, LOG_LEVEL_INF);
 
@@ -66,12 +67,11 @@ static void *rsc_table;
 static K_SEM_DEFINE(mb_sem, 0, 1);
 
 /*
- * Linux kicks this core through the receive FIFO of mailbox cluster 1. On
- * J721E that mailbox interrupt only reaches the R5F's VIM once the device
- * manager routes it (TI-SCI RM_IRQ_SET), and the upstream board does not.
- * So the RPMsg thread also polls the FIFO once a millisecond, and pops what
- * it finds. If the interrupt is ever routed, the IPM callback wakes the
- * thread at once and the poll finds the FIFO already empty.
+ * Linux kicks this core through a mailbox FIFO. On J721E that mailbox
+ * interrupt only reaches the R5F's VIM once the device manager routes it
+ * through the NAVSS interrupt router, which ai64_route_mbox_irq() asks for
+ * at boot. If that fails, the RPMsg thread polls the FIFO once a
+ * millisecond instead and pops what it finds.
  */
 #define IPC_NODE      DT_CHOSEN(zephyr_ipc)
 #define MBOX_NODE     DT_PHANDLE_BY_NAME(IPC_NODE, mboxes, rx)
@@ -88,6 +88,9 @@ static K_SEM_DEFINE(mb_sem, 0, 1);
  */
 #define RP_MBOX_SHUTDOWN     0xFFFFFF14u
 #define RP_MBOX_SHUTDOWN_ACK 0xFFFFFF15u
+
+static bool mbox_irq_routed;
+static atomic_t shutdown_requested;
 
 static FUNC_NORETURN void park_for_shutdown(void)
 {
@@ -153,7 +156,11 @@ static void platform_ipm_callback(const struct device *dev, void *context,
 	ARG_UNUSED(dev);
 	ARG_UNUSED(context);
 	ARG_UNUSED(id);
-	ARG_UNUSED(data);
+
+	/* The mailbox driver hands over the message it popped. */
+	if (data && *(volatile uint32_t *)data == RP_MBOX_SHUTDOWN) {
+		atomic_set(&shutdown_requested, 1);
+	}
 	k_sem_give(&mb_sem);
 }
 
@@ -182,6 +189,8 @@ static int platform_init(void)
 	rsc_table_get(&rsc_table, &rsc_size);
 	rsc_tab_physmap = (uintptr_t)rsc_table;
 	metal_io_init(rsc_io, rsc_table, &rsc_tab_physmap, rsc_size, -1, 0, NULL);
+
+	mbox_irq_routed = ai64_route_mbox_irq() == 0;
 
 	if (!device_is_ready(ipm_handle)) {
 		LOG_ERR("IPM device is not ready");
@@ -291,8 +300,12 @@ static void rpmsg_thread(void *a, void *b, void *c)
 	LOG_INF("rpmsg channel %s addr %d is up", RPMSG_CHAN_NAME, RPMSG_CHAN_ADDR);
 
 	while (1) {
-		int woke = k_sem_take(&mb_sem, K_MSEC(1)) == 0;
+		int woke = k_sem_take(&mb_sem, mbox_irq_routed ? K_FOREVER : K_MSEC(1)) == 0;
 
+		if (atomic_get(&shutdown_requested)) {
+			LOG_INF("shutdown request from Linux");
+			park_for_shutdown();
+		}
 		if (mbox_rx_drain() || woke) {
 			rproc_virtio_notified(rvdev.vdev, VRING1_ID);
 		}
