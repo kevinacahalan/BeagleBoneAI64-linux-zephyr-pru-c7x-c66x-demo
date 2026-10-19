@@ -1,0 +1,13 @@
+/*
+ * Linux calls these Zephyr functions over the R5F0_0 RPMsg channel.
+ * Bulk bytes stay in the DDR region from ai64_shm.h. They are not eRPC payload.
+ */
+program ai64
+
+interface Ai64Service {
+    say(in string msg) -> string
+    armPulses(in uint32 periodCycles, in uint32 periods) -> int32
+    takeChunk(in uint32 seq, in uint32 length, in uint32 crc) -> uint32
+    sendXy(in uint32 x, in uint32 y) -> int32
+    spiWrite(in string text) -> string
+}

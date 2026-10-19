@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: MIT
+#include <zephyr/dt-bindings/pinctrl/ti-k3-pinctrl.h>
+#include <freq.h>
+
+/*
+ * Carve the bulk chunk region and the small RTU0 mailbox out of R5F0_0 DDR.
+ * ddr1 starts at 0xa2200000. Bulk is 64 KiB at 0xa2fef000.
+ * Mailbox stays at 0xa2fff000, matching AI64_SHM_ADDR.
+ * The board's ddr1 (14 MiB) ended at 0xa3000000.
+ */
+
+&ddr1 {
+	reg = <0xa2200000 0xdef000>;
+};
+
+/*
+ * 0x200000 is the pad's TX-disable bit (PIN_DISABLE in the Linux header),
+ * OR mux mode 7, so a shorted partner ball stays off. The K3 pinctrl helper
+ * applies only the first two pinmux cells of each group, so each group has
+ * one pin.
+ */
+#define AI64_PIN_OFF 0x200000
+
+/ {
+	ai64_bulk: memory@a2fef000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa2fef000 0x10000>;
+		zephyr,memory-region = "AI64_BULK";
+	};
+
+	ai64_shm: memory@a2fff000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa2fff000 0x1000>;
+		zephyr,memory-region = "AI64_SHM";
+	};
+
+	/*
+	 * Main SPI7. Linux leaves it disabled, and the board firmware keeps
+	 * its power domain on. The driver polls, so there is no interrupt.
+	 */
+	main_spi7: spi@2170000 {
+		compatible = "ti,omap-mcspi";
+		reg = <0x02170000 0x400>;
+		clock-frequency = <DT_FREQ_M(48)>;
+		ti,spi-num-cs = <1>;
+		ti,d1-miso-d0-mosi;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ai64_spi7_clk &ai64_spi7_cs0 &ai64_spi7_d0
+			     &ai64_spi7_off_p9_31b &ai64_spi7_off_p9_28b
+			     &ai64_spi7_off_p9_30b>;
+		status = "okay";
+	};
+};
+
+&pinctrl {
+	ai64_spi7_clk: ai64-spi7-clk {
+		/* P9.31a U3 EXT_REFCLK1.SPI7_CLK, mode 6 */
+		pinmux = <K3_PINMUX(0x0234, PIN_OUTPUT, MUX_MODE_6)>;
+	};
+	ai64_spi7_cs0: ai64-spi7-cs0 {
+		/* P9.28a U2 ECAP0_IN_APWM_OUT.SPI7_CS0, mode 6 */
+		pinmux = <K3_PINMUX(0x0230, PIN_OUTPUT, MUX_MODE_6)>;
+	};
+	ai64_spi7_d0: ai64-spi7-d0 {
+		/* P9.30a V6 TIMER_IO0.SPI7_D0, MOSI, mode 6 */
+		pinmux = <K3_PINMUX(0x0238, PIN_OUTPUT, MUX_MODE_6)>;
+	};
+	ai64_spi7_off_p9_31b: ai64-spi7-off-p9-31b {
+		/* P9.31b AB26, shorted to P9.31a */
+		pinmux = <K3_PINMUX(0x00d4, AI64_PIN_OFF, MUX_MODE_7)>;
+	};
+	ai64_spi7_off_p9_28b: ai64-spi7-off-p9-28b {
+		/* P9.28b AF28, shorted to P9.28a */
+		pinmux = <K3_PINMUX(0x00b0, AI64_PIN_OFF, MUX_MODE_7)>;
+	};
+	ai64_spi7_off_p9_30b: ai64-spi7-off-p9-30b {
+		/* P9.30b AE28, shorted to P9.30a */
+		pinmux = <K3_PINMUX(0x00b4, AI64_PIN_OFF, MUX_MODE_7)>;
+	};
+};

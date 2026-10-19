@@ -1,0 +1,20 @@
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: a915b2f12675b48b16d56653ea145dcd8f20cbbf  # this hash is Zephyr main on 16 Oct 2026
+      path: zephyr/upstream
+      # Only the modules these R5F apps need. "import: true" would fetch all
+      # of Zephyr's modules (every vendor HAL, about 8 GB).
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_ti
+          - libmetal
+          - open-amp
+          - picolibc
