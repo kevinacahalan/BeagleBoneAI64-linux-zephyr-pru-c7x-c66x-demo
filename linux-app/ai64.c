@@ -39,6 +39,11 @@
  *   Times eRPC say round trips to one Zephyr core. Run it with the demo's
  *   eRPC windows stopped; two clients on one channel mix up replies.
  *
+ * ai64 shutdown <remoteproc-name>
+ *   Sends a core the RP_MBOX_SHUTDOWN message TI's kernel sends before it
+ *   stops a core, and waits until the core has taken it. The 6.18 kernel
+ *   does not send it, and cannot stop a C7x that is not idle.
+ *
  * ai64 trace <remoteproc-name>
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
  *   the buffer through /dev/mem, so it needs no root and no debugfs.
@@ -92,6 +97,7 @@ static void print_usage(const char *prog)
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
 	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
+	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("\n");
 	printf("In the linux window, ");
 	print_help();
@@ -598,6 +604,62 @@ static int trace_main(int argc, char **argv)
 		fflush(stdout);
 		usleep(200000);
 	}
+}
+
+/*
+ * The mailbox FIFO Linux sends each core messages on (ti,mbox-tx in the
+ * Linux device tree).
+ */
+static const struct {
+	const char *name;
+	uint32_t base;
+	uint32_t fifo;
+} core_mbox[] = {
+	{ "5c00000.r5f", 0x31f81000, 1 },
+	{ "5d00000.r5f", 0x31f81000, 3 },
+	{ "5e00000.r5f", 0x31f82000, 1 },
+	{ "5f00000.r5f", 0x31f82000, 3 },
+	{ "4d80800000.dsp", 0x31f83000, 1 },
+	{ "4d81800000.dsp", 0x31f83000, 3 },
+	{ "64800000.dsp", 0x31f84000, 1 },
+};
+
+#define RP_MBOX_SHUTDOWN 0xFFFFFF14u
+
+static int shutdown_main(int argc, char **argv)
+{
+	volatile uint32_t *mbox = NULL;
+	uint32_t fifo = 0;
+	size_t i;
+	int ms;
+
+	if (argc != 3) {
+		fprintf(stderr, "usage: %s shutdown <remoteproc-name>, such as 64800000.dsp\n", argv[0]);
+		return 2;
+	}
+	for (i = 0; i < sizeof(core_mbox) / sizeof(core_mbox[0]); i++) {
+		if (!strcmp(core_mbox[i].name, argv[2])) {
+			mbox = map_phys(core_mbox[i].base, 4096);
+			fifo = core_mbox[i].fifo;
+			if (!mbox) {
+				return 1;
+			}
+		}
+	}
+	if (!mbox) {
+		fprintf(stderr, "no mailbox known for %s\n", argv[2]);
+		return 2;
+	}
+	mbox[(0x40 + 4 * fifo) / 4] = RP_MBOX_SHUTDOWN;
+	/* The core polls its FIFO; an empty FIFO means it took the message. */
+	for (ms = 0; ms < 500; ms++) {
+		if (!(mbox[(0xc0 + 4 * fifo) / 4] & 0x3f)) {
+			return 0;
+		}
+		usleep(1000);
+	}
+	fprintf(stderr, "%s did not take the shutdown message\n", argv[2]);
+	return 1;
 }
 
 static double now_us(void)
@@ -1113,7 +1175,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|bench|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|bench|shutdown|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1140,6 +1202,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "bench")) {
 		return bench_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "shutdown")) {
+		return shutdown_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

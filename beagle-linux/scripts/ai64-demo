@@ -211,23 +211,29 @@ load_fw() {
 }
 
 # The 6.18 DSP driver stops a C71x core by powering its module off, and the
-# device manager refuses (module-reset assert failed). The core keeps
-# running. So a C7x that already runs the hello image is left as it is, and
-# a new C7x image takes a reboot.
+# device manager only allows that once the core is idle. TI's kernel first
+# sends RP_MBOX_SHUTDOWN, which the hello images answer by going idle; the
+# 6.18 kernel does not, so ai64 shutdown sends it there. TI's kernel must not
+# get a core that is already idle: its own request would go unanswered and
+# the stop would time out. A C7x that does not take the request (an older
+# image) cannot be stopped, and keeps running until a reboot.
+kernel_sends_shutdown() {
+	[[ $(uname -r) != *-k3-* ]]
+}
+
 restart_dsps() {
 	local entry name fw label src rproc
 	for entry in "${DSP_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "dsp/build/$fw")
 		rproc=$(rproc_by_name "$name")
-		if [[ $name == "$C7X_NAME" && $(cat "$rproc/state") == running ]]; then
-			if [[ $(cat "$rproc/firmware") == "$fw" ]] && cmp -s "$src" "/lib/firmware/$fw"; then
-				echo "The C7x already runs $fw. This kernel cannot stop a C7x, so it keeps running."
-			else
-				echo "The C7x runs $(cat "$rproc/firmware"), and this kernel cannot stop it. Reboot to load $fw." >&2
+		if [[ $(cat "$rproc/state") == running ]] && ! kernel_sends_shutdown &&
+			! as_root "$BIN" shutdown "$name"; then
+			if [[ $name == "$C7X_NAME" ]]; then
+				echo "The C7x runs $(cat "$rproc/firmware") and did not take the shutdown request, so this kernel cannot stop it. Reboot to load $fw." >&2
 				[[ $(readlink -f "$src") != $(readlink -f "/lib/firmware/$fw") ]] && as_root cp "$src" "/lib/firmware/$fw"
+				continue
 			fi
-			continue
 		fi
 		load_fw "$name" "$fw" "$src"
 	done

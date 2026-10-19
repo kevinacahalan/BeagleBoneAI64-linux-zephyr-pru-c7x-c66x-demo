@@ -127,7 +127,7 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, and the DSPs with the installed firmware, then opens a tmux session with eleven windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `c66x0`, `c66x1`, and `c7x`. The C7x is the exception: this kernel cannot stop it, so once it runs the hello image it keeps running until the next reboot ([why](#the-c7x-cannot-be-restarted-yet)).
+- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, and the DSPs with the installed firmware, then opens a tmux session with eleven windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `c66x0`, `c66x1`, and `c7x`. Before it stops each DSP, it asks the DSP to go idle, which the C7x needs ([why](#restarting-the-c7x)).
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
@@ -138,8 +138,7 @@ Without tmux, plain `ai64-demo` prints all eleven windows on one console instead
 
 ### After you change the code
 
-- **`ai64`, the ICSSG0 firmware, the R5F firmware, or the C66x firmware:** rebuild with `build.sh`, run `build.sh bundle`, copy the bundle, and run `install-beagle.sh` again. No reboot is needed: the next `ai64-demo` restarts every core with the new firmware.
-- **The C7x firmware:** the same steps, then reboot. This kernel cannot stop the C7x.
+- **`ai64` or any core's firmware:** rebuild with `build.sh`, run `build.sh bundle`, copy the bundle, and run `install-beagle.sh` again. No reboot is needed: the next `ai64-demo` restarts every core with the new firmware.
 - **The overlay:** the same steps, then reboot. Pin mux only changes at boot.
 - **After the board's kernel is upgraded** (for example by `apt upgrade`): run `build.sh kmod` again, then `bundle`, `install-beagle.sh`, and reboot. The patched modules only fit the kernel they were built for.
 
@@ -269,7 +268,7 @@ A period is in ICSSG cycles at 250 MHz: 250000 is 1 ms, and the range is 2500 (1
 
 `ai64-demo` without `--tmux` prints all eleven windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[C66x0]`, `[C66x1]`, or `[C7x]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, and `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on).
+`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
 
 ## Probe the pins
 
@@ -317,7 +316,7 @@ The J721E SoC code maps all of DDR as non-cacheable for the R5F, and leaves both
 
 `zephyr/r5/src/ai64_mpu.c` adds MPU regions at the first init level, before the caches come on: device memory for the peripherals in the low 2 GiB, the TCMs, and the core's 16 MiB carveout as write-through, so that every write still reaches DDR. The vrings, the resource table, the mailbox, and the bulk buffer stay non-cacheable. `prj.conf` turns on `CONFIG_CACHE_MANAGEMENT`.
 
-`ai64 bench <rpmsg-dev>` times eRPC calls. On the bench, an eRPC `say` round trip went from 1263 µs to 85 µs on R5F0_1, R5F1_0, and R5F1_1, and to 160 µs on R5F0_0, which also logs each call on its UART. For comparison, an RPMsg echo from RTU0, which busy-polls, takes 35 µs.
+`ai64 bench <rpmsg-dev> [count]` times eRPC calls. On the bench, an eRPC `say` round trip went from 1263 µs to 85 µs on R5F0_1, R5F1_0, and R5F1_1, and to 160 µs on R5F0_0, which also logs each call on its UART. For comparison, an RPMsg echo from RTU0, which busy-polls, takes 35 µs.
 
 ### Linux to Zephyr: the bulk buffer
 
@@ -404,9 +403,13 @@ The compilers are TI's C6000 CGT 8.3.12 and C7000 CGT 1.2.0.STS, the newest vers
 
 The windows read the trace buffers with `ai64 trace`. It finds the buffer from the resource table in the core's firmware file, and reads it through `/dev/mem`, so it needs neither root nor debugfs.
 
-### The C7x cannot be restarted yet
+### Restarting the C7x
 
-The 6.18 DSP driver stops a C66x by asserting its local reset, which works. A C71x has no local reset, so the driver powers the whole module off instead, and the device manager refuses: `module-reset assert failed (-ENODEV)`, then `can't stop rproc: -19`. The C7x keeps running. `ai64-demo` therefore leaves a C7x that already runs `ai64-c7x.elf` alone, and a new C7x image takes a reboot.
+The 6.18 DSP driver stops a C66x by asserting its local reset. A C71x has no local reset, so the driver powers the whole module off instead, and the device manager only allows that once the core is idle. Otherwise it refuses: `module-reset assert failed (-ENODEV)`, then `can't stop rproc: -19`, and the C7x keeps running.
+
+TI's 6.12 kernel, the one the Yocto image uses, sends `RP_MBOX_SHUTDOWN` through the core's mailbox before a stop, waits for `RP_MBOX_SHUTDOWN_ACK`, and then for the core to report that it is idle. The 6.18 kernel sends nothing. So both DSP images poll their receive FIFO, answer `RP_MBOX_SHUTDOWN` with the ACK, and execute `IDLE` with interrupts off (`dsp/include/ai64_dsp_mbox.h`), and `ai64 shutdown <remoteproc-name>` puts that message in the FIFO from Linux. On the 6.18 kernel, `ai64-demo` runs it before it stops each DSP. A C7x running an image without the handler still cannot be stopped; `ai64-demo` says so, and a reboot loads the new image.
+
+The Zephyr images answer the same message, but the stock 6.18 R5F driver still fails to start a core again after the handshake, so the patched R5F module is still needed.
 
 ### Why Debian needs two patched modules
 
@@ -472,7 +475,7 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
   - A missing `/lib/firmware/ai64_r5f0_0.elf` or `ai64-icssg0-rtu0.elf` means `install-beagle.sh` didn't finish; run it again.
 - **`ai64-demo` says the stock `ti_k3_r5_remoteproc` cannot start an R5F core again.** The patched R5F module is not loaded, usually after a kernel upgrade. Rebuild with `build.sh kmod`, run `bundle`, install, and reboot. Until then a reboot reloads the R5F cores.
 - **`dmesg` shows `module-reset deassert failed, ret = -19`.** An R5F core was stopped with the stock module loaded and is now stuck. Power-cycle the board; a reboot from Linux is not always enough.
-- **`ai64-demo` says it cannot stop the C7x.** That is expected after the first start; see [The C7x cannot be restarted yet](#the-c7x-cannot-be-restarted-yet). Reboot to load a new C7x image.
+- **`ai64-demo` says it cannot stop the C7x.** The running C7x image predates the shutdown handler; see [Restarting the C7x](#restarting-the-c7x). Reboot once to load the new image.
 - **The txpru0 window shows no pulses, or `ai64 pads` marks `0x1a4` DIFFERENT.** Another overlay is muxing ball W26, most likely the stock `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`. Check the `fdtoverlays` line of the default label in `/boot/firmware/extlinux/extlinux.conf`.
 
 **Builds**
@@ -489,7 +492,6 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
 ## What is not here yet
 
 - **DSP compute offload.** The DSP images only log. A shared-memory job queue (Linux writes input, a DSP computes, Linux reads the result) is the next step.
-- **Restarting the C7x** without a reboot.
 - **A tested Yocto image.**
 
 ## Repository

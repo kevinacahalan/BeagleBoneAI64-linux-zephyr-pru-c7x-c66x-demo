@@ -2,8 +2,8 @@
 /*
  * C66x hello image. It writes a hello into its remoteproc trace buffer,
  * then one line every 10 s, timed with the core's TSCL cycle counter.
- * Everything lives in the core's own L2 SRAM; it touches no DDR and no
- * peripheral, so it needs no cache or MMU setup.
+ * Everything lives in the core's own L2 SRAM; it touches no DDR, and the
+ * only peripheral is its mailbox, so it needs no cache or MMU setup.
  */
 
 #include <stdint.h>
@@ -12,6 +12,13 @@
 #define AI64_TRACE_SIZE 2048
 #define AI64_TRACE_NAME "trace:c66x"
 #include "ai64_dsp_trace.h"
+#include "ai64_dsp_mbox.h"
+
+/*
+ * Mailbox cluster 3 (0x31f83000) carries both C66x cores. Linux receives
+ * from C66x 0 on FIFO 0 and sends to it on FIFO 1; C66x 1 uses 2 and 3.
+ */
+#define MBOX_BASE 0x31f83000u
 
 /* The C66x cores run at 1.35 GHz on the BeagleBone AI-64 (k3conf). */
 #define C66X_HZ 1350000000u
@@ -31,6 +38,13 @@ int main(void)
 	TSCL = 0;
 	last = TSCL;
 	for (;;) {
+		if (mbox_shutdown_requested(MBOX_BASE, 2u * DNUM + 1u, 2u * DNUM)) {
+			trace_puts("c66x shutting down\n");
+			/* Interrupts are off (GIE clear since reset), so IDLE stays. */
+			for (;;) {
+				asm(" IDLE");
+			}
+		}
 		if (TSCL - last >= C66X_HZ) {
 			last += C66X_HZ;
 			seconds++;
