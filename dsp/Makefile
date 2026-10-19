@@ -1,4 +1,4 @@
-# Build the DSP hello images with TI's C6000 and C7000 compilers.
+# Build the DSP images with TI's C6000 and C7000 compilers.
 # C6X_CGT and C7X_CGT are set by beagle-linux/scripts/build.sh.
 
 ifeq ($(C6X_CGT),)
@@ -14,9 +14,9 @@ INC := include
 .PHONY: all clean
 all: $(BUILD)/ai64-c66x.elf $(BUILD)/ai64-c7x.elf
 
-$(BUILD)/ai64-c66x.elf: c66x/main.c c66x/c66x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h
+$(BUILD)/ai64-c66x.elf: c66x/main.c c66x/c66x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h $(INC)/ai64_dsp_job.h
 	mkdir -p $(BUILD)/c66x
-	$(C6X_CGT)/bin/cl6x -mv6600 --abi=eabi -O2 --display_error_number \
+	$(C6X_CGT)/bin/cl6x -mv6600 --abi=eabi -O3 --display_error_number \
 		--include_path=$(C6X_CGT)/include --include_path=$(INC) \
 		--obj_directory=$(BUILD)/c66x -c c66x/main.c
 	$(C6X_CGT)/bin/cl6x -mv6600 --abi=eabi -z -i$(C6X_CGT)/lib \
@@ -25,9 +25,9 @@ $(BUILD)/ai64-c66x.elf: c66x/main.c c66x/c66x.cmd $(INC)/ai64_dsp_trace.h $(INC)
 
 # Warning 70: the resource table stores the 64-bit trace buffer pointer in a
 # uint32_t. The buffer is in DDR below 4 GiB, so nothing is lost.
-$(BUILD)/ai64-c7x.elf: c7x/main.c c7x/c7x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h
+$(BUILD)/ai64-c7x.elf: c7x/main.c c7x/c7x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h $(INC)/ai64_dsp_job.h
 	mkdir -p $(BUILD)/c7x
-	$(C7X_CGT)/bin/cl7x -mv7100 -O2 --display_error_number --diag_suppress=70 \
+	$(C7X_CGT)/bin/cl7x -mv7100 -O3 --display_error_number --diag_suppress=70 \
 		--include_path=$(C7X_CGT)/include --include_path=$(INC) \
 		--obj_directory=$(BUILD)/c7x -c c7x/main.c
 	$(C7X_CGT)/bin/cl7x -mv7100 -z -i$(C7X_CGT)/lib \

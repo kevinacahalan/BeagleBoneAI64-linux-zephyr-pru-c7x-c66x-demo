@@ -2,7 +2,8 @@
  * C7x hello image: everything in the C71x's DDR carveout (0xa8100000,
  * 15 MiB; the 1 MiB at 0xa8000000 below it is the core's DMA pool). The
  * boot address (_c_int00) has to be 2 MiB aligned, so the image starts at
- * 0xa8200000.
+ * 0xa8200000. The job block (ai64_dsp_job.h) is in L2 SRAM, outside
+ * the image.
  */
 -c
 -e _c_int00

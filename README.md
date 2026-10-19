@@ -7,7 +7,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **RTU0** (ICSSG0) takes commands from Linux (RPMsg) and from Zephyr (a shared DDR mailbox), and hands them to the other two ICSSG0 cores.
 - **PRU0** (ICSSG0) runs a cycle-counted loop and bit-bangs a UART frame on a header pin.
 - **Tx_PRU0** (ICSSG0) sends pulse trains on a header pin through the SoC's GPIO module.
-- **The two C66x DSPs and the C7x DSP** run a hello image each and log through their remoteproc trace buffers, which Linux follows.
+- **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory.
 
 ```mermaid
 flowchart LR
@@ -268,7 +268,7 @@ A period is in ICSSG cycles at 250 MHz: 250000 is 1 ms, and the range is 2500 (1
 
 `ai64-demo` without `--tmux` prints all eleven windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[C66x0]`, `[C66x1]`, or `[C7x]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
+`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
 
 ## Probe the pins
 
@@ -387,9 +387,9 @@ The patched `ti_k3_r5_remoteproc` (below) stops a core by holding it in reset, w
 
 `zephyr/r5/src/ai64_restart.c` runs before the system timer starts. It ends any interrupt left in service, clears the VIM's status, and stops the timer and clears its pending match. Without it, about one restart in six left a core hung, and after many restarts most of them were. With it, 30 restarts of all four cores in a row all came up.
 
-### The DSPs: hello and trace
+### The DSPs: trace and jobs
 
-Each DSP runs a small hello image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. The images touch no peripheral and set up no cache or MMU.
+Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. The images set up no cache or MMU, and the only peripheral they touch is their mailbox ([why](#restarting-the-c7x)).
 
 | Core | remoteproc | Image | Where it runs | Boot address |
 | --- | --- | --- | --- | --- |
@@ -403,6 +403,26 @@ The compilers are TI's C6000 CGT 8.3.12 and C7000 CGT 1.2.0.STS, the newest vers
 
 The windows read the trace buffers with `ai64 trace`. It finds the buffer from the resource table in the core's firmware file, and reads it through `/dev/mem`, so it needs neither root nor debugfs.
 
+### Linux to the DSPs: FIR jobs
+
+Each DSP polls a 64 KiB job block in its own L2 SRAM (`dsp/include/ai64_dsp_job.h`). Linux writes the filter taps, the input samples, and the job size through `/dev/mem`, then bumps a request number. The DSP runs a 16-bit fixed-point FIR filter, writes the output and its cycle count, and copies the request number into a done field. L2 SRAM is the DSP's own memory, and its L1D cache snoops writes from outside, so neither side needs cache maintenance.
+
+| Core | Job block (Linux address) | Core's own address |
+| --- | --- | --- |
+| C66x 0 | `0x4d80838000` | `0x00838000` |
+| C66x 1 | `0x4d81838000` | `0x00838000` |
+| C7x | `0x64800000` | `0x64800000` |
+
+`sudo ai64 dsp <remoteproc-name> [count] [taps] [runs]` sends jobs with random data, checks each output against the same filter run on the A72, and prints the timings:
+
+```
+$ sudo ai64 dsp 4d80800000.dsp
+4d80800000.dsp: 20 FIR jobs, 4096 samples x 32 taps, all match the A72
+  DSP filter 124022 cycles = 91.9 us; A72 waited 92.8 us; empty job 0.9 us
+  the same filter on one A72 core: 188.1 us
+```
+
+The filter is plain C, built at `-O3` with trip-count pragmas. The C66x runs it in half the A72's time. The C7x takes 225 µs, slower than the A72. Its code and stack are in DDR, and with the MMU off those accesses are most likely uncached. Loading the C7x image into its L2 SRAM instead hung the whole SoC on this kernel. Turning on the C7x MMU and caches, or hand-vectorizing the loop with the C7x's vector types, are the next steps for its speed.
 ### Restarting the C7x
 
 The 6.18 DSP driver stops a C66x by asserting its local reset. A C71x has no local reset, so the driver powers the whole module off instead, and the device manager only allows that once the core is idle. Otherwise it refuses: `module-reset assert failed (-ENODEV)`, then `can't stop rproc: -19`, and the C7x keeps running.
@@ -491,7 +511,7 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
 
 ## What is not here yet
 
-- **DSP compute offload.** The DSP images only log. A shared-memory job queue (Linux writes input, a DSP computes, Linux reads the result) is the next step.
+- **A fast C7x.** It runs the FIR job, but from uncached DDR; see [FIR jobs](#linux-to-the-dsps-fir-jobs).
 - **A tested Yocto image.**
 
 ## Repository

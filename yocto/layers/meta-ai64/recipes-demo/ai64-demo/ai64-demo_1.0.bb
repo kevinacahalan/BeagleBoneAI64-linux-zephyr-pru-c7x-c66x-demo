@@ -24,6 +24,7 @@ SRC_URI = " \
     file://beagle-linux/overlays/Makefile;subdir=src \
     file://beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso;subdir=src \
     file://zephyr/include/ai64_shm.h;subdir=src \
+    file://dsp/include/ai64_dsp_job.h;subdir=src \
     file://zephyr/erpc/shim;subdir=src \
     file://beagle-linux/scripts/ai64-demo;subdir=src \
     git://github.com/EmbeddedRPC/erpc.git;protocol=https;nobranch=1;destsuffix=src/third_party/erpc;name=erpc \

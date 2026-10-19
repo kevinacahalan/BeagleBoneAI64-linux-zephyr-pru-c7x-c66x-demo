@@ -6,7 +6,7 @@ CXXFLAGS = -O2 -Wall -Wextra -std=c++17 -fno-exceptions -fno-rtti
 ROOT := $(abspath ..)
 ERPC := $(ROOT)/third_party/erpc
 SHIM := $(ROOT)/zephyr/erpc/shim
-INCLUDES = -I. -I$(SHIM) -I$(ROOT)/zephyr/include \
+INCLUDES = -I. -I$(SHIM) -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include \
 	-I$(ERPC)/erpc_c/infra -I$(ERPC)/erpc_c/port \
 	-I$(ERPC)/erpc_c/setup -I$(ERPC)/erpc_c/transports
 
@@ -32,8 +32,8 @@ all: ai64
 ai64: ai64.o $(ERPC_SRCS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ ai64.o $(ERPC_SRCS)
 
-ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h
-	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -c -o $@ ai64.c
+ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h $(ROOT)/dsp/include/ai64_dsp_job.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ ai64.c
 
 clean:
 	rm -f ai64 ai64.o
