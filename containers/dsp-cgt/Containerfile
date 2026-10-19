@@ -1,0 +1,44 @@
+# TI C6000 CGT 8.3.12 (C66x) and C7000 CGT 1.2.0.STS (C71x) for the DSP
+# firmware. Those are the newest versions TI still serves without a login.
+# The C7000 installer is a 32-bit stub that needs the older glibc in Debian
+# 10, so both installers run there and the toolchains are copied into
+# Debian 13.
+FROM docker.io/library/debian:buster AS cgt
+
+RUN sed -i \
+		-e 's|deb.debian.org|archive.debian.org|g' \
+		-e 's|security.debian.org|archive.debian.org|g' \
+		/etc/apt/sources.list \
+	&& printf 'Acquire::Check-Valid-Until false;\n' > /etc/apt/apt.conf.d/99no-check \
+	&& apt-get update \
+	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+		ca-certificates \
+		curl \
+		libc6-i386 \
+		lib32gcc1 \
+	&& curl -fL -o /tmp/c6000.bin \
+		https://software-dl.ti.com/codegen/esd/cgt_public_sw/C6000/8.3.12/ti_cgt_c6000_8.3.12_linux-x64_installer.bin \
+	&& curl -fL -o /tmp/c7000.bin \
+		https://software-dl.ti.com/codegen/esd/cgt_public_sw/C7000/1.2.0.STS/ti_cgt_c7000_1.2.0.STS_linux_installer_x86.bin \
+	&& printf '%s\n' \
+		'050518940e4cdbd2068ca1b490426f1d008e80b89d617efbc0c40f432869e09a  /tmp/c6000.bin' \
+		'21379811a8857489f72ca8ec45a46eb086ced0bdbb58e78f73a86e63984ab2f5  /tmp/c7000.bin' \
+		| sha256sum -c - \
+	&& chmod +x /tmp/c6000.bin /tmp/c7000.bin \
+	&& /tmp/c6000.bin --mode unattended --prefix /opt/ti \
+	&& /tmp/c7000.bin --mode unattended --prefix /opt/ti \
+	&& ls /opt/ti \
+	&& rm -f /tmp/*.bin \
+	&& rm -rf /var/lib/apt/lists/*
+
+FROM docker.io/library/debian:13
+
+RUN apt-get update \
+	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+		make \
+		ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=cgt /opt/ti /opt/ti
+
+WORKDIR /work
