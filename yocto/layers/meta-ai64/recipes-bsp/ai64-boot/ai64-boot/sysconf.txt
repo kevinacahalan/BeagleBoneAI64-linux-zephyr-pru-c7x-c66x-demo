@@ -1,0 +1,7 @@
+# This file is evaluated at first boot.
+# Comments are ignored. Active lines are key=value.
+# This image logs in as root. Leave these commented.
+#
+# user_name=
+# user_password=
+# root_password=

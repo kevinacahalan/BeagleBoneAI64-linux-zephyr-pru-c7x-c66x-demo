@@ -1,0 +1,7 @@
+# FAT boot, ext4 root, swap.
+# The FAT partition holds tiboot3.bin, tispl.bin, sysfw.itb, u-boot.img, the
+# kernel, the DTB, the overlay, and extlinux/extlinux.conf, which U-Boot
+# reads. extlinux.conf mounts partition 2 as root and resumes from swap on 3.
+part --source bootimg-partition --fstype=vfat --label boot --active --align 1024 --use-uuid --fixed-size 256M
+part / --source rootfs --fstype=ext4 --label root --align 1024 --use-uuid
+part --fstype=swap --label swap --align 1024 --use-uuid --size 1024
