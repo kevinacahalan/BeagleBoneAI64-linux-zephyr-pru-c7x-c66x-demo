@@ -1,0 +1,29 @@
+From: Kevin Cahalan <kevinacahalan@gmail.com>
+Subject: [PATCH] remoteproc: k3: reset a C66x that acknowledged shutdown
+
+k3_rproc_stop() sends RP_MBOX_SHUTDOWN, waits for the ACK, and then for
+the core to report WFI before it resets the core. On the BeagleBone AI-64
+(J721E), a C66x that has sent the ACK and executed IDLE never reports
+WFI, so the stop fails with -ETIMEDOUT and the core cannot be restarted.
+
+A core with a local reset (uses_lreset, the C66x) is safe to hold in
+reset once it has acknowledged, so do that when WFI does not show up.
+The C7x, which has no local reset, still has to report WFI.
+
+Upstream-Status: Inappropriate [board-specific workaround]
+---
+--- a/drivers/remoteproc/ti_k3_common.c
++++ b/drivers/remoteproc/ti_k3_common.c
+@@ -386,7 +386,11 @@
+ 	};
+ 
+ 	ret = readx_poll_timeout(is_core_in_wfi, kproc, stat, stat, 200, 2000);
+-	if (ret)
++	/*
++	 * A C66x never reports WFI, even when it has acknowledged and is
++	 * idle. A core with a local reset is safe to reset anyway.
++	 */
++	if (ret && !kproc->data->uses_lreset)
+ 		return ret;
+ 
+ 	return k3_rproc_reset(kproc);

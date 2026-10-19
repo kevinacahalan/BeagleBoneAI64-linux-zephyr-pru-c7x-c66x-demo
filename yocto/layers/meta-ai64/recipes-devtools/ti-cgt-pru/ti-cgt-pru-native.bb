@@ -5,6 +5,9 @@ LIC_FILES_CHKSUM = ""
 
 inherit native
 
+# The installers unpack nothing of their own; do_compile works in UNPACKDIR.
+S = "${UNPACKDIR}"
+
 SRC_URI = " \
     https://software-dl.ti.com/codegen/esd/cgt_public_sw/PRU/2.3.3/ti_cgt_pru_2.3.3_linux_installer_x86.bin;unpack=0;name=cgt \
     http://archive.debian.org/debian/pool/main/g/glibc/libc6-i386_2.28-10+deb10u1_amd64.deb;unpack=0;name=libc \

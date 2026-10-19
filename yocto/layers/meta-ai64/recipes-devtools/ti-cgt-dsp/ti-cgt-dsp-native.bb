@@ -5,6 +5,9 @@ LIC_FILES_CHKSUM = ""
 
 inherit native
 
+# The installers unpack nothing of their own; do_compile works in UNPACKDIR.
+S = "${UNPACKDIR}"
+
 SRC_URI = " \
     https://software-dl.ti.com/codegen/esd/cgt_public_sw/C6000/8.3.12/ti_cgt_c6000_8.3.12_linux-x64_installer.bin;unpack=0;name=c6x \
     https://software-dl.ti.com/codegen/esd/cgt_public_sw/C7000/1.2.0.STS/ti_cgt_c7000_1.2.0.STS_linux_installer_x86.bin;unpack=0;name=c7x \

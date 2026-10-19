@@ -34,7 +34,7 @@ Each link is small and easy to copy into your own project. [How it works](#how-i
 
 The MCU-domain R5F cores are left alone: they run the board's device manager. [What is not here yet](#what-is-not-here-yet) lists what comes next.
 
-It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration that builds the demo into an image is in `yocto/`, but it has not been built yet.
+It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration in `yocto/` builds the demo into an image of its own, which has been built and tested on the board.
 
 ## What you need
 
@@ -429,7 +429,7 @@ The 6.18 DSP driver stops a C66x by asserting its local reset. A C71x has no loc
 
 TI's 6.12 kernel, the one the Yocto image uses, sends `RP_MBOX_SHUTDOWN` through the core's mailbox before a stop, waits for `RP_MBOX_SHUTDOWN_ACK`, and then for the core to report that it is idle. The 6.18 kernel sends nothing. So both DSP images poll their receive FIFO, answer `RP_MBOX_SHUTDOWN` with the ACK, and execute `IDLE` with interrupts off (`dsp/include/ai64_dsp_mbox.h`), and `ai64 shutdown <remoteproc-name>` puts that message in the FIFO from Linux. On the 6.18 kernel, `ai64-demo` runs it before it stops each DSP. A C7x running an image without the handler still cannot be stopped; `ai64-demo` says so, and a reboot loads the new image.
 
-The Zephyr images answer the same message, but the stock 6.18 R5F driver still fails to start a core again after the handshake, so the patched R5F module is still needed.
+The Zephyr images answer the same message, but neither kernel's R5F driver starts a core again after a stop without the patch that keeps it powered ([Yocto image](#quick-start-yocto-image)). On 6.12, the C66x needs a kernel patch as well: it never reports WFI after it has acknowledged.
 
 ### Why Debian needs two patched modules
 
@@ -450,7 +450,7 @@ The full pin list is `PINMUX.md`.
 
 ## Quick start: Yocto image
 
-`yocto/` holds a kas configuration and the `meta-ai64` layer that build the demo into a Poky image. **It has not been built yet**, so treat it as a starting point, not a tested image. To build it, from the repo root:
+`yocto/` holds a kas configuration and the `meta-ai64` layer that build the demo into a Poky image. A first build takes about three hours on a 16-thread machine and needs about 150 GB of disk. From the repo root:
 
 ```
 wget -O kas-container https://raw.githubusercontent.com/siemens/kas/5.5/kas-container
@@ -458,11 +458,17 @@ chmod +x kas-container
 KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 ```
 
-- The machine (`beaglebone-ai64`), kernel, and layers come from TI's `kas/poky-wrynose-config.yml`, and the distro is Poky. meta-beagle's default kernel for this machine is BeagleBoard's TI-based 6.12, which has the PRU kick and an R5F shutdown handshake, so the image needs neither patched module. The Zephyr app answers that handshake (`RP_MBOX_SHUTDOWN`).
+- The machine (`beaglebone-ai64`), kernel, and layers come from TI's `kas/poky-wrynose-config.yml`, and the distro is Poky. meta-beagle's default kernel for this machine is BeagleBoard's TI-based 6.12. It has the PRU kick, so `pru_rproc` needs no patch, and it sends `RP_MBOX_SHUTDOWN` before it stops a core, which the Zephyr and DSP images answer.
+- Two kernel patches in `yocto/layers/meta-ai64/recipes-kernel/linux/` still let the cores restart. One keeps a stopped R5F core powered, the same change as the Debian module; without it the second `ai64-demo` fails with `module-reset deassert failed, ret = -19`. The other lets a C66x be reset once it has acknowledged the shutdown, because a C66x never reports WFI and the stop otherwise fails with `-ETIMEDOUT`.
+- The image leaves out TI's Ethernet switch firmware (`ti-eth-fw-j721e`). The kernel would boot it on R5F0_0 at startup, and it does not answer the shutdown request, so `ai64-demo` could not stop the core. The board's Ethernet port does not use it.
 - The image builds `ai64`, the four R5F images, the three ICSSG0 images, the two DSP images, and the overlay itself. You don't need `build.sh` for it.
 - Set `KAS_CONTAINER_ENGINE` to `podman` or `docker` if you need to choose one.
 
-Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, and `/root` holds `ai64`, `ai64-demo`, and the firmware. Then `./ai64-demo --tmux`.
+Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port), and `/root` holds `ai64`, `ai64-demo`, and the firmware. Then `./ai64-demo --tmux`.
+
+On the bench, the image ran `ai64-demo` five times in a row with every core up each time, restarted the four R5F cores 20 times in a row, and gave the same eRPC and DSP timings as the Debian image.
+
+The kas file fetches `oe-layersetup` from git.ti.com. If that host does not answer, clone any copy of it at the pinned commit into `yocto/sources/oe-layersetup` first; kas then uses it as is.
 
 ## Build details
 
@@ -511,8 +517,7 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
 
 ## What is not here yet
 
-- **A fast C7x.** It runs the FIR job, but from uncached DDR; see [FIR jobs](#linux-to-the-dsps-fir-jobs).
-- **A tested Yocto image.**
+- **A fast C7x.** It runs the FIR job, but from DDR with the MMU off, slower than one A72 core; see [FIR jobs](#linux-to-the-dsps-fir-jobs).
 
 ## Repository
 

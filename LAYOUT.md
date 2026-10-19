@@ -95,7 +95,7 @@
 
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 
-`yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the three ICSSG0 images, and the DSP images.
+`yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the three ICSSG0 images, and the DSP images; `recipes-kernel/` patches the BeagleBoard 6.12 kernel so the R5F and C66x cores restart.
 
 `containers/` — Containerfiles for the Linux, PRU, Zephyr, and DSP build images.
 

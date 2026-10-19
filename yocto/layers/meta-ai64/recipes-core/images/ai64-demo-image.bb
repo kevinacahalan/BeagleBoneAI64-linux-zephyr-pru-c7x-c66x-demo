@@ -18,6 +18,12 @@ IMAGE_INSTALL:append = " \
 
 IMAGE_FEATURES:append = " ssh-server-dropbear"
 
+# j721e.inc recommends TI's Ethernet switch firmware, which the kernel then
+# boots on R5F0_0 at startup. It drives the CPSW9G, which this board does
+# not use, and it does not answer the shutdown request, so ai64-demo could
+# not stop the core to load Zephyr.
+BAD_RECOMMENDATIONS += "ti-eth-fw-j721e"
+
 # C.UTF-8. core-image-minimal installs no locale at all, and tmux (ai64-demo
 # --tmux) refuses to start without a UTF-8 one.
 IMAGE_LINGUAS = "c"
@@ -66,7 +72,7 @@ ai64_r5f0_0.elf, ai64_r5f0_1.elf, ai64_r5f1_0.elf, and ai64_r5f1_1.elf are
 the Zephyr firmwares for the four main-domain R5F cores.
 ai64-icssg0-rtu0.elf, ai64-icssg0-pru0.elf, and ai64-icssg0-txpru0.elf are
 the ICSSG0 slice-0 firmwares.
-ai64-c66x.elf and ai64-c7x.elf are the C66x and C7x hello images.
+ai64-c66x.elf and ai64-c7x.elf are the C66x and C7x images.
 
 From this directory:
 
