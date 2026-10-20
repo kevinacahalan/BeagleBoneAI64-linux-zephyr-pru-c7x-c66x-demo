@@ -32,7 +32,7 @@ flowchart LR
 
 Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
 
-The MCU-domain R5F cores are left alone: they run the board's device manager. [What is not here yet](#what-is-not-here-yet) lists what comes next.
+The MCU-domain R5F cores are left alone: they run the board's device manager.
 
 It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration in `yocto/` builds the demo into an image of its own, which has been built and tested on the board.
 
@@ -389,7 +389,7 @@ The patched `ti_k3_r5_remoteproc` (below) stops a core by holding it in reset, w
 
 ### The DSPs: trace and jobs
 
-Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. The images set up no cache or MMU, and the only peripheral they touch is their mailbox ([why](#restarting-the-c7x)).
+Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. The only peripheral they touch is their mailbox ([why](#restarting-the-c7x)). The C66x images set up no cache; the C7x image turns on its MMU and caches first ([below](#the-c7x-mmu-and-caches)).
 
 | Core | remoteproc | Image | Where it runs | Boot address |
 | --- | --- | --- | --- | --- |
@@ -405,7 +405,7 @@ The windows read the trace buffers with `ai64 trace`. It finds the buffer from t
 
 ### Linux to the DSPs: FIR jobs
 
-Each DSP polls a 64 KiB job block in its own L2 SRAM (`dsp/include/ai64_dsp_job.h`). Linux writes the filter taps, the input samples, and the job size through `/dev/mem`, then bumps a request number. The DSP runs a 16-bit fixed-point FIR filter, writes the output and its cycle count, and copies the request number into a done field. L2 SRAM is the DSP's own memory, and its L1D cache snoops writes from outside, so neither side needs cache maintenance.
+Each DSP polls a 64 KiB job block in its own L2 SRAM (`dsp/include/ai64_dsp_job.h`). Linux writes the filter taps, the input samples, and the job size through `/dev/mem`, then bumps a request number. The DSP runs a 16-bit fixed-point FIR filter, writes the output and its cycle count, and copies the request number into a done field. On a C66x, L1D snoops writes to L2 SRAM from outside, so neither side needs cache maintenance. The C7x maps the block's first 4 KiB, the header both sides poll, non-cacheable, and writes L1D back around each job.
 
 | Core | Job block (Linux address) | Core's own address |
 | --- | --- | --- |
@@ -422,7 +422,40 @@ $ sudo ai64 dsp 4d80800000.dsp
   the same filter on one A72 core: 188.1 us
 ```
 
-The filter is plain C, built at `-O3` with trip-count pragmas. The C66x runs it in half the A72's time. The C7x takes 225 µs, slower than the A72. Its code and stack are in DDR, and with the MMU off those accesses are most likely uncached. Loading the C7x image into its L2 SRAM instead hung the whole SoC on this kernel. Turning on the C7x MMU and caches, or hand-vectorizing the loop with the C7x's vector types, are the next steps for its speed.
+```
+$ sudo ai64 dsp 64800000.dsp
+64800000.dsp: 20 FIR jobs, 4096 samples x 32 taps, all match the A72
+  DSP filter 18867 cycles = 18.9 us; A72 waited 19.5 us; empty job 1.3 us
+  the same filter on one A72 core: 199.0 us
+```
+
+| Core | 4096 samples × 32 taps | 8192 × 64 |
+| --- | --- | --- |
+| One A72 core, plain C at `-O2` | about 190 µs | about 790 µs |
+| C66x, plain C at `-O3` | 92 µs | 336 µs |
+| C7x, C7x vector types | 19 µs | 60 µs |
+
+The C66x runs the plain C loop, with trip-count pragmas. On the C7x that loop took 225 µs, slower than the A72: the compiler vectorizes across the taps, so a 32-tap filter is two vectors per output, and loop overhead costs more than the multiplies. The C7x path in `ai64_dsp_job.h` works on 32 outputs at a time instead. Two vectors of 16 32-bit sums stay in registers, and each tap is one 32-sample load and two multiply-adds. The C7x also reads its L2 SRAM at about half the speed it reads cached DDR, so it copies the input and taps into its own DDR first. The same job takes 51 µs without that copy.
+
+`ai64 dsp` refuses a DSP that is not running. Reading a powered-off DSP's L2 SRAM hangs the SoC.
+
+### The C7x MMU and caches
+
+`dsp/c7x/ai64_c7x_mmu.c` builds identity-mapped page tables and turns the MMU on before anything else runs. It sizes the caches as TI's vision_apps does: L1D all cache (32 KiB), and 64 KiB of the 512 KiB L2 as cache, which leaves 448 KiB of SRAM from `0x64800000`.
+
+| Region | Size | Attributes | Holds |
+| --- | --- | --- | --- |
+| `0x00000000` | 1 GiB | device | the mailbox and every other peripheral |
+| `0x40000000` | 1 GiB | device, apart from the L2 SRAM pages below | |
+| `0x64800000` | 4 KiB | normal, non-cacheable | the job block header |
+| `0x64801000` | 60 KiB | normal, write-back | the rest of the job block |
+| `0xa8000000` | 2 MiB | normal, non-cacheable | the DMA pool, then the trace buffer and resource table at `0xa8100000` |
+| `0xa8200000` | 14 MiB | normal, write-back | code, data, stack, and the page tables |
+
+Anything else faults. The register values and their order follow the secure startup in TI's PDK (`ti/csl/arch/c7x/src/Mmu.c`), which flushes no cache and no TLB before the MMU goes on. One difference: the table base goes in `TBR0` as well as `TBR0_S`. With only `TBR0_S`, the core stops the moment the MMU is on, even though the core starts in secure supervisor mode.
+
+The trace buffer and the resource table moved from the code region into the non-cacheable block, because Linux reads them while the core runs. The MMU alone took the old loop only from 225 to 194 µs. Almost all of the gain came from the vector loop.
+
 ### Restarting the C7x
 
 The 6.18 DSP driver stops a C66x by asserting its local reset. A C71x has no local reset, so the driver powers the whole module off instead, and the device manager only allows that once the core is idle. Otherwise it refuses: `module-reset assert failed (-ENODEV)`, then `can't stop rproc: -19`, and the C7x keeps running.
@@ -514,10 +547,6 @@ A few meta-ti recipes still fetch from git.ti.com: `ti-linux-firmware` (the boot
 - **`kmod` fails to copy `/usr/src/linux-headers-...`.** The BeagleBoard image ships the headers for its kernel. If yours doesn't have them, run `sudo apt install linux-headers-$(uname -r)` on the board.
 - **`git.ti.com` times out while fetching the PRU Software Support Package.** That server is sometimes slow to answer. Run the build again later, or clone the package yourself at the commit pinned in `build.sh` into `third_party/pru-software-support-package`.
 - **RTU0 never appears, and `dmesg` says `.kick method not defined`.** The stock `pru_rproc` is loaded. This is usually after a kernel upgrade. Rebuild with `build.sh kmod`, run `bundle`, and install again.
-
-## What is not here yet
-
-- **A fast C7x.** It runs the FIR job, but from DDR with the MMU off, slower than one A72 core; see [FIR jobs](#linux-to-the-dsps-fir-jobs).
 
 ## Repository
 

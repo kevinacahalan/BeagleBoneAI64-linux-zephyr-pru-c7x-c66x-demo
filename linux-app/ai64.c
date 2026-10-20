@@ -455,8 +455,8 @@ static int read_sysfs(const char *path, char *buf, size_t len)
 	return 0;
 }
 
-/* The remoteproc firmware name of the core called name, or -1. */
-static int rproc_firmware(const char *name, char *fw, size_t len)
+/* A remoteproc attribute (firmware, state) of the core called name, or -1. */
+static int rproc_attr(const char *name, const char *attr, char *val, size_t len)
 {
 	char path[128], got[64];
 	int i;
@@ -466,8 +466,8 @@ static int rproc_firmware(const char *name, char *fw, size_t len)
 		if (read_sysfs(path, got, sizeof(got)) || strcmp(got, name)) {
 			continue;
 		}
-		snprintf(path, sizeof(path), "/sys/class/remoteproc/remoteproc%d/firmware", i);
-		return read_sysfs(path, fw, len);
+		snprintf(path, sizeof(path), "/sys/class/remoteproc/remoteproc%d/%s", i, attr);
+		return read_sysfs(path, val, len);
 	}
 	return -1;
 }
@@ -566,7 +566,7 @@ static int trace_main(int argc, char **argv)
 		return 2;
 	}
 	name = argv[2];
-	if (rproc_firmware(name, fw, sizeof(fw))) {
+	if (rproc_attr(name, "firmware", fw, sizeof(fw))) {
 		fprintf(stderr, "no remoteproc called %s\n", name);
 		return 1;
 	}
@@ -731,6 +731,7 @@ static int dsp_main(int argc, char **argv)
 	static int16_t want[AI64_JOB_MAX_COUNT];
 	volatile uint32_t *job = NULL;
 	volatile int16_t *jx, *jh, *jy;
+	char state[32];
 	double mhz = 0, wait = 0, ping = 0, arm = 0, cycles = 0, t0;
 	uint32_t i;
 	size_t c;
@@ -741,6 +742,11 @@ static int dsp_main(int argc, char **argv)
 		fprintf(stderr, "usage: %s dsp <remoteproc-name> [count <= %u] [taps <= %u] [runs]\n",
 			argv[0], AI64_JOB_MAX_COUNT, AI64_JOB_MAX_TAPS);
 		return 2;
+	}
+	/* A powered-off DSP's L2 SRAM does not answer, and reading it hangs the SoC. */
+	if (!rproc_attr(argv[2], "state", state, sizeof(state)) && strcmp(state, "running")) {
+		fprintf(stderr, "%s is %s; start it first (ai64-demo does)\n", argv[2], state);
+		return 1;
 	}
 	for (c = 0; c < sizeof(dsp_job) / sizeof(dsp_job[0]); c++) {
 		if (!strcmp(dsp_job[c].name, argv[2])) {

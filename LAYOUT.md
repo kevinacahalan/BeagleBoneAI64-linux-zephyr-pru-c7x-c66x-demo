@@ -91,7 +91,7 @@
 
 `pru/build/` — generated ICSSG0 images, `ai64-icssg0-pru0.elf`, `ai64-icssg0-rtu0.elf`, and `ai64-icssg0-txpru0.elf`.
 
-`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
+`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
 
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 
