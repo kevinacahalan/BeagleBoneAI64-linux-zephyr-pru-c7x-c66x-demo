@@ -458,9 +458,9 @@ chmod +x kas-container
 KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 ```
 
-- The machine (`beaglebone-ai64`), kernel, and layers come from TI's `kas/poky-wrynose-config.yml`, and the distro is Poky. meta-beagle's default kernel for this machine is BeagleBoard's TI-based 6.12. It has the PRU kick, so `pru_rproc` needs no patch, and it sends `RP_MBOX_SHUTDOWN` before it stops a core, which the Zephyr and DSP images answer.
+- The machine (`beaglebone-ai64`), kernel, and layers come from TI's `kas/poky-wrynose-config.yml`, and the distro is Poky. That file lives in TI's oe-layersetup repo on git.ti.com; `yocto/layers/meta-ai64/kas/ti-poky-wrynose-config.yml` is a copy of it, with its two templates folded in, so kas does not clone oe-layersetup. The copy names the commit it came from. `yocto/kas/ai64-poky.yml` holds everything of ours on top. meta-beagle's default kernel for this machine is BeagleBoard's TI-based 6.12. It has the PRU kick, so `pru_rproc` needs no patch, and it sends `RP_MBOX_SHUTDOWN` before it stops a core, which the Zephyr and DSP images answer.
 - Two kernel patches in `yocto/layers/meta-ai64/recipes-kernel/linux/` still let the cores restart. One keeps a stopped R5F core powered, the same change as the Debian module; without it the second `ai64-demo` fails with `module-reset deassert failed, ret = -19`. The other lets a C66x be reset once it has acknowledged the shutdown, because a C66x never reports WFI and the stop otherwise fails with `-ETIMEDOUT`.
-- The image leaves out TI's Ethernet switch firmware (`ti-eth-fw-j721e`). The kernel would boot it on R5F0_0 at startup, and it does not answer the shutdown request, so `ai64-demo` could not stop the core. The board's Ethernet port does not use it.
+- The image leaves out TI's Ethernet firmware (`ti-eth-fw-j721e`), which meta-ti installs by default as R5F0_0's boot firmware. It runs the main-domain CPSW9G switch for TI's J721E EVM. The BeagleBone AI-64's Ethernet port is on the MCU-domain CPSW2G, which Linux drives itself, and the Debian image doesn't ship it either. Left in, the kernel boots it on R5F0_0 at startup, and it does not answer the shutdown request, so `ai64-demo` could not stop the core.
 - The image builds `ai64`, the four R5F images, the three ICSSG0 images, the two DSP images, and the overlay itself. You don't need `build.sh` for it.
 - Set `KAS_CONTAINER_ENGINE` to `podman` or `docker` if you need to choose one.
 
@@ -468,7 +468,7 @@ Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-im
 
 On the bench, the image ran `ai64-demo` five times in a row with every core up each time, restarted the four R5F cores 20 times in a row, and gave the same eRPC and DSP timings as the Debian image.
 
-The kas file fetches `oe-layersetup` from git.ti.com. If that host does not answer, clone any copy of it at the pinned commit into `yocto/sources/oe-layersetup` first; kas then uses it as is.
+A few meta-ti recipes still fetch from git.ti.com: `ti-linux-firmware` (the boot firmware), `core-secdev-k3` (image signing), `img-vxe-vxd` (the video codec driver), and the PRU Software Support Package. If that host does not answer, copy those clones from another Yocto tree's `downloads/git2/` into `yocto/downloads/git2/`, `.done` files included, and the fetcher uses them as they are.
 
 ## Build details
 

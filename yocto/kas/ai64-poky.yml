@@ -6,13 +6,18 @@
 # meta-oe pieces those layers need. The distro stays poky. This is not
 # an Arago tisdk image.
 #
+# TI's file lives on git.ti.com, which does not always answer, so
+# meta-ai64 carries a copy: meta-ai64/kas/ti-poky-wrynose-config.yml.
+# That copy says which oe-layersetup commit it is from. Everything in
+# this file is ours and overrides it.
+#
 # Run from the repo root with kas-container. See the top-level README.
 
 header:
   version: 17
   includes:
-    - repo: oe-layersetup
-      file: kas/poky-wrynose-config.yml
+    - repo: meta-ai64
+      file: kas/ti-poky-wrynose-config.yml
 
 build_system: openembedded
 machine: beaglebone-ai64
@@ -20,14 +25,6 @@ distro: poky
 target: ai64-demo-image
 
 repos:
-  oe-layersetup:
-    url: https://git.ti.com/git/arago-project/oe-layersetup.git
-    branch: master
-    commit: ff8359fb6459bbc7ec5d8396d0cd0e5f66854ccc
-    path: yocto/sources/oe-layersetup
-    layers:
-      .: disabled
-
   # Keep TI checkouts under yocto/sources instead of the repo root.
   bitbake:
     path: yocto/sources/bitbake
