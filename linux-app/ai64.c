@@ -54,6 +54,10 @@
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
  *   the buffer through /dev/mem, so it needs no root and no debugfs.
  *
+ * ai64 ring [seconds|once]
+ *   Prints how fast the token goes round the three ICSSG rings (ICSSG0
+ *   slice 1, ICSSG1 slices 0 and 1), from their records in shared RAM.
+ *
  * ai64 linux <dir>
  *   Sends the startup script, then reads commands such as xy and arm.
  */
@@ -102,6 +106,7 @@ static void print_usage(const char *prog)
 	printf("  shm                       print the shared-RAM records once\n");
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
+	printf("  ring [seconds|once]       lap rates of the three ICSSG rings (the rings window)\n");
 	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
 	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("  dsp <remoteproc-name> [count] [taps] [runs] offload FIR jobs to a DSP\n");
@@ -434,10 +439,63 @@ static const struct {
 	{ "4d80800000.dsp", 0x00800000, 0x00048000, 0x4d80800000ull }, /* C66x 0 L2 */
 	{ "4d81800000.dsp", 0x00800000, 0x00048000, 0x4d81800000ull }, /* C66x 1 L2 */
 	{ "64800000.dsp", 0x00800000, 0x00080000, 0x64800000ull },     /* C71x L2 */
-	{ "b034000.pru", 0x00000000, 0x00004000, 0x0b000000ull },      /* ICSSG0 data RAM */
-	{ "b004000.rtu", 0x00000000, 0x00004000, 0x0b000000ull },
-	{ "b00a000.txpru", 0x00000000, 0x00004000, 0x0b000000ull },
 };
+
+/*
+ * The ICSSG cores: which ICSSG, which slice. A core sees its own slice's
+ * data RAM at 0x0000, the other slice's at 0x2000, and its ICSSG's shared
+ * RAM at 0x10000. In the SoC, data RAM 0 (slice 0's) is at the ICSSG's base,
+ * data RAM 1 at base + 0x2000, and shared RAM at base + 0x10000.
+ */
+static const struct {
+	const char *name;
+	uint64_t base;
+	uint32_t slice;
+} icssg_cores[] = {
+	{ "b034000.pru", 0x0b000000ull, 0 },
+	{ "b004000.rtu", 0x0b000000ull, 0 },
+	{ "b00a000.txpru", 0x0b000000ull, 0 },
+	{ "b038000.pru", 0x0b000000ull, 1 },
+	{ "b006000.rtu", 0x0b000000ull, 1 },
+	{ "b00c000.txpru", 0x0b000000ull, 1 },
+	{ "b134000.pru", 0x0b100000ull, 0 },
+	{ "b104000.rtu", 0x0b100000ull, 0 },
+	{ "b10a000.txpru", 0x0b100000ull, 0 },
+	{ "b138000.pru", 0x0b100000ull, 1 },
+	{ "b106000.rtu", 0x0b100000ull, 1 },
+	{ "b10c000.txpru", 0x0b100000ull, 1 },
+};
+
+/* The SoC address of device address da on core name. */
+static uint64_t core_da_to_pa(const char *name, uint32_t da)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(core_windows) / sizeof(core_windows[0]); i++) {
+		if (!strcmp(core_windows[i].name, name) && da >= core_windows[i].da &&
+		    da - core_windows[i].da < core_windows[i].len) {
+			return core_windows[i].pa + (da - core_windows[i].da);
+		}
+	}
+	for (i = 0; i < sizeof(icssg_cores) / sizeof(icssg_cores[0]); i++) {
+		uint64_t base = icssg_cores[i].base;
+		uint32_t slice = icssg_cores[i].slice;
+
+		if (strcmp(icssg_cores[i].name, name)) {
+			continue;
+		}
+		if (da < 0x2000) {
+			return base + 0x2000u * slice + da;
+		}
+		if (da < 0x4000) {
+			return base + 0x2000u * (1u - slice) + (da - 0x2000u);
+		}
+		if (da >= 0x10000 && da < 0x20000) {
+			return base + da;
+		}
+	}
+	return da;
+}
 
 static int read_sysfs(const char *path, char *buf, size_t len)
 {
@@ -554,9 +612,9 @@ static int trace_main(int argc, char **argv)
 	const char *name;
 	char fw[128], path[256];
 	uint32_t da, len, shown = 0;
+	char state[32];
 	uint64_t pa;
 	volatile char *buf;
-	size_t i;
 	long page = sysconf(_SC_PAGESIZE);
 	char *mapped;
 	int fd;
@@ -570,17 +628,16 @@ static int trace_main(int argc, char **argv)
 		fprintf(stderr, "no remoteproc called %s\n", name);
 		return 1;
 	}
+	/* A powered-off DSP's RAM hangs the SoC when read. */
+	if (rproc_attr(name, "state", state, sizeof(state)) || strcmp(state, "running")) {
+		fprintf(stderr, "%s is %s; start it first (ai64-demo does)\n", name, state);
+		return 1;
+	}
 	snprintf(path, sizeof(path), "/lib/firmware/%s", fw);
 	if (elf_trace(path, &da, &len)) {
 		return 1;
 	}
-	pa = da;
-	for (i = 0; i < sizeof(core_windows) / sizeof(core_windows[0]); i++) {
-		if (!strcmp(core_windows[i].name, name) && da >= core_windows[i].da &&
-		    da - core_windows[i].da < core_windows[i].len) {
-			pa = core_windows[i].pa + (da - core_windows[i].da);
-		}
-	}
+	pa = core_da_to_pa(name, da);
 	fd = open("/dev/mem", O_RDONLY | O_SYNC);
 	if (fd < 0) {
 		perror("/dev/mem");
@@ -610,6 +667,114 @@ static int trace_main(int argc, char **argv)
 		}
 		fflush(stdout);
 		usleep(200000);
+	}
+}
+
+/* The three rings, by the remoteproc name of the PRU that starts each. */
+static const struct {
+	const char *label;
+	const char *pru;
+	uint32_t icssg;
+	uint32_t slice;
+} rings[] = {
+	{ "icssg0 slice 1", "b038000.pru", 0, 1 },
+	{ "icssg1 slice 0", "b134000.pru", 1, 0 },
+	{ "icssg1 slice 1", "b138000.pru", 1, 1 },
+};
+
+#define NRINGS (sizeof(rings) / sizeof(rings[0]))
+/* The shared-RAM page that holds an ICSSG's ring records. */
+#define RING_PAGE(icssg) (AI64_RING_CPU(icssg, 0) & ~0xfffu)
+
+static double now_us(void);
+
+/*
+ * ai64 ring [seconds|once]: every few seconds, one line per ring: laps a
+ * second, the lap time, and whether every core kept up. once prints one
+ * 1-second sample and exits.
+ */
+static int ring_main(int argc, char **argv)
+{
+	volatile struct ai64_ring *ring[NRINGS] = { 0 };
+	volatile uint8_t *page[2] = { 0 };
+	uint32_t laps[NRINGS], run[NRINGS];
+	int once = argc > 2 && !strcmp(argv[2], "once");
+	int every = argc > 2 && !once ? atoi(argv[2]) : 10;
+	double t0, t1;
+	char state[32];
+	size_t r;
+
+	if (argc > 3 || every <= 0) {
+		fprintf(stderr, "usage: %s ring [seconds|once]\n", argv[0]);
+		return 2;
+	}
+	for (r = 0; r < NRINGS; r++) {
+		uint32_t g = rings[r].icssg;
+
+		/* Only an ICSSG whose cores Linux runs is sure to be powered. */
+		if (rproc_attr(rings[r].pru, "state", state, sizeof(state)) ||
+		    strcmp(state, "running")) {
+			printf("%s: %s is not running\n", rings[r].label, rings[r].pru);
+			continue;
+		}
+		if (!page[g]) {
+			page[g] = map_phys(RING_PAGE(g), 4096);
+			if (!page[g]) {
+				return 1;
+			}
+		}
+		ring[r] = (volatile struct ai64_ring *)(page[g] + (AI64_RING_CPU(g, rings[r].slice) -
+								    RING_PAGE(g)));
+	}
+	if (!once) {
+		printf("ring window ready, a line per ring every %d s\n", every);
+	}
+	fflush(stdout);
+	for (r = 0; r < NRINGS; r++) {
+		laps[r] = ring[r] ? ring[r]->laps : 0;
+		run[r] = ring[r] ? ring[r]->run : 0;
+	}
+	t0 = now_us();
+	for (;;) {
+		sleep(once ? 1 : (unsigned int)every);
+		t1 = now_us();
+		for (r = 0; r < NRINGS; r++) {
+			volatile struct ai64_ring *g = ring[r];
+			uint32_t n, l, rtu, tx;
+			double rate;
+
+			if (!g) {
+				continue;
+			}
+			if (g->magic != AI64_RING_MAGIC) {
+				printf("%s: no ring record yet\n", rings[r].label);
+				continue;
+			}
+			l = g->laps;
+			rtu = g->rtu_hops;
+			tx = g->txpru_hops;
+			if (g->run != run[r]) {
+				/* The PRU restarted and zeroed the counts. */
+				run[r] = g->run;
+				laps[r] = 0;
+			}
+			n = l - laps[r];
+			laps[r] = l;
+			rate = n / ((t1 - t0) / 1e6);
+			/*
+			 * The PRU times the token's trip, RTU and Tx_PRU included.
+			 * The lap rate also counts the PRU's own bookkeeping.
+			 */
+			printf("%s: run %u, %.2f M laps/s, round trip %u cycles (%u to %u), "
+			       "hops PRU %u RTU %u Tx_PRU %u, errors %u%s\n",
+			       rings[r].label, g->run, rate / 1e6, g->lap_last, g->lap_min,
+			       g->lap_max, l, rtu, tx, g->errors, n == 0 ? ", STOPPED" : "");
+		}
+		fflush(stdout);
+		t0 = t1;
+		if (once) {
+			return 0;
+		}
 	}
 }
 
@@ -1323,7 +1488,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|bench|dsp|shutdown|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|ring|bench|dsp|shutdown|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1356,6 +1521,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "shutdown")) {
 		return shutdown_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "ring")) {
+		return ring_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

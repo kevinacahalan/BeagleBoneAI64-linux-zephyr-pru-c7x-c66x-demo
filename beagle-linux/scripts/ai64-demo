@@ -3,14 +3,14 @@
 # Run the BeagleBone AI-64 demo on the board. This does not start at boot.
 #
 #   ai64-demo                 (re)start the four main-domain R5F cores, RTU0,
-#                             PRU0, Tx_PRU0, and the DSPs with their firmware,
-#                             then one merged console
-#   ai64-demo --tmux          same start, in tmux session ai64 (eleven windows)
+#                             PRU0, Tx_PRU0, the nine ring cores, and the DSPs
+#                             with their firmware, then one merged console
+#   ai64-demo --tmux          same start, in tmux session ai64 (twelve windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
-# [RTU0], [PRU0], [TxPRU0], [C66x0], [C66x1], or [C7x].
+# [RTU0], [PRU0], [TxPRU0], [Rings], [C66x0], [C66x1], or [C7x].
 
 set -euo pipefail
 
@@ -38,6 +38,14 @@ C7X_NAME=64800000.dsp
 RTU0_NAME=b004000.rtu
 PRU0_NAME=b034000.pru
 TXPRU0_NAME=b00a000.txpru
+# The other three ICSSG slices pass a token round, as ICSSG:slice:PRU:RTU:Tx_PRU.
+# Their firmware is ai64-icssg<ICSSG>-<core><slice>.elf.
+RING_SLICES=(
+	0:1:b038000.pru:b006000.rtu:b00c000.txpru
+	1:0:b134000.pru:b104000.rtu:b10a000.txpru
+	1:1:b138000.pru:b106000.rtu:b10c000.txpru
+)
+RING_NAMES=" b038000.pru b006000.rtu b00c000.txpru b134000.pru b104000.rtu b10a000.txpru b138000.pru b106000.rtu b10c000.txpru "
 # The MCU R5F cluster runs the board's device manager. Never touch it.
 MCU_R5_NAMES="41000000.r5f 41400000.r5f"
 
@@ -45,12 +53,14 @@ usage() {
 	cat <<'EOF'
 usage: ai64-demo [--tmux] [--attach]
 
-  (default)  Restart the four R5F cores, RTU0, PRU0, Tx_PRU0, and the
-             DSPs with their firmware. Then print one console. Each line
-             is prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
-             [RTU0], [PRU0], [TxPRU0], [C66x0], [C66x1], or [C7x].
+  (default)  Restart the four R5F cores, RTU0, PRU0, Tx_PRU0, the nine
+             ring cores, and the DSPs with their firmware. Then print one
+             console. Each line is prefixed [Linux], [R5F0_0], [R5F0_1],
+             [R5F1_0], [R5F1_1], [RTU0], [PRU0], [TxPRU0], [Rings], [C66x0],
+             [C66x1], or [C7x].
   --tmux     Same start, in tmux session ai64. Windows: linux, zephyr,
-             rtu0, pru0, txpru0, r5f0_1, r5f1_0, r5f1_1, c66x0, c66x1, c7x.
+             rtu0, pru0, txpru0, r5f0_1, r5f1_0, r5f1_1, rings, c66x0,
+             c66x1, c7x.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
 EOF
@@ -103,7 +113,7 @@ is_demo_core() {
 	case $1 in
 	"$RTU0_NAME"|"$PRU0_NAME"|"$TXPRU0_NAME") return 0 ;;
 	esac
-	[[ $R5_NAMES == *" $1 "* || $DSP_NAMES == *" $1 "* ]]
+	[[ $R5_NAMES == *" $1 "* || $DSP_NAMES == *" $1 "* || $RING_NAMES == *" $1 "* ]]
 }
 
 is_r5() {
@@ -180,6 +190,8 @@ load_fw() {
 	case $fwname in
 	ai64_r5f[01]_[01].elf|ai64-icssg0-rtu0.elf|ai64-icssg0-pru0.elf|ai64-icssg0-txpru0.elf) ;;
 	ai64-c66x.elf|ai64-c7x.elf) ;;
+	ai64-icssg0-pru1.elf|ai64-icssg0-rtu1.elf|ai64-icssg0-txpru1.elf) ;;
+	ai64-icssg1-pru[01].elf|ai64-icssg1-rtu[01].elf|ai64-icssg1-txpru[01].elf) ;;
 	*)
 		echo "refusing to install $fwname" >&2
 		exit 1
@@ -251,6 +263,34 @@ restart_r5_cores() {
 		IFS=: read -r name fw label <<<"$entry"
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr-main_$label/zephyr/$fw")
 		load_fw "$name" "$fw" "$src"
+	done
+}
+
+# Each ring's PRU takes the token when it starts, which is only safe while
+# the RTU and Tx_PRU are waiting for it. So stop the PRU first, and start it
+# last. A ring whose cores this kernel's device tree does not have is
+# skipped; the rest of the demo does not need it.
+restart_rings() {
+	local entry g sl pru rtu txpru core name fw src missing
+	for entry in "${RING_SLICES[@]}"; do
+		IFS=: read -r g sl pru rtu txpru <<<"$entry"
+		missing=
+		for name in "$pru" "$rtu" "$txpru"; do
+			rproc_by_name "$name" >/dev/null 2>&1 || missing=$name
+		done
+		if [[ -n $missing ]]; then
+			echo "Skipping the ICSSG$g slice $sl ring: there is no remoteproc $missing." >&2
+			continue
+		fi
+		stop_core "$pru"
+		stop_core "$rtu"
+		stop_core "$txpru"
+		for core in rtu:"$rtu" txpru:"$txpru" pru:"$pru"; do
+			name=${core#*:}
+			fw=ai64-icssg$g-${core%%:*}$sl.elf
+			src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
+			load_fw "$name" "$fw" "$src"
+		done
 	done
 }
 
@@ -347,7 +387,7 @@ viewer_pids() {
 		[[ -r /proc/$pid/cmdline ]] || continue
 		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
 		case $cmd in
-		*ai64\ peer*|*ai64\ erpc*|*ai64\ watch*|*ai64\ trace*|*ai64\ linux*)
+		*ai64\ peer*|*ai64\ erpc*|*ai64\ watch*|*ai64\ trace*|*ai64\ ring*|*ai64\ linux*)
 			echo "$pid"
 			;;
 		esac
@@ -386,6 +426,7 @@ if [[ $ATTACH -eq 0 ]]; then
 	# Not the kernels' default names (j7-main-r5f0_0-fw and so on), so
 	# nothing boots the R5F cores until this script does.
 	restart_r5_cores
+	restart_rings
 	restart_dsps
 elif [[ -n $(viewer_pids) ]]; then
 	echo "demo viewers are already running. --attach does not restart them." >&2
@@ -447,6 +488,8 @@ if [[ $USE_TMUX -eq 1 ]]; then
 		tmux new-window -d -t "$SESSION" -n "$label"
 		tmux send-keys -t "$SESSION:$label" "$BIN erpc $label ${R5_DEV[$label]} $RUN/$label.in" C-m
 	done
+	tmux new-window -d -t "$SESSION" -n rings
+	tmux send-keys -t "$SESSION:rings" "$BIN ring" C-m
 	for entry in "${DSP_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
 		tmux new-window -d -t "$SESSION" -n "$label"
@@ -465,6 +508,7 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	echo "  rtu0   $RTU0_DEV"
 	echo "  pru0   shared ram"
 	echo "  txpru0 shared ram"
+	echo "  rings  shared ram"
 	if [[ -t 0 && -t 1 ]]; then
 		exec tmux attach -t "$SESSION"
 	fi
@@ -508,6 +552,7 @@ done
 spawn_prefixed '[RTU0]' "$RUN/rtu0.out" "$BIN" peer rtu0 "$RTU0_DEV" "$RUN/rtu0.in"
 spawn_prefixed '[PRU0]' "$RUN/pru0.out" "$BIN" watch pru0
 spawn_prefixed '[TxPRU0]' "$RUN/txpru0.out" "$BIN" watch txpru0
+spawn_prefixed '[Rings]' "$RUN/rings.out" "$BIN" ring
 for entry in "${DSP_CORES[@]}"; do
 	IFS=: read -r name fw label <<<"$entry"
 	tag=${label/c66x/C66x}

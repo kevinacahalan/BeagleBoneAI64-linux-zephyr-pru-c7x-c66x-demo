@@ -28,6 +28,7 @@
 │   ├── icssg0/pru0/
 │   ├── icssg0/rtu0/
 │   ├── icssg0/txpru0/
+│   ├── ring/
 │   ├── include/
 │   └── build/             generated
 ├── yocto/
@@ -87,9 +88,11 @@
 
 `pru/icssg0/txpru0/` — Tx_PRU0, the pulse trains on P9.25.
 
-`pru/include/` — the trace-buffer log and resource table the three cores share.
+`pru/ring/` — the ring that the other nine ICSSG cores run (ICSSG0 slice 1, ICSSG1 slices 0 and 1): one `main.c`, built once per core, and a linker script for each kind of core.
 
-`pru/build/` — generated ICSSG0 images, `ai64-icssg0-pru0.elf`, `ai64-icssg0-rtu0.elf`, and `ai64-icssg0-txpru0.elf`.
+`pru/include/` — the trace-buffer log and resource table the ICSSG cores share.
+
+`pru/build/` — generated ICSSG images: `ai64-icssg0-pru0.elf`, `ai64-icssg0-rtu0.elf`, and `ai64-icssg0-txpru0.elf` for the demo, and `ai64-icssg<ICSSG>-<pru|rtu|txpru><slice>.elf` for the rings.
 
 `dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
 

@@ -7,6 +7,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **RTU0** (ICSSG0) takes commands from Linux (RPMsg) and from Zephyr (a shared DDR mailbox), and hands them to the other two ICSSG0 cores.
 - **PRU0** (ICSSG0) runs a cycle-counted loop and bit-bangs a UART frame on a header pin.
 - **Tx_PRU0** (ICSSG0) sends pulse trains on a header pin through the SoC's GPIO module.
+- **The other nine ICSSG cores**, the PRU, RTU, and Tx_PRU of ICSSG0 slice 1 and of both ICSSG1 slices, pass a token round in three rings through their ICSSG's shared RAM. Linux reports how fast each ring goes.
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory.
 
 ```mermaid
@@ -28,6 +29,8 @@ flowchart LR
   tx -->|"Linux reads shared RAM"| ai64
   dsp["C66x 0, C66x 1, C7x"]
   dsp -->|"trace buffer"| ai64
+  rings["3 rings: PRU, RTU, Tx_PRU<br/>ICSSG0 slice 1, ICSSG1 slices 0 and 1"]
+  rings -->|"Linux reads shared RAM"| ai64
 ```
 
 Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
@@ -127,14 +130,14 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, and the DSPs with the installed firmware, then opens a tmux session with eleven windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `c66x0`, `c66x1`, and `c7x`. Before it stops each DSP, it asks the DSP to go idle, which the C7x needs ([why](#restarting-the-c7x)).
+- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, the nine ring cores, and the DSPs with the installed firmware, then opens a tmux session with twelve windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `rings`, `c66x0`, `c66x1`, and `c7x`. Before it stops each DSP, it asks the DSP to go idle, which the C7x needs ([why](#restarting-the-c7x)).
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
 
 To stop the demo, run `tmux kill-session -t ai64`. Typing `quit` in the `linux` window only ends that window.
 
-Without tmux, plain `ai64-demo` prints all eleven windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
+Without tmux, plain `ai64-demo` prints all twelve windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
 
 ### After you change the code
 
@@ -200,6 +203,12 @@ Tx_PRU0 finished seq 2 after 10 pulses on P9.25
 Zephyr on R5F0_1 window ready on /dev/rpmsg4 (eRPC)
 Linux asked Zephyr on R5F0_1 to say "hello from linux", and it replied "zephyr r5f0_1: hello from linux"
 
+== rings (a line per ring every 10 s)
+ring window ready, a line per ring every 10 s
+icssg0 slice 1: run 1, 1.98 M laps/s, round trip 90 cycles (86 to 104), hops PRU 19788804 RTU 19788805 Tx_PRU 19788805, errors 0
+icssg1 slice 0: run 1, 1.63 M laps/s, round trip 122 cycles (106 to 120), hops PRU 16314994 RTU 16314995 Tx_PRU 16314995, errors 0
+icssg1 slice 1: run 1, 1.63 M laps/s, round trip 121 cycles (107 to 119), hops PRU 16321473 RTU 16321474 Tx_PRU 16321474, errors 0
+
 == c66x0 (c66x1 is the same, with DNUM 1)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d808028e0
 hello from the c66x, DNUM 0
@@ -207,8 +216,8 @@ c66x up 10 s
 c66x up 20 s
 
 == c7x
-64800000.dsp trace (ai64-c7x.elf), 2048 bytes at 0xa8204940
-hello from the c7x, DNUM 1024
+64800000.dsp trace (ai64-c7x.elf), 2048 bytes at 0xa8100000
+hello from the c7x, DNUM 1024, MMU on, L1DCFG 4, L2CFG 2
 c7x up 10 s
 c7x up 20 s
 ```
@@ -245,7 +254,7 @@ I: ai64 r5f0_1 hello, shm seq 0
 I: erpc say: zephyr r5f0_1: hello from linux
 ```
 
-The three ICSSG0 cores write their logs the same way. `N` is the core's number in `/sys/class/remoteproc`; `cat /sys/class/remoteproc/remoteprocN/name` shows which core it is (`5d00000.r5f` is R5F0_1, `5e00000.r5f` R5F1_0, `5f00000.r5f` R5F1_1, and `b004000.rtu`, `b034000.pru`, `b00a000.txpru` the ICSSG0 cores).
+The ICSSG cores write their logs the same way. `N` is the core's number in `/sys/class/remoteproc`; `cat /sys/class/remoteproc/remoteprocN/name` shows which core it is (`5d00000.r5f` is R5F0_1, `5e00000.r5f` R5F1_0, `5f00000.r5f` R5F1_1, and `b004000.rtu`, `b034000.pru`, `b00a000.txpru` the ICSSG0 slice-0 cores; [The ICSSG rings](#the-icssg-rings) lists the other nine).
 
 ### Commands
 
@@ -266,9 +275,9 @@ Type these in the linux window:
 
 A period is in ICSSG cycles at 250 MHz: 250000 is 1 ms, and the range is 2500 (10 µs) to 250000000 (1 s). The count is at most 100000.
 
-`ai64-demo` without `--tmux` prints all eleven windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[C66x0]`, `[C66x1]`, or `[C7x]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+`ai64-demo` without `--tmux` prints all twelve windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[Rings]`, `[C66x0]`, `[C66x1]`, or `[C7x]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
+`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 ring once` prints one sample of the three rings, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
 
 ## Probe the pins
 
@@ -377,6 +386,26 @@ If a payload byte is `0xC0`, it goes out as `0xDB 0xDC`. If it is `0xDB`, it goe
 Tx_PRU0 has R30 like the other cores, but on this SoC its R30 does not reach any pad. It reaches P9.25 another way: it is a bus master, so it writes the main GPIO0 module's `SET_DATA` and `CLR_DATA` registers for line 104, which the overlay has muxed to P9.25 and made an output. Each half period is timed with Tx_PRU0's own cycle counter, so the time a bus write takes does not stretch the period.
 
 A train always finishes. An `arm` that arrives during a train starts when the train ends. If more than one arrives, only the newest runs, because the arm block is one slot.
+
+### The ICSSG rings
+
+The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU, and a Tx_PRU: twelve cores. ICSSG0 slice 0 runs the demo above. The other three slices each run a ring, from one source, `pru/ring/main.c`, built once per core:
+
+| Ring | PRU | RTU | Tx_PRU | Record (Linux address) |
+| --- | --- | --- | --- | --- |
+| ICSSG0 slice 1 | `b038000.pru`, `ai64-icssg0-pru1.elf` | `b006000.rtu`, `ai64-icssg0-rtu1.elf` | `b00c000.txpru`, `ai64-icssg0-txpru1.elf` | `0x0b010140` |
+| ICSSG1 slice 0 | `b134000.pru`, `ai64-icssg1-pru0.elf` | `b104000.rtu`, `ai64-icssg1-rtu0.elf` | `b10a000.txpru`, `ai64-icssg1-txpru0.elf` | `0x0b110100` |
+| ICSSG1 slice 1 | `b138000.pru`, `ai64-icssg1-pru1.elf` | `b106000.rtu`, `ai64-icssg1-rtu1.elf` | `b10c000.txpru`, `ai64-icssg1-txpru1.elf` | `0x0b110140` |
+
+- A token goes round PRU, RTU, Tx_PRU, and back, through a record in the ICSSG's shared RAM (`struct ai64_ring` in `zephyr/include/ai64_shm.h`). A `stage` field says whose turn it is, and only that core writes the record.
+- The value changes on the way: the PRU sends the lap number, the RTU rotates it and XORs in a constant, the Tx_PRU adds one. The PRU checks what comes back and counts mismatches in `errors`.
+- The PRU times each round trip with its cycle counter, and logs the laps in each 10 s to its trace. The RTU and Tx_PRU log when they first get the token, once per run.
+- The `rings` window (`ai64 ring`) reads the three records through `/dev/mem`. A round trip takes about 90 ICSSG cycles in ICSSG0 and 110–120 in ICSSG1, and a ring does 1.6–2 million laps a second; the rest of each lap is the PRU's own bookkeeping.
+- The PRU leaves its cycle counter running and takes differences. The counter only clears while stopped, and restarting it every lap cost tens of cycles that no lap counted.
+- A ring's PRU starts a run by taking the token and zeroing the counts, which is only safe while its RTU and Tx_PRU wait for the token. So `ai64-demo` stops the PRU first and starts it last. Each start bumps the record's `run`.
+- These cores touch no pin and no peripheral outside their ICSSG. Driving header pins from them would need pins and pin mux the overlay does not set up.
+
+A slice sees its own data RAM at local `0x0000` and the other slice's at `0x2000`, so one linker script per kind of core (`pru/ring/ring_*.cmd`) serves both slices. A ring's three cores share the first 4 KiB of their slice's data RAM: the PRU `0x000`–`0x7ff`, the RTU `0x800`–`0xbff`, the Tx_PRU `0xc00`–`0xfff`. In ICSSG0 the upper 4 KiB of slice 1's data RAM is not free: RTU0 and Tx_PRU0 keep their stack and trace buffer there, because their own 2 KiB in slice 0 is full. Moving those into ICSSG0 shared RAM instead, above `0x10000`, broke RTU0: its strings and the ring record were overwritten soon after the ring cores started.
 
 ### Restarting an R5F core
 

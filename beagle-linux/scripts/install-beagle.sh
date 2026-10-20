@@ -66,6 +66,11 @@ DEMO=$(find_artifact ai64-demo beagle-linux/scripts/ai64-demo)
 RTU0=$(find_artifact ai64-icssg0-rtu0.elf pru/build/ai64-icssg0-rtu0.elf)
 PRU0=$(find_artifact ai64-icssg0-pru0.elf pru/build/ai64-icssg0-pru0.elf)
 TXPRU0=$(find_artifact ai64-icssg0-txpru0.elf pru/build/ai64-icssg0-txpru0.elf)
+# The ring images for ICSSG0 slice 1 and both ICSSG1 slices.
+declare -A RING
+for f in ai64-icssg0-{pru,rtu,txpru}1.elf ai64-icssg1-{pru,rtu,txpru}{0,1}.elf; do
+	RING[$f]=$(find_artifact "$f" "pru/build/$f")
+done
 declare -A R5
 for core in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
 	R5[$core]=$(find_artifact "ai64_$core.elf" "build/zephyr-main_$core/zephyr/ai64_$core.elf")
@@ -103,6 +108,9 @@ install -m 0755 "$DEMO" /usr/bin/ai64-demo
 install -m 0644 "$RTU0" /lib/firmware/ai64-icssg0-rtu0.elf
 install -m 0644 "$PRU0" /lib/firmware/ai64-icssg0-pru0.elf
 install -m 0644 "$TXPRU0" /lib/firmware/ai64-icssg0-txpru0.elf
+for f in "${!RING[@]}"; do
+	install -m 0644 "${RING[$f]}" "/lib/firmware/$f"
+done
 for core in "${!R5[@]}"; do
 	install -m 0644 "${R5[$core]}" "/lib/firmware/ai64_$core.elf"
 done

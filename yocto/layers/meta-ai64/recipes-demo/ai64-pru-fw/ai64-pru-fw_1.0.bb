@@ -1,5 +1,5 @@
-SUMMARY = "BeagleBone AI-64 ICSSG0 PRU0, RTU0, and Tx_PRU0 firmware"
-DESCRIPTION = "Compiles the three ICSSG0 slice-0 images with TI CGT and the PRU software support package. Installs ai64-icssg0-pru0.elf, ai64-icssg0-rtu0.elf, and ai64-icssg0-txpru0.elf."
+SUMMARY = "BeagleBone AI-64 ICSSG firmware: the ICSSG0 slice-0 demo and the three rings"
+DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package: ai64-icssg0-pru0.elf, ai64-icssg0-rtu0.elf, and ai64-icssg0-txpru0.elf for the ICSSG0 slice-0 demo, and the ring images for ICSSG0 slice 1 and both ICSSG1 slices."
 # The demo is MIT. The PRU Software Support Package it links is BSD-3-Clause.
 LICENSE = "MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302 \
@@ -13,6 +13,7 @@ SRC_URI = " \
     file://pru/Makefile;subdir=src \
     file://pru/include;subdir=src \
     file://pru/icssg0;subdir=src \
+    file://pru/ring;subdir=src \
     file://zephyr/include/ai64_shm.h;subdir=src \
     git://git.ti.com/git/pru-software-support-package/pru-software-support-package.git;protocol=https;nobranch=1;destsuffix=pssp;name=pssp \
 "
@@ -26,7 +27,10 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 # clpru records the build directory in debug info. The PRU does not use that path.
 INSANE_SKIP:${PN} += "arch buildpaths"
 
-FW = "ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf"
+FW = "ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf \
+    ai64-icssg0-pru1.elf ai64-icssg0-rtu1.elf ai64-icssg0-txpru1.elf \
+    ai64-icssg1-pru0.elf ai64-icssg1-rtu0.elf ai64-icssg1-txpru0.elf \
+    ai64-icssg1-pru1.elf ai64-icssg1-rtu1.elf ai64-icssg1-txpru1.elf"
 
 do_configure[noexec] = "1"
 
@@ -47,4 +51,4 @@ do_install () {
     done
 }
 
-FILES:${PN} = "${nonarch_base_libdir}/firmware/ai64-icssg0-*.elf"
+FILES:${PN} = "${nonarch_base_libdir}/firmware/ai64-icssg*.elf"

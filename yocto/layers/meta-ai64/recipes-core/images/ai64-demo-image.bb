@@ -61,6 +61,9 @@ ai64_root_demo() {
     install -m 0755 -o 0 -g 0 ${IMAGE_ROOTFS}${bindir}/ai64 ${home}/ai64
     install -m 0755 -o 0 -g 0 ${IMAGE_ROOTFS}${bindir}/ai64-demo ${home}/ai64-demo
     for f in ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf \
+        ai64-icssg0-pru1.elf ai64-icssg0-rtu1.elf ai64-icssg0-txpru1.elf \
+        ai64-icssg1-pru0.elf ai64-icssg1-rtu0.elf ai64-icssg1-txpru0.elf \
+        ai64-icssg1-pru1.elf ai64-icssg1-rtu1.elf ai64-icssg1-txpru1.elf \
         ai64_r5f0_0.elf ai64_r5f0_1.elf ai64_r5f1_0.elf ai64_r5f1_1.elf \
         ai64-c66x.elf ai64-c7x.elf; do
         install -m 0644 -o 0 -g 0 ${fw}/$f ${home}/$f
@@ -71,7 +74,8 @@ ai64 is the Linux program it runs.
 ai64_r5f0_0.elf, ai64_r5f0_1.elf, ai64_r5f1_0.elf, and ai64_r5f1_1.elf are
 the Zephyr firmwares for the four main-domain R5F cores.
 ai64-icssg0-rtu0.elf, ai64-icssg0-pru0.elf, and ai64-icssg0-txpru0.elf are
-the ICSSG0 slice-0 firmwares.
+the ICSSG0 slice-0 firmwares. The other nine ai64-icssg*.elf files run the
+rings on ICSSG0 slice 1 and both ICSSG1 slices.
 ai64-c66x.elf and ai64-c7x.elf are the C66x and C7x images.
 
 From this directory:
