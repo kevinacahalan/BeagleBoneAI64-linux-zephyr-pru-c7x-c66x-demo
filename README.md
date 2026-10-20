@@ -334,7 +334,7 @@ The buffer sits inside the memory Linux already reserves for R5F0_0 (`0xA2000000
 
 The mailbox holds one command and has no acknowledgement. If Zephyr publishes two commands faster than RTU0 polls, RTU0 only sees the second. In practice RTU0 polls far faster than commands arrive. A real design that cares should add a ring buffer or a consumed counter. The layout is in `zephyr/include/ai64_shm.h`, which every core includes.
 
-On this Zephyr version the R5F's boot code maps all of DDR as inner non-cacheable, so its L1 data cache never holds the mailbox and Zephyr's writes reach DDR at once. The code still flushes the mailbox, so it stays correct if caching is turned on later.
+The R5F's caches are on ([R5F caches](#r5f-caches)), but `ai64_mpu.c` maps the 128 KiB holding the mailbox and the bulk buffer non-cacheable, so Zephyr's writes reach DDR at once and its reads see what Linux and RTU0 wrote. The code still flushes the mailbox after writing it, which costs nothing and keeps it correct if that region is ever made cacheable.
 
 ### Linux to RTU0: RPMsg text
 
@@ -418,24 +418,29 @@ Each DSP polls a 64 KiB job block in its own L2 SRAM (`dsp/include/ai64_dsp_job.
 ```
 $ sudo ai64 dsp 4d80800000.dsp
 4d80800000.dsp: 20 FIR jobs, 4096 samples x 32 taps, all match the A72
-  DSP filter 124022 cycles = 91.9 us; A72 waited 92.8 us; empty job 0.9 us
+  DSP filter 28222 cycles = 20.9 us; A72 waited 21.8 us; empty job 0.9 us
   the same filter on one A72 core: 188.1 us
 ```
 
 ```
 $ sudo ai64 dsp 64800000.dsp
 64800000.dsp: 20 FIR jobs, 4096 samples x 32 taps, all match the A72
-  DSP filter 18867 cycles = 18.9 us; A72 waited 19.5 us; empty job 1.3 us
+  DSP filter 9177 cycles = 9.2 us; A72 waited 9.7 us; empty job 1.3 us
   the same filter on one A72 core: 199.0 us
 ```
 
 | Core | 4096 samples × 32 taps | 8192 × 64 |
 | --- | --- | --- |
 | One A72 core, plain C at `-O2` | about 190 µs | about 790 µs |
-| C66x, plain C at `-O3` | 92 µs | 336 µs |
-| C7x, C7x vector types | 19 µs | 60 µs |
+| C66x, plain C at `-O3` (before) | 92 µs | 336 µs |
+| C66x, `DDOTP4H` intrinsics | 21 µs | 72 µs |
+| C7x, one tap per step (before) | 19 µs | 60 µs |
+| C7x, `VDOTP2HW` on 128 outputs | 9.2 µs | 26 µs |
 
-The C66x runs the plain C loop, with trip-count pragmas. On the C7x that loop took 225 µs, slower than the A72: the compiler vectorizes across the taps, so a 32-tap filter is two vectors per output, and loop overhead costs more than the multiplies. The C7x path in `ai64_dsp_job.h` works on 32 outputs at a time instead. Two vectors of 16 32-bit sums stay in registers, and each tap is one 32-sample load and two multiply-adds. The C7x also reads its L2 SRAM at about half the speed it reads cached DDR, so it copies the input and taps into its own DDR first. The same job takes 51 µs without that copy.
+Both DSPs run their own path in `ai64_dsp_job.h`, with the plain C loop left for the last few outputs. Each keeps the taps outside and the outputs inside, so one tap load serves many outputs:
+
+- **C66x.** One pass over the outputs per 8 taps, 8 outputs at a time, adding into a table of 32-bit sums. Four aligned 64-bit loads hold 16 samples; shifting them by one to three samples gives each output its 4 samples, and each `DDOTP4H` is two 4-tap dot products. The outputs go in chunks of 2048, so that a chunk's sums and samples stay in the 32 KiB L1D across the passes; without that, 8192 × 64 took 101 µs. With the taps inside instead, each group of 8 outputs paid for starting and ending the tap loop, and 4096 × 32 took 35 µs.
+- **C7x.** 128 outputs at a time, two taps per step, with the sums in registers. `VDOTP2HW` multiplies each pair of samples by a pair of taps and adds the two products into one 32-bit lane. A 32-sample load from `x[n + k]` gives the even outputs their pairs for taps `k` and `k + 1`, and the load one sample on gives the odd outputs theirs. With 32 outputs a block, 4096 × 32 took 17.8 µs; 128 spreads the cost of the tap loop. The plain C loop took 225 µs: the compiler vectorizes across the taps, so a 32-tap filter is two vectors per output, and loop overhead costs more than the multiplies. The C7x reads its L2 SRAM much slower than cached DDR, so it copies the input into its own DDR first; without that copy the same job takes 38 µs.
 
 `ai64 dsp` refuses a DSP that is not running. Reading a powered-off DSP's L2 SRAM hangs the SoC.
 
@@ -454,7 +459,7 @@ The C66x runs the plain C loop, with trip-count pragmas. On the C7x that loop to
 
 Anything else faults. The register values and their order follow the secure startup in TI's PDK (`ti/csl/arch/c7x/src/Mmu.c`), which flushes no cache and no TLB before the MMU goes on. One difference: the table base goes in `TBR0` as well as `TBR0_S`. With only `TBR0_S`, the core stops the moment the MMU is on, even though the core starts in secure supervisor mode.
 
-The trace buffer and the resource table moved from the code region into the non-cacheable block, because Linux reads them while the core runs. The MMU alone took the old loop only from 225 to 194 µs. Almost all of the gain came from the vector loop.
+The trace buffer and the resource table moved from the code region into the non-cacheable block, because Linux reads them while the core runs. The MMU alone took the plain C loop only from 225 to 194 µs. Almost all of the gain came from the vector code.
 
 ### Restarting the C7x
 
