@@ -98,7 +98,7 @@ AI64_SSH=USER@BOARD ./beagle-linux/scripts/build.sh kmod
 ./beagle-linux/scripts/build.sh bundle
 ```
 
-- **The first command** builds `ai64`, the overlay, the three ICSSG0 images, the four Zephyr R5F images, and the two DSP images.
+- **The first command** builds `ai64`, the overlay, the twelve ICSSG images, the four Zephyr R5F images, and the two DSP images.
 - **`kmod`** builds the two patched kernel modules for the kernel running on your board. It asks the board for its kernel version over SSH, and the first time it copies that kernel's headers with `rsync`. The board must be up and reachable. [Why two patched modules](#why-debian-needs-two-patched-modules) explains why they're needed.
 - **`bundle`** gathers everything into `out/ai64-beagle/`.
 
