@@ -59,9 +59,14 @@ local_conf_header:
     DISTRO = "poky"
     MACHINE = "beaglebone-ai64"
     # meta-beagle defaults this machine to the BeagleBoard.org 6.12 kernel
-    # (TI_PREFERRED_BSP = "bb_org-6_12"), which is TI based: it has the PRU
-    # virtio kick and the R5F shutdown handshake, so the image needs neither
-    # of the patched modules the 6.18 Debian image does.
+    # (bb_org-6_12). Use TI's own 6.18 staging kernel and U-Boot 2026.01
+    # instead. It has the PRU virtio kick and the shutdown handshake, so the
+    # image needs neither of the patched modules the 6.18 Debian image does.
+    TI_PREFERRED_BSP = "ti-6_18"
+    # git.ti.com does not always answer. TI mirrors both trees on GitHub,
+    # and the pinned SRCREVs are there too.
+    KERNEL_GIT_URI = "git://github.com/TexasInstruments/ti-linux-kernel.git"
+    UBOOT_GIT_URI = "git://github.com/TexasInstruments/ti-u-boot.git"
     # Beagle images boot with systemd. This selects usrmerge as well.
     INIT_MANAGER = "systemd"
     # The TI template commits buildhistory. Skip that so the build does

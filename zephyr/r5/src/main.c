@@ -82,9 +82,9 @@ static K_SEM_DEFINE(mb_sem, 0, 1);
 #define MBOX_MSGSTATUS(m) (MBOX_BASE + 0xc0u + 4u * (m))
 
 /*
- * TI's 6.12 kernel (the Yocto image) stops an R5F by sending RP_MBOX_SHUTDOWN
- * and waiting for the ACK and for the core to sit in WFI. The 6.18 Debian
- * kernel sends nothing and just halts the core.
+ * TI's 6.18 kernel (the Yocto image) stops an R5F by sending RP_MBOX_SHUTDOWN
+ * and waiting for the ACK and for the core to sit in WFI. The BeagleBoard
+ * 6.18 Debian kernel sends nothing and just halts the core.
  */
 #define RP_MBOX_SHUTDOWN     0xFFFFFF14u
 #define RP_MBOX_SHUTDOWN_ACK 0xFFFFFF15u

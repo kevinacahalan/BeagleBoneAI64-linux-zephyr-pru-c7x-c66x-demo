@@ -2,12 +2,13 @@
 /*
  * Answer Linux's remoteproc shutdown request on a DSP.
  *
- * TI's kernel (the Yocto image's 6.12) stops a DSP by sending
+ * TI's kernel (the Yocto image's TI 6.18) stops a DSP by sending
  * RP_MBOX_SHUTDOWN through the core's mailbox, waiting for
  * RP_MBOX_SHUTDOWN_ACK, and then for the core to report that it is idle,
- * before it powers the core off. The 6.18 Debian kernel sends nothing, so
- * ai64-demo puts the same message in the FIFO itself before it stops the C7x,
- * whose power-off the device manager refuses while the core runs.
+ * before it powers the core off. The BeagleBoard 6.18 Debian kernel sends
+ * nothing, so ai64-demo puts the same message in the FIFO itself before it
+ * stops the C7x, whose power-off the device manager refuses while the core
+ * runs.
  *
  * The image polls its receive FIFO. Other messages, such as the echo
  * request Linux sends when it probes the core, are dropped.

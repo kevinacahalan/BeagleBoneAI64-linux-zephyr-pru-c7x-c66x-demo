@@ -144,9 +144,10 @@ rproc_by_name() {
 # The stock BeagleBoard 6.18 (arm64-k3) R5F driver powers a stopped core
 # off, and on J721E that leaves the core stuck until a power cycle.
 # install-beagle.sh puts a patched module in /lib/modules/<kernel>/updates.
-# It is out of tree, so the kernel marks it with taint flag O. TI-based
-# kernels (the Yocto image's 6.12) stop the core with a shutdown handshake
-# the Zephyr app answers, so their stock driver is fine.
+# It is out of tree, so the kernel marks it with taint flag O. TI's
+# kernels (the Yocto image's TI 6.18) stop the core with a shutdown
+# handshake the Zephyr app answers, and the Yocto image patches the
+# power-off out of the driver itself.
 r5_restartable() {
 	grep -q O /sys/module/ti_k3_r5_remoteproc/taint 2>/dev/null && return 0
 	[[ $(uname -r) != *-k3-* ]]
@@ -222,10 +223,11 @@ load_fw() {
 	write_sysfs start "$rproc/state"
 }
 
-# The 6.18 DSP driver stops a C71x core by powering its module off, and the
+# The DSP driver stops a C71x core by powering its module off, and the
 # device manager only allows that once the core is idle. TI's kernel first
 # sends RP_MBOX_SHUTDOWN, which the hello images answer by going idle; the
-# 6.18 kernel does not, so ai64 shutdown sends it there. TI's kernel must not
+# BeagleBoard 6.18 (arm64-k3) kernel does not, so ai64 shutdown sends it
+# there. TI's kernel must not
 # get a core that is already idle: its own request would go unanswered and
 # the stop would time out. A C7x that does not take the request (an older
 # image) cannot be stopped, and keeps running until a reboot.
