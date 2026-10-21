@@ -46,7 +46,7 @@ It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto
 - A Linux PC with `git`, `ssh`, `rsync`, `xz`, and either `podman` or `docker`. Every compiler runs in a container, so you don't install any toolchains.
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
 - Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
-- Optional: a logic analyzer, to watch SPI7, the PRU0 UART, and the Tx_PRU0 pulses on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
+- Optional: a logic analyzer, to watch SPI7, the PRU0 UART, the Tx_PRU0 pulses, and the ring square waves on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
 
 Get the code:
 
@@ -291,7 +291,7 @@ All signals are 3.3 V. On a Saleae Logic, choose the 1.8 V threshold setting for
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
 | Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every 65536 laps: about 15 Hz, 12.4 Hz, and 12.4 Hz |
 
-For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, and SPI7 measured a 1.000 µs clock. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
+For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, SPI7 measured a 1.000 µs clock, and the ring pins measured 15.10 Hz, 12.46 Hz, and 12.47 Hz, which is the lap rate `ai64 ring` reports divided by 131072. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
 ## How it works
 
