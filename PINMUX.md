@@ -29,6 +29,9 @@ J721E_IOPAD(0x0f4, PIN_OUTPUT, 0) /* (AB24) P8.11 PRG0_PRU0_GPO17 */
 | P9.31 | AB26 | `0x0d4` | 7, held off | — | shorted to U3 | |
 | P8.34 | AD22 | `0x01c` | 14, `UART2_TXD` | Zephyr | Zephyr console, 115200 8N1 | |
 | P8.22 | AH23 | `0x014` | 14, `UART2_RXD` | Zephyr | Zephyr console | |
+| P8.44 | AC25 | `0x10c` | 0, `PRG0_PRU1_GPO3` | ICSSG0 PRU1 | ring square wave | |
+| P8.18 | AJ23 | `0x010` | 0, `PRG1_PRU0_GPO3` | ICSSG1 PRU0 | ring square wave | |
+| P8.21 | AF21 | `0x07c` | 0, `PRG1_PRU1_GPO9` | ICSSG1 PRU1 | ring square wave | |
 
 All signals are 3.3 V.
 
@@ -55,6 +58,12 @@ Linux sets the direction once. Tx_PRU0 then writes only `SET_DATA` (`0x00600090`
 
 The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`, which muxes the same W26 ball as `EHRPWM4_B`. `install-beagle.sh` removes that overlay from the default label and adds this demo's; the original `extlinux.conf` is saved as `extlinux.conf.ai64-bak`.
 
+## The rings: P8.44, P8.18, P8.21
+
+Each ring's PRU toggles one R30 bit every 65536 laps, so its pin is a square wave at the lap rate divided by 131072: about 15 Hz for ICSSG0 slice 1 (1.98 M laps/s) and 12.4 Hz for each ICSSG1 slice (1.63 M laps/s). The pads are muxed the same way as P8.11, mode 0 to the PRU's own GPO, with the pinctrl on the `&pru0_1`, `&pru1_0`, and `&pru1_1` nodes. Each of these header pins has only one ball, so there is no second ball to hold off. Neither ICSSG sets its GPCFG registers: both read `0`, direct GPO mode, the same as ICSSG0 slice 0, where P8.11 works.
+
+On the lab bench these three pins have no Saleae channel yet, so their output has only been checked through the pad registers (`ai64 pads`), not on a logic analyzer.
+
 ## Zephyr: SPI7 and UART2
 
 The Zephyr image muxes its own pins from its devicetree, the way the PocketBeagle 2 demo's M4 does. The R5F can write the pad registers because Linux has already unlocked them. Linux does not touch these pads: `main_spi7` and `main_uart2` stay disabled in the Linux device tree, and the board firmware leaves both modules powered (`k3conf dump device` shows `MCSPI7` and `UART2` as `DEVICE_STATE_ON`).
@@ -74,6 +83,7 @@ With the demo running, the pad registers at `0x0011c000 + pad` read:
 | `0x230`, `0x234`, `0x238` | `0x10006` | output, mode 6 |
 | `0x01c` | `0x1000e` | output, mode 14 |
 | `0x014` | `0x5000e` | input, mode 14 |
+| `0x10c`, `0x010`, `0x07c` | `0x10000` | output, mode 0 |
 
 `sudo ai64 pads` reads them and marks any that differ. The Zephyr pads only take these values once R5F0_0 has booted.
 

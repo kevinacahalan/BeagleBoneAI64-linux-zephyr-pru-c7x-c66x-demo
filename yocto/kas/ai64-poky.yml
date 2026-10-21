@@ -63,10 +63,13 @@ local_conf_header:
     # instead. It has the PRU virtio kick and the shutdown handshake, so the
     # image needs neither of the patched modules the 6.18 Debian image does.
     TI_PREFERRED_BSP = "ti-6_18"
-    # git.ti.com does not always answer. TI mirrors both trees on GitHub,
-    # and the pinned SRCREVs are there too.
+    # git.ti.com does not always answer. TI mirrors these trees on GitHub,
+    # and the pinned SRCREVs are there too. The PRU Software Support Package
+    # has no mirror, so ai64-pru-fw still fetches it from git.ti.com.
     KERNEL_GIT_URI = "git://github.com/TexasInstruments/ti-linux-kernel.git"
     UBOOT_GIT_URI = "git://github.com/TexasInstruments/ti-u-boot.git"
+    TI_LINUX_FW_GIT_URI = "git://github.com/TexasInstruments/ti-linux-firmware.git"
+    GIT_URI:pn-ti-k3-secdev-native = "git://github.com/TexasInstruments/core-secdev-k3.git"
     # Beagle images boot with systemd. This selects usrmerge as well.
     INIT_MANAGER = "systemd"
     # The TI template commits buildhistory. Skip that so the build does

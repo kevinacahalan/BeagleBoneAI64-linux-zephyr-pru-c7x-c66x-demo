@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MIT
-// BeagleBone AI-64 demo: the ICSSG0 slice-0 pins and the RTU0 vring IRQ.
+// BeagleBone AI-64 demo: the ICSSG pins and the RTU0 vring IRQ.
 //
 //   PRU0     P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, the SLIP UART
 //   Tx_PRU0  P9.25  W26   pad 0x1a4  mode 7  GPIO0_104, the pulse train
 //            P9.25  AC4   pad 0x200  held off, shorted to W26
+//   The three ring PRUs, one square wave each (a toggle every 65536 laps):
+//   ICSSG0 PRU1  P8.44  AC25  pad 0x10c  mode 0  PRG0_PRU1_GPO3
+//   ICSSG1 PRU0  P8.18  AJ23  pad 0x010  mode 0  PRG1_PRU0_GPO3
+//   ICSSG1 PRU1  P8.21  AF21  pad 0x07c  mode 0  PRG1_PRU1_GPO9
+//   Each of these three header pins has one ball, so nothing is held off.
 //
 // Zephyr muxes its own pins (UART2 on P8.34/P8.22, SPI7 on P9.28/P9.30/
 // P9.31) from its devicetree. They are not in this overlay. PINMUX.md lists
@@ -38,12 +43,46 @@
 			J721E_IOPAD(0x200, PIN_DISABLE, 7) /* (AC4) P9.25a UART1_CTSn.GPIO0_127, held off */
 		>;
 	};
+
+	ai64_ring0_1_pins: ai64-ring0-1-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x10c, PIN_OUTPUT, 0) /* (AC25) P8.44 PRG0_PRU1_GPO3 */
+		>;
+	};
+
+	ai64_ring1_0_pins: ai64-ring1-0-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x010, PIN_OUTPUT, 0) /* (AJ23) P8.18 PRG1_PRU0_GPO3 */
+		>;
+	};
+
+	ai64_ring1_1_pins: ai64-ring1-1-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x07c, PIN_OUTPUT, 0) /* (AF21) P8.21 PRG1_PRU1_GPO9 */
+		>;
+	};
 };
 
 /* The pad belongs to PRU0. pru_rproc applies it when the core probes. */
 &pru0_0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&ai64_pru0_pins>;
+};
+
+/* Each ring's PRU drives its pad, the same way. */
+&pru0_1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_ring0_1_pins>;
+};
+
+&pru1_0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_ring1_0_pins>;
+};
+
+&pru1_1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_ring1_1_pins>;
 };
 
 /*

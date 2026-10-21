@@ -382,14 +382,20 @@ if [[ -z $BIN ]]; then
 	exit 1
 fi
 
+# Viewers left from an earlier run: processes whose program is ai64 and
+# whose first argument is a viewer command. Only the program and its first
+# argument count, so a shell whose own command line mentions "ai64 ring"
+# (ssh board 'ai64-demo; ai64 ring once') is left alone.
 viewer_pids() {
-	local pid cmd
+	local pid argv
 	for pid in /proc/[0-9]*; do
 		pid=${pid#/proc/}
 		[[ -r /proc/$pid/cmdline ]] || continue
-		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
-		case $cmd in
-		*ai64\ peer*|*ai64\ erpc*|*ai64\ watch*|*ai64\ trace*|*ai64\ ring*|*ai64\ linux*)
+		argv=()
+		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
+		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
+		case ${argv[1]} in
+		peer|erpc|watch|trace|ring|linux)
 			echo "$pid"
 			;;
 		esac

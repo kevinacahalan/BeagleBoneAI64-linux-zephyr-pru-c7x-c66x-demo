@@ -113,13 +113,22 @@ fetch_pssp() {
 	if [[ -f $PSSP/include/j721e/pru_intc.h ]] && at_rev "$PSSP" "$PSSP_REV"; then
 		return
 	fi
-	rm -rf "$PSSP"
-	if ! git clone --depth 1 https://git.ti.com/git/pru-software-support-package/pru-software-support-package.git "$PSSP"; then
-		echo "Could not clone the PRU Software Support Package from git.ti.com." >&2
-		echo "That server is sometimes slow to answer; try again later, or clone it" >&2
-		echo "yourself at commit $PSSP_REV into $PSSP and run this again." >&2
-		exit 1
-	fi
+	# git.ti.com often fails a first request and answers the next one.
+	local try
+	for try in 1 2 3; do
+		rm -rf "$PSSP"
+		if timeout 300 git clone --depth 1 https://git.ti.com/git/pru-software-support-package/pru-software-support-package.git "$PSSP"; then
+			break
+		fi
+		if [[ $try -eq 3 ]]; then
+			echo "Could not clone the PRU Software Support Package from git.ti.com, three tries." >&2
+			echo "That server is sometimes slow to answer; try again later, or clone it" >&2
+			echo "yourself at commit $PSSP_REV into $PSSP and run this again." >&2
+			exit 1
+		fi
+		echo "git.ti.com did not answer (try $try of 3), trying again" >&2
+		sleep 5
+	done
 	git -C "$PSSP" fetch --depth 1 origin "$PSSP_REV"
 	git -C "$PSSP" checkout "$PSSP_REV"
 }

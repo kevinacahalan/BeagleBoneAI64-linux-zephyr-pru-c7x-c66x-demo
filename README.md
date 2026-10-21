@@ -45,7 +45,7 @@ It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto
 - A network link to it: Ethernet to your LAN, or the USB-C port, which brings up a USB network adapter on the PC.
 - A Linux PC with `git`, `ssh`, `rsync`, `xz`, and either `podman` or `docker`. Every compiler runs in a container, so you don't install any toolchains.
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
-- Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub.
+- Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
 - Optional: a logic analyzer, to watch SPI7, the PRU0 UART, and the Tx_PRU0 pulses on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
 
 Get the code:
@@ -289,6 +289,7 @@ All signals are 3.3 V. On a Saleae Logic, choose the 1.8 V threshold setting for
 | PRU0 UART | P8.11 | one SLIP frame per X/Y, 115200 8N1, idles high |
 | Tx_PRU0 pulses | P9.25 | `count` pulses per arm, high for the first half of each period |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
+| Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every 65536 laps: about 15 Hz, 12.4 Hz, and 12.4 Hz |
 
 For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, and SPI7 measured a 1.000 µs clock. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
@@ -403,7 +404,7 @@ The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU
 - The `rings` window (`ai64 ring`) reads the three records through `/dev/mem`. A round trip takes about 90 ICSSG cycles in ICSSG0 and 110–120 in ICSSG1, and a ring does 1.6–2 million laps a second; the rest of each lap is the PRU's own bookkeeping.
 - The PRU leaves its cycle counter running and takes differences. The counter only clears while stopped, and restarting it every lap cost tens of cycles that no lap counted.
 - A ring's PRU starts a run by taking the token and zeroing the counts, which is only safe while its RTU and Tx_PRU wait for the token. So `ai64-demo` stops the PRU first and starts it last. Each start bumps the record's `run`.
-- These cores touch no pin and no peripheral outside their ICSSG. Driving header pins from them would need pins and pin mux the overlay does not set up.
+- Each ring's PRU toggles one header pin every 65536 laps, the same window it publishes `lap_min` and `lap_max` for, so the lap loop itself does no extra work. The pin's frequency times 131072 is the lap rate. [`PINMUX.md`](PINMUX.md) has the pins. The RTUs and Tx_PRUs touch no pin, and no ring core touches a peripheral outside its ICSSG.
 
 A slice sees its own data RAM at local `0x0000` and the other slice's at `0x2000`, so one linker script per kind of core (`pru/ring/ring_*.cmd`) serves both slices. A ring's three cores share the first 4 KiB of their slice's data RAM: the PRU `0x000`–`0x7ff`, the RTU `0x800`–`0xbff`, the Tx_PRU `0xc00`–`0xfff`. In ICSSG0 the upper 4 KiB of slice 1's data RAM is not free: RTU0 and Tx_PRU0 keep their stack and trace buffer there, because their own 2 KiB in slice 0 is full. Moving those into ICSSG0 shared RAM instead, above `0x10000`, broke RTU0: its strings and the ring record were overwritten soon after the ring cores started.
 
@@ -512,7 +513,7 @@ Where they differ for this demo:
 | RPMsg to an ICSSG core | No `.kick` and no vring interrupt in `pru_rproc`, so RTU0's RPMsg firmware does not start. The patched module adds them back. | Has both. Stock `pru_rproc`. |
 | Shutdown request before a stop (`RP_MBOX_SHUTDOWN`) | Sends none. `ai64 shutdown` sends it to each DSP before `ai64-demo` stops it. | Sends it to every R5F and DSP, then waits for the ACK and for the core to report WFI. |
 | Stopping an R5F | Powers the core off, which the device manager refuses. The core is stuck until a power cycle. The patched module keeps it powered. | The same power-off. Patch `0001` in `meta-ai64` keeps it powered. |
-| Stopping a C66x | Asserts the local reset. Works as shipped. | Times out waiting for WFI, which a C66x never reports. Patch `0002` resets it once it has acknowledged. |
+| Stopping a C66x | Asserts the local reset. Works as shipped. | Times out waiting for WFI, which a C66x never reports: without patch `0002`, `can't stop rproc: -110` and the core keeps running. The patch resets it once it has acknowledged. |
 | Stopping the C7x | Works only after `ai64 shutdown`. | Works as shipped, through the shutdown request. |
 | How the fixes get in | Two out-of-tree modules, built against the board's headers and installed in `/lib/modules/<kernel>/updates/`. The kernel marks them with taint flag `O`. Rebuild after every kernel upgrade. | Two patches applied to the kernel source in the Yocto build. |
 | Device tree | BeagleBoard-DeviceTrees `v6.18.x`. It adds a pinmux file for BeagleBoard's overlays. | The kernel's own. The remote-core, ICSSG, and carveout nodes are the same as BeagleBoard's. |
@@ -550,14 +551,14 @@ KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 - The kernel is TI's 6.18 (`linux-ti-staging`, 6.18.51), with TI's U-Boot 2026.01: `ai64-poky.yml` sets `TI_PREFERRED_BSP = "ti-6_18"` in place of meta-beagle's default, BeagleBoard's 6.12. It is a different kernel from the Debian image's 6.18; [Two 6.18 kernels](#two-618-kernels) has the differences. It has the PRU kick, so `pru_rproc` needs no patch, and it sends `RP_MBOX_SHUTDOWN` before it stops a core, which the Zephyr and DSP images answer. Both trees come from TI's GitHub mirrors, `TexasInstruments/ti-linux-kernel` and `TexasInstruments/ti-u-boot`, because git.ti.com does not always answer.
 - Two kernel patches in `yocto/layers/meta-ai64/recipes-kernel/linux/` still let the cores restart. One keeps a stopped R5F core powered, the same change as the Debian module; without it the second `ai64-demo` fails with `module-reset deassert failed, ret = -19`. The other lets a C66x be reset once it has acknowledged the shutdown, because a C66x never reports WFI and the stop otherwise fails with `-ETIMEDOUT`.
 - The image leaves out TI's Ethernet firmware (`ti-eth-fw-j721e`), which meta-ti installs by default as R5F0_0's boot firmware. It runs the main-domain CPSW9G switch for TI's J721E EVM. The BeagleBone AI-64's Ethernet port is on the MCU-domain CPSW2G, which Linux drives itself, and the Debian image doesn't ship it either. Left in, the kernel boots it on R5F0_0 at startup, and it does not answer the shutdown request, so `ai64-demo` could not stop the core.
-- The image builds `ai64`, the four R5F images, the three ICSSG0 images, the two DSP images, and the overlay itself. You don't need `build.sh` for it.
+- The image builds `ai64`, the four R5F images, the twelve ICSSG images, the two DSP images, and the overlay itself. You don't need `build.sh` for it.
 - Set `KAS_CONTAINER_ENGINE` to `podman` or `docker` if you need to choose one.
 
 Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port), and `/root` holds `ai64`, `ai64-demo`, and the firmware. Then `./ai64-demo --tmux`.
 
 On the bench, the image with TI's 6.18 ran `ai64-demo` eleven times in a row, stopping and starting all 19 demo cores each time, with every core up and no kernel errors, and gave the same ring and DSP timings as the Debian image.
 
-A few meta-ti recipes still fetch from git.ti.com: `ti-linux-firmware` (the boot firmware), `core-secdev-k3` (image signing), `img-vxe-vxd` (the video codec driver), and the PRU Software Support Package. If that host does not answer, copy those clones from another Yocto tree's `downloads/git2/` into `yocto/downloads/git2/`, `.done` files included, and the fetcher uses them as they are.
+`ai64-poky.yml` points the kernel, U-Boot, `ti-linux-firmware` (the boot firmware), and `core-secdev-k3` (image signing) at TI's GitHub mirrors, which carry the commits meta-ti pins. The one fetch left on git.ti.com is the PRU Software Support Package, which TI does not mirror. That server sometimes fails a first request and answers the next; if the fetch fails, run the build again, or copy its clone from another Yocto tree's `downloads/git2/` into `yocto/downloads/git2/`, `.done` file included.
 
 ## Build details
 
@@ -566,7 +567,7 @@ A few meta-ti recipes still fetch from git.ti.com: `ti-linux-firmware` (the boot
 | Target | Output | Notes |
 | --- | --- | --- |
 | `linux` | `linux-app/ai64`, `beagle-linux/overlays/*.dtbo` | Debian 13 aarch64 cross compiler. Fetches EmbeddedRPC 1.14.0 and BeagleBoard-DeviceTrees. |
-| `pru` | `pru/build/ai64-icssg0-{pru0,rtu0,txpru0}.elf` | TI PRU compiler 2.3.3 and the PRU Software Support Package. |
+| `pru` | `pru/build/ai64-icssg*.elf`, twelve images | TI PRU compiler 2.3.3 and the PRU Software Support Package, cloned from git.ti.com. |
 | `zephyr` | `build/zephyr-main_r5fX_Y/zephyr/ai64_r5fX_Y.elf`, one per core | Zephyr SDK 1.0.1. Zephyr is pinned in `zephyr/west.yml` and checked out at `zephyr/upstream`. |
 | `dsp` | `dsp/build/ai64-c66x.elf`, `dsp/build/ai64-c7x.elf` | TI C6000 CGT 8.3.12 and C7000 CGT 1.2.0.STS. |
 | `kmod` | `beagle-linux/kernel/pru_rproc/pru_rproc.ko`, `beagle-linux/kernel/k3_r5_rproc/ti_k3_r5_remoteproc.ko` | Needs `AI64_SSH`. Reads the kernel version from the board, or from `AI64_KREL`. |
@@ -601,7 +602,7 @@ A few meta-ti recipes still fetch from git.ti.com: `ti-linux-firmware` (the boot
 - **Don't run `west init -l .` from the repo root.** That puts the workspace in the parent directory. The script runs `west init -l zephyr` instead.
 - **`dmesg` shows `Direct firmware load for j7-main-r5f0_0-fw failed with error -2` at boot.** That is expected. The kernel tries to boot each R5F core under its default name, finds nothing, and leaves it off. `ai64-demo` starts them with `ai64_r5f0_0.elf` and so on. The same goes for the C66x and C7x cores.
 - **`kmod` fails to copy `/usr/src/linux-headers-...`.** The BeagleBoard image ships the headers for its kernel. If yours doesn't have them, run `sudo apt install linux-headers-$(uname -r)` on the board.
-- **`git.ti.com` times out while fetching the PRU Software Support Package.** That server is sometimes slow to answer. Run the build again later, or clone the package yourself at the commit pinned in `build.sh` into `third_party/pru-software-support-package`.
+- **`git.ti.com` times out while fetching the PRU Software Support Package.** That server sometimes fails a request and answers the next; `build.sh` tries three times. If all three fail, run the build again later, or clone the package yourself at the commit pinned in `build.sh` into `third_party/pru-software-support-package`.
 - **RTU0 never appears, and `dmesg` says `.kick method not defined`.** The stock `pru_rproc` is loaded. This is usually after a kernel upgrade. Rebuild with `build.sh kmod`, run `bundle`, and install again.
 
 ## Repository

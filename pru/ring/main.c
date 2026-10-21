@@ -9,8 +9,10 @@
  * their ICSSG's shared RAM (struct ai64_ring in ai64_shm.h): PRU, RTU,
  * Tx_PRU, and back to the PRU. Each one changes the value on the way, and
  * the PRU checks what comes back. The PRU times each round trip with its
- * cycle counter and logs the lap rate to its trace every 10 s or so. No core here
- * touches a pin or a peripheral outside its ICSSG.
+ * cycle counter and logs the lap rate to its trace every 10 s or so. The PRU
+ * also toggles one header pin every AI64_RING_WINDOW laps, so the pin's
+ * frequency times 2 * 65536 is the lap rate. No core touches a peripheral
+ * outside its ICSSG.
  *
  * Start the PRU last. It starts a run by taking the token, which is only
  * safe while the other two are waiting for it.
@@ -49,6 +51,18 @@ static void trace_name(void)
 }
 
 #ifdef AI64_ROLE_PRU
+/*
+ * The R30 bit whose pad the overlay muxes to this PRU (mode 0, PRGn_PRUm_GPOk):
+ * ICSSG0 PRU1 GPO3 on P8.44, ICSSG1 PRU0 GPO3 on P8.18, ICSSG1 PRU1 GPO9 on
+ * P8.21.
+ */
+#if AI64_ICSSG == 1 && AI64_SLICE == 1
+#define RING_PIN (1u << 9)
+#else
+#define RING_PIN (1u << 3)
+#endif
+volatile register uint32_t __R30;
+
 /* PRU0 and PRU1 control registers, local address: CTRL, then CYCLE at +0xc. */
 #define PRU_CTRL_BASE (AI64_SLICE ? 0x00024000u : 0x00022000u)
 #define PRU_CTRL      (*(volatile uint32_t *)PRU_CTRL_BASE)
@@ -74,6 +88,7 @@ void main(void)
 	uint32_t elapsed = 0, logged = 0, start;
 
 	trace_init();
+	__R30 &= ~RING_PIN;
 	/*
 	 * Take the token, then start the run. The other two only write while
 	 * the token is theirs, so nothing else writes the record from here.
@@ -131,6 +146,7 @@ void main(void)
 			lap_min = 0xffffffffu;
 			lap_max = 0;
 			window = 0;
+			__R30 ^= RING_PIN;
 		}
 		/* 10 s, short by a restart's few cycles every 8 s or so. */
 		if (elapsed >= 10u * AI64_PRU_HZ) {

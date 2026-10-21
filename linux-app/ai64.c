@@ -399,6 +399,9 @@ static const struct {
 	{ 0x0d4, 0x200007, "P9.31 AB26 held off" },
 	{ 0x01c, 0x1000e, "P8.34 AD22 Zephyr UART2_TXD" },
 	{ 0x014, 0x5000e, "P8.22 AH23 Zephyr UART2_RXD" },
+	{ 0x10c, 0x10000, "P8.44 AC25 ICSSG0 ring PRU1" },
+	{ 0x010, 0x10000, "P8.18 AJ23 ICSSG1 ring PRU0" },
+	{ 0x07c, 0x10000, "P8.21 AF21 ICSSG1 ring PRU1" },
 };
 
 static int pads_main(void)

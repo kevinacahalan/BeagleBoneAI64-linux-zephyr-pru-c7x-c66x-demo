@@ -88,7 +88,7 @@
 
 `pru/icssg0/txpru0/` — Tx_PRU0, the pulse trains on P9.25.
 
-`pru/ring/` — the ring that the other nine ICSSG cores run (ICSSG0 slice 1, ICSSG1 slices 0 and 1): one `main.c`, built once per core, and a linker script for each kind of core.
+`pru/ring/` — the ring that the other nine ICSSG cores run (ICSSG0 slice 1, ICSSG1 slices 0 and 1): one `main.c`, built once per core, and a linker script for each kind of core. Each ring's PRU drives a square wave on one header pin.
 
 `pru/include/` — the trace-buffer log and resource table the ICSSG cores share.
 
@@ -98,10 +98,10 @@
 
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 
-`yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the three ICSSG0 images, and the DSP images; `recipes-kernel/` patches TI's 6.18 kernel so the R5F and C66x cores restart.
+`yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the twelve ICSSG images, and the DSP images; `recipes-kernel/` patches TI's 6.18 kernel so the R5F and C66x cores restart.
 
 `containers/` — Containerfiles for the Linux, PRU, Zephyr, and DSP build images.
 
-`third_party/` — generated checkouts used by the build. Not vendored.
+`third_party/` — generated checkouts used by the build (the PRU Software Support Package, EmbeddedRPC, and BeagleBoard-DeviceTrees). Not vendored.
 
 `out/ai64-beagle/` — `build.sh bundle` output, copied to a Debian board and installed with its `install-beagle.sh`.
