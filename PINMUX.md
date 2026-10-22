@@ -16,22 +16,22 @@ J721E_IOPAD(0x0f4, PIN_OUTPUT, 0) /* (AB24) P8.11 PRG0_PRU0_GPO17 */
 
 ## The pins
 
-| Header | Ball | Pad | Mux | Core | Signal | Saleae channel on the lab bench |
-| --- | --- | --- | --- | --- | --- | --- |
-| P8.11 | AB24 | `0x0f4` | 0, `PRG0_PRU0_GPO17` | PRU0 | SLIP frame, UART 8N1 115200, idles high | 1 |
-| P9.25 | W26 | `0x1a4` | 7, `GPIO0_104` | Tx_PRU0 | pulse trains | 0 |
-| P9.25 | AC4 | `0x200` | 7, held off | — | shorted to W26 | |
-| P9.28 | U2 | `0x230` | 6, `SPI7_CS0` | Zephyr | SPI7 chip select | 4 |
-| P9.28 | AF28 | `0x0b0` | 7, held off | — | shorted to U2 | |
-| P9.30 | V6 | `0x238` | 6, `SPI7_D0` | Zephyr | SPI7 MOSI | 6 |
-| P9.30 | AE28 | `0x0b4` | 7, held off | — | shorted to V6 | |
-| P9.31 | U3 | `0x234` | 6, `SPI7_CLK` | Zephyr | SPI7 clock, 1 MHz | 5 |
-| P9.31 | AB26 | `0x0d4` | 7, held off | — | shorted to U3 | |
-| P8.34 | AD22 | `0x01c` | 14, `UART2_TXD` | Zephyr | Zephyr console, 115200 8N1 | |
-| P8.22 | AH23 | `0x014` | 14, `UART2_RXD` | Zephyr | Zephyr console | |
-| P8.44 | AC25 | `0x10c` | 0, `PRG0_PRU1_GPO3` | ICSSG0 PRU1 | ring square wave | 2 |
-| P8.18 | AJ23 | `0x010` | 0, `PRG1_PRU0_GPO3` | ICSSG1 PRU0 | ring square wave | 3 |
-| P8.21 | AF21 | `0x07c` | 0, `PRG1_PRU1_GPO9` | ICSSG1 PRU1 | ring square wave | 7 |
+| Header | Ball | Pad | Mux | Core | Signal |
+| --- | --- | --- | --- | --- | --- |
+| P8.11 | AB24 | `0x0f4` | 0, `PRG0_PRU0_GPO17` | PRU0 | SLIP frame, UART 8N1 115200, idles high |
+| P9.25 | W26 | `0x1a4` | 7, `GPIO0_104` | Tx_PRU0 | pulse trains |
+| P9.25 | AC4 | `0x200` | 7, held off | — | shorted to W26 |
+| P9.28 | U2 | `0x230` | 6, `SPI7_CS0` | Zephyr | SPI7 chip select |
+| P9.28 | AF28 | `0x0b0` | 7, held off | — | shorted to U2 |
+| P9.30 | V6 | `0x238` | 6, `SPI7_D0` | Zephyr | SPI7 MOSI |
+| P9.30 | AE28 | `0x0b4` | 7, held off | — | shorted to V6 |
+| P9.31 | U3 | `0x234` | 6, `SPI7_CLK` | Zephyr | SPI7 clock, 1 MHz |
+| P9.31 | AB26 | `0x0d4` | 7, held off | — | shorted to U3 |
+| P8.34 | AD22 | `0x01c` | 14, `UART2_TXD` | Zephyr | Zephyr console, 115200 8N1 |
+| P8.22 | AH23 | `0x014` | 14, `UART2_RXD` | Zephyr | Zephyr console |
+| P8.44 | AC25 | `0x10c` | 0, `PRG0_PRU1_GPO3` | ICSSG0 PRU1 | ring square wave |
+| P8.18 | AJ23 | `0x010` | 0, `PRG1_PRU0_GPO3` | ICSSG1 PRU0 | ring square wave |
+| P8.21 | AF21 | `0x07c` | 0, `PRG1_PRU1_GPO9` | ICSSG1 PRU1 | ring square wave |
 
 All signals are 3.3 V.
 
@@ -60,24 +60,24 @@ The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dt
 
 ## The rings: P8.44, P8.18, P8.21
 
-Each ring's PRU toggles one R30 bit every 65536 laps, so its pin is a square wave at the lap rate divided by 131072: about 15 Hz for ICSSG0 slice 1 (1.98 M laps/s) and 12.4 Hz for each ICSSG1 slice (1.63 M laps/s). The pads are muxed the same way as P8.11, mode 0 to the PRU's own GPO, with the pinctrl on the `&pru0_1`, `&pru1_0`, and `&pru1_1` nodes. Each of these header pins has only one ball, so there is no second ball to hold off. Neither ICSSG sets its GPCFG registers: both read `0`, direct GPO mode, the same as ICSSG0 slice 0, where P8.11 works.
+Each ring's PRU toggles one R30 bit every 65536 laps, so its pin is a square wave at the lap rate divided by 131072: about 13.9 Hz for ICSSG0 slice 1 (1.82 M laps/s) and 12.2 Hz for each ICSSG1 slice (1.59 M laps/s). The pads are muxed the same way as P8.11, mode 0 to the PRU's own GPO, with the pinctrl on the `&pru0_1`, `&pru1_0`, and `&pru1_1` nodes. Each of these header pins has only one ball, so there is no second ball to hold off. Neither ICSSG sets its GPCFG registers: both read `0`, direct GPO mode, the same as ICSSG0 slice 0, where P8.11 works.
 
-A 2 s Saleae capture on the Debian image, with all 19 cores running, measured:
+A 2 s Saleae capture on the Debian image, with all 19 cores and the fabric running, measured:
 
 | Pin | Period | Square wave | Laps/s (× 131072) | `ai64 ring` |
 | --- | --- | --- | --- | --- |
-| P8.44 | 66.24 ms | 15.10 Hz | 1.979 M | 1.98 M |
-| P8.18 | 80.23 ms mean (78.88 to 80.62) | 12.46 Hz | 1.634 M | 1.63 M |
-| P8.21 | 80.22 ms mean (78.88 to 80.62) | 12.47 Hz | 1.634 M | 1.63 M |
+| P8.44 | 72.12 ms (72.08 to 72.15) | 13.87 Hz | 1.818 M | 1.82 M |
+| P8.18 | 82.26 ms (82.19 to 82.33) | 12.16 Hz | 1.594 M | 1.59 M |
+| P8.21 | 82.20 ms (82.15 to 82.31) | 12.17 Hz | 1.595 M | 1.59 M |
 
-The ICSSG0 slice 1 period changes by less than 1 µs. The ICSSG1 periods vary by about 2%, which matches the wider round-trip spread `ai64 ring` reports for that ICSSG.
+Before the ring PRUs joined the fabric, which costs them a pass every 64 laps, the same pins measured 15.10, 12.46, and 12.47 Hz.
 
 ## Zephyr: SPI7 and UART2
 
 The Zephyr image muxes its own pins from its devicetree, the way the PocketBeagle 2 demo's M4 does. The R5F can write the pad registers because Linux has already unlocked them. Linux does not touch these pads: `main_spi7` and `main_uart2` stay disabled in the Linux device tree, and the board firmware leaves both modules powered (`k3conf dump device` shows `MCSPI7` and `UART2` as `DEVICE_STATE_ON`).
 
 - SPI7 pins: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_0.overlay`. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed.
-- UART2 pins: the upstream Zephyr board file. On the lab bench they go to a Raspberry Pi Debug Probe.
+- UART2 pins: the upstream Zephyr board file. Any 3.3 V USB-serial adapter reads the console there.
 
 ## Check on the board
 

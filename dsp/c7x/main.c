@@ -4,11 +4,14 @@
  * line every 10 s, timed with the core's TSC cycle counter, and runs the
  * jobs Linux hands it (ai64_dsp_job.h) from the start of its L2 SRAM.
  * It runs from the core's DDR carveout. It turns the MMU and caches on
- * first (ai64_c7x_mmu.c). The only peripheral it touches is its mailbox.
+ * first (ai64_c7x_mmu.c). It is also a fabric node (ai64_fabric.h): it
+ * answers and sends pings, passes tours and routes on, and adds to the
+ * spinlock tally.
  */
 
 #include <stdint.h>
 #include <c7x.h>
+#include <string.h>
 
 #define AI64_TRACE_SIZE 2048
 #define AI64_TRACE_NAME "trace:c7x"
@@ -23,6 +26,18 @@
 #define AI64_JOB_CACHE_IN()  do { ai64_l1d_wbinv_all(); AI64_JOB_FENCE(); } while (0)
 #define AI64_JOB_CACHE_OUT() do { ai64_l1d_wb_all(); AI64_JOB_FENCE(); } while (0)
 #include "ai64_dsp_job.h"
+
+/* The MMU maps the GTC, the mailboxes, and the spinlocks as device memory,
+ * and the fabric normal non-cacheable. */
+#define AI64_FAB_NOW()    (*(volatile uint32_t *)(uintptr_t)(AI64_GTC_ADDR + 8u))
+#define AI64_FAB_BASE     AI64_FAB_ADDR
+#define AI64_FAB_MBOX     AI64_FAB_MBOX_ADDR
+#define AI64_FAB_LOCKREG  (AI64_SPINLOCK_ADDR + AI64_FAB_LOCK_OFF)
+#define AI64_FAB_FENCE()  __memory_fence(0x1)
+/* The fabric is normal memory here, so memcpy can move it in bursts. */
+#define AI64_FAB_COPY_IN(d, s, n)  memcpy((d), (const void *)(s), 4u * (n))
+#define AI64_FAB_COPY_OUT(d, s, n) memcpy((void *)(d), (s), 4u * (n))
+#include "ai64_fabric.h"
 
 /* Mailbox cluster 4 (0x31f84000): Linux receives on FIFO 0, sends on FIFO 1. */
 #define MBOX_BASE 0x31f84000u
@@ -47,12 +62,14 @@ int main(void)
 	trace_putc('\n');
 	trace_mark();
 	job_init();
+	fab_init(AI64_FAB_C7X);
 
 	last = __TSC;
 	for (;;) {
 		if (job_poll() && ++jobs == 1u) {
 			trace_puts("first job done\n");
 		}
+		fab_poll();
 		if (mbox_shutdown_requested(MBOX_BASE, 1u, 0u)) {
 			trace_puts("c7x shutting down\n");
 			ai64_l2_wbinv_all();

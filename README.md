@@ -9,6 +9,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **Tx_PRU0** (ICSSG0) sends pulse trains on a header pin through the SoC's GPIO module.
 - **The other nine ICSSG cores**, the PRU, RTU, and Tx_PRU of ICSSG0 slice 1 and of both ICSSG1 slices, pass a token round in three rings through their ICSSG's shared RAM. Linux reports how fast each ring goes.
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory.
+- **The fabric** joins all of these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the PRUs, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has RTU0 pulse a pin. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](#every-core-to-every-other-the-fabric)).
 
 ```mermaid
 flowchart LR
@@ -33,6 +34,15 @@ flowchart LR
   rings -->|"Linux reads shared RAM"| ai64
 ```
 
+```mermaid
+flowchart LR
+  fab(("the fabric<br/>DDR inboxes, mailbox doorbells,<br/>GTC stamps, a hardware spinlock"))
+  l["Linux"] <--> fab
+  z["R5F0_0, R5F0_1,<br/>R5F1_0, R5F1_1"] <--> fab
+  d["C66x 0, C66x 1, C7x"] <--> fab
+  p["RTU0, and the PRU<br/>of each ring"] <--> fab
+```
+
 Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
 
 The MCU-domain R5F cores are left alone: they run the board's device manager.
@@ -41,7 +51,7 @@ It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto
 
 ## What you need
 
-- A BeagleBone AI-64, a microSD card (16 GB or more), and a way to power it. On the test bench the board takes 5 V on header pins P9.05/P9.06.
+- A BeagleBone AI-64, a microSD card (16 GB or more), and a 5 V supply for it.
 - A network link to it: Ethernet to your LAN, or the USB-C port, which brings up a USB network adapter on the PC.
 - A Linux PC with `git`, `ssh`, `rsync`, `xz`, and either `podman` or `docker`. Every compiler runs in a container, so you don't install any toolchains.
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
@@ -130,14 +140,14 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, the nine ring cores, and the DSPs with the installed firmware, then opens a tmux session with twelve windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `rings`, `c66x0`, `c66x1`, and `c7x`. Before it stops each DSP, it asks the DSP to go idle, which the C7x needs ([why](#restarting-the-c7x)).
+- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, the nine ring cores, and the DSPs with the installed firmware, then opens a tmux session with thirteen windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `rings`, `c66x0`, `c66x1`, `c7x`, and `fabric`. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)). The `fabric` window is about 100 columns wide.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
 
 To stop the demo, run `tmux kill-session -t ai64`. Typing `quit` in the `linux` window only ends that window.
 
-Without tmux, plain `ai64-demo` prints all twelve windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
+Without tmux, plain `ai64-demo` prints all thirteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
 
 ### After you change the code
 
@@ -203,11 +213,11 @@ Tx_PRU0 finished seq 2 after 10 pulses on P9.25
 Zephyr on R5F0_1 window ready on /dev/rpmsg4 (eRPC)
 Linux asked Zephyr on R5F0_1 to say "hello from linux", and it replied "zephyr r5f0_1: hello from linux"
 
-== rings (a line per ring every 10 s)
+== rings (a line per ring every 10 s; run counts the ring's restarts since boot)
 ring window ready, a line per ring every 10 s
-icssg0 slice 1: run 1, 1.98 M laps/s, round trip 90 cycles (86 to 104), hops PRU 19788804 RTU 19788805 Tx_PRU 19788805, errors 0
-icssg1 slice 0: run 1, 1.63 M laps/s, round trip 122 cycles (106 to 120), hops PRU 16314994 RTU 16314995 Tx_PRU 16314995, errors 0
-icssg1 slice 1: run 1, 1.63 M laps/s, round trip 121 cycles (107 to 119), hops PRU 16321473 RTU 16321474 Tx_PRU 16321474, errors 0
+icssg0 slice 1: run 29, 1.82 M laps/s, round trip 92 cycles (84 to 109), hops PRU 115638312 RTU 115638313 Tx_PRU 115638313, errors 0
+icssg1 slice 0: run 29, 1.59 M laps/s, round trip 110 cycles (86 to 125), hops PRU 100039749 RTU 100039750 Tx_PRU 100039750, errors 0
+icssg1 slice 1: run 29, 1.59 M laps/s, round trip 110 cycles (85 to 122), hops PRU 98054390 RTU 98054391 Tx_PRU 98054391, errors 0
 
 == c66x0 (c66x1 is the same, with DNUM 1)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d808028e0
@@ -222,7 +232,7 @@ c7x up 10 s
 c7x up 20 s
 ```
 
-The `/dev/rpmsg` numbers can differ on your board.
+The `fabric` window, the latency of every core to every other, is in [The fabric](#every-core-to-every-other-the-fabric). The `/dev/rpmsg` numbers can differ on your board.
 
 The Zephyr console on P8.34 shows the same calls from R5F0_0's side (timestamps trimmed):
 
@@ -275,9 +285,9 @@ Type these in the linux window:
 
 A period is in ICSSG cycles at 250 MHz: 250000 is 1 ms, and the range is 2500 (10 µs) to 250000000 (1 s). The count is at most 100000.
 
-`ai64-demo` without `--tmux` prints all twelve windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[Rings]`, `[C66x0]`, `[C66x1]`, or `[C7x]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+`ai64-demo` without `--tmux` prints all thirteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[Rings]`, `[C66x0]`, `[C66x1]`, `[C7x]`, or `[Fabric]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 ring once` prints one sample of the three rings, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), and `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it.
+`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 ring once` prints one sample of the three rings, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [arm <period> <count> | xy <x> <y>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
 
 ## Probe the pins
 
@@ -289,9 +299,10 @@ All signals are 3.3 V. On a Saleae Logic, choose the 1.8 V threshold setting for
 | PRU0 UART | P8.11 | one SLIP frame per X/Y, 115200 8N1, idles high |
 | Tx_PRU0 pulses | P9.25 | `count` pulses per arm, high for the first half of each period |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
-| Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every 65536 laps: about 15 Hz, 12.4 Hz, and 12.4 Hz |
+| Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every 65536 laps: about 13.9 Hz, 12.2 Hz, and 12.2 Hz |
+| A fabric route's action | P9.25, or P8.11 | `ai64 fabric route ... arm` or `xy`: the same pulses or frame, from whichever cores the route passes |
 
-For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, SPI7 measured a 1.000 µs clock, and the ring pins measured 15.10 Hz, 12.46 Hz, and 12.47 Hz, which is the lap rate `ai64 ring` reports divided by 131072. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
+For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, SPI7 measured a 1.000 µs clock, and the ring pins measured 13.87 Hz, 12.16 Hz, and 12.17 Hz, which is the lap rate `ai64 ring` reports divided by 131072. The route `c7x r5f1_1 g1pru0 c66x1 rtu0 arm 25000 8` put 8 pulses on P9.25, 99.5 to 100.5 µs apart, and `xy 41 83` the frame above on P8.11. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
 ## How it works
 
@@ -401,12 +412,121 @@ The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU
 - A token goes round PRU, RTU, Tx_PRU, and back, through a record in the ICSSG's shared RAM (`struct ai64_ring` in `zephyr/include/ai64_shm.h`). A `stage` field says whose turn it is, and only that core writes the record.
 - The value changes on the way: the PRU sends the lap number, the RTU rotates it and XORs in a constant, the Tx_PRU adds one. The PRU checks what comes back and counts mismatches in `errors`.
 - The PRU times each round trip with its cycle counter, and logs the laps in each 10 s to its trace. The RTU and Tx_PRU log when they first get the token, once per run.
-- The `rings` window (`ai64 ring`) reads the three records through `/dev/mem`. A round trip takes about 90 ICSSG cycles in ICSSG0 and 110–120 in ICSSG1, and a ring does 1.6–2 million laps a second; the rest of each lap is the PRU's own bookkeeping.
+- The `rings` window (`ai64 ring`) reads the three records through `/dev/mem`. A round trip takes about 90 ICSSG cycles in ICSSG0 and 110–120 in ICSSG1, and a ring does about 1.6 to 1.8 million laps a second; the rest of each lap is the PRU's own bookkeeping, and its fabric pass.
 - The PRU leaves its cycle counter running and takes differences. The counter only clears while stopped, and restarting it every lap cost tens of cycles that no lap counted.
 - A ring's PRU starts a run by taking the token and zeroing the counts, which is only safe while its RTU and Tx_PRU wait for the token. So `ai64-demo` stops the PRU first and starts it last. Each start bumps the record's `run`.
 - Each ring's PRU toggles one header pin every 65536 laps, the same window it publishes `lap_min` and `lap_max` for, so the lap loop itself does no extra work. The pin's frequency times 131072 is the lap rate. [`PINMUX.md`](PINMUX.md) has the pins. The RTUs and Tx_PRUs touch no pin, and no ring core touches a peripheral outside its ICSSG.
 
+Each ring's PRU is also a [fabric](#every-core-to-every-other-the-fabric) node: every 64 laps it looks at its inbox, answers and sends pings, and passes tours on. That pass costs ICSSG0 slice 1 about 8% of its laps (1.98 to 1.82 M laps a second) and each ICSSG1 ring about 2.5% (1.63 to 1.59 M). The round trip itself does not change, because the PRU only looks between laps.
+
 A slice sees its own data RAM at local `0x0000` and the other slice's at `0x2000`, so one linker script per kind of core (`pru/ring/ring_*.cmd`) serves both slices. A ring's three cores share the first 4 KiB of their slice's data RAM: the PRU `0x000`–`0x7ff`, the RTU `0x800`–`0xbff`, the Tx_PRU `0xc00`–`0xfff`. In ICSSG0 the upper 4 KiB of slice 1's data RAM is not free: RTU0 and Tx_PRU0 keep their stack and trace buffer there, because their own 2 KiB in slice 0 is full. Moving those into ICSSG0 shared RAM instead, above `0x10000`, broke RTU0: its strings and the ring record were overwritten soon after the ring cores started.
+
+### Every core to every other: the fabric
+
+Every link above goes through Linux, or joins two cores that sit next to each other. The fabric joins every demo core directly to every other one, Linux included: twelve nodes, 132 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the PRUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
+
+| Node | Name | Core | When it looks at its inbox |
+| --- | --- | --- | --- |
+| 0 | `linux` | A72, while `ai64 fabric` runs | every 20 µs or so, between sleeps |
+| 1–4 | `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` | Zephyr (`zephyr/r5/src/ai64_fabric.c`) | in a thread at the lowest priority, which yields after each pass |
+| 5, 6 | `c66x0`, `c66x1` | C66x | every pass of its main loop |
+| 7 | `c7x` | C7x | every pass of its main loop |
+| 8 | `rtu0` | ICSSG0 RTU0 | every pass of its main loop, next to its RPMsg check |
+| 9–11 | `g0pru1`, `g1pru0`, `g1pru1` | the three ring PRUs | between laps, every 64 laps |
+
+**What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
+
+- **DDR**, 128 KiB at `0xA9000000`, in the gap between the C7x's carveout and the IPC region above it. The overlay reserves 1 MiB there (`ai64-fabric@a9000000`, no-map) so that Linux keeps out, and `ai64-demo` refuses to start the cores on a kernel that booted without it. Each node owns an 8 KiB page: its inbox, and the counts it publishes for Linux to read. A spinlock tally follows the pages.
+- **Mailbox cluster 11** (`0x31F8B000`) for doorbells. Linux's device tree leaves clusters 5–11 disabled; 5, 6, 8, and 9 hold messages from the device manager's firmware, and 11 is empty. FIFO n is node n's doorbell.
+- **The GTC** (`0x00A90000`), the 200 MHz counter Linux's arch timer counts too. Every core reads the same clock, so a latency measured from one core's stamp to another's is real, one way.
+- **Hardware spinlock 255** (`0x30E00000`), which no kernel driver uses, for the tally.
+
+**Read your own page, write to the others.** An uncached read costs 0.1 to 0.5 µs, and a write is posted and costs almost nothing. So a node only ever reads its own page. A message goes into the receiver's page, and the stamps a tour collects go straight into its origin's page. The sender then writes its own node number into the receiver's mailbox FIFO, and the receiver, which polls only its FIFO's status register, reads its page when something has arrived. A FIFO holds four doorbells; a sender that finds it full skips the doorbell, and every node also scans its whole inbox once a millisecond.
+
+**A message.** Each inbox has one 64-byte slot for every sender and message class, and only that sender writes it. The sender writes the message, then bumps its count for that class in a word of the receiver's page that only it writes, then rings. The receiver remembers the counts it last saw, so a changed count is a new message, and nothing is ever cleared. Every class allows one message in flight per sender and receiver, so a slot is never overwritten before it is read, and no core ever waits on another:
+
+| Class | Sent by | What it does |
+| --- | --- | --- |
+| ping | every node, to every other, every 10 ms | carries the sender's GTC stamp and a value. The receiver stamps when it has read it, mixes its node number into the value, and sends it back. |
+| pong | the receiver of a ping | the sender checks the value and times the round trip. The receiver's stamp minus the sender's is the one-way latency. A ping with no pong in 50 ms is a timeout, and that peer counts as down until a later ping comes back. |
+| tour | R5F0_0, every 10 ms | goes round every node whose pings R5F0_0 sees answered, Linux included while its viewer runs, in an order that keeps changing the kind of core: c66x0, rtu0, r5f1_0, c7x, g1pru0, r5f0_1, c66x1, g0pru1, r5f1_1, g1pru1, linux, and home. Each hop stamps it and mixes its number into the value, and R5F0_0 checks the value when the tour comes back. |
+| route | `ai64 fabric route`, from Linux | the same as a tour, along the nodes you name and back to Linux. It can carry an action for RTU0, `arm` or `xy`, so any core on the way can make Tx_PRU0 pulse or PRU0 send its frame. Its count lives in a word of its own, so routes work while the viewer, also node 0, runs. |
+
+A node that starts takes the counts it finds as already seen, and zeroes its own counters. A message sent to a stopped node is simply lost, and its sender times out, so `ai64-demo` can restart any core while the others keep going.
+
+**The spinlock tally.** Every 10 ms each node takes hardware spinlock 255, adds one to a shared total and one to its own count, and frees the lock. The adds are plain loads and stores to uncached DDR, so without the lock two cores would lose each other's adds. The viewer takes the lock too, and checks that the twelve counts sum to the total.
+
+**Each core's view of the memory.**
+
+| Core | The fabric | The GTC, mailbox, and spinlock |
+| --- | --- | --- |
+| R5F | MPU region 7, normal non-cacheable (`ai64_mpu.c`) | in the low 2 GiB the MPU maps as device memory |
+| C66x | MAR register for `0xA9xxxxxx` cleared, which turns off the XMC prefetch it resets with | the mailbox and spinlock directly. The GTC, below `0x0C000000`, is the C66x's own internal space, so MPAX segment 2 maps a logical page at `0x7FFFF000` onto it (`c66x/main.c`). |
+| C7x | 32 level-3 MMU pages, normal non-cacheable (`ai64_c7x_mmu.c`) | the device-memory GiB at `0` |
+| PRU | its global address; a message moves in one or two `LBBO`/`SBBO` bursts | the same |
+| Linux | `/dev/mem` | `/dev/mem` |
+
+**What you see.** The `fabric` window, `ai64 fabric`, redraws once a second. On the Debian image, with every core running:
+
+```
+fabric: one-way latency in us, from the row's node to the column's, over the last 1.0 s
+         linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x   rtu0 g0pru1 g1pru0 g1pru1
+linux        .    4.5    3.7    3.6    3.7    4.2    3.6    3.1    3.2   20.5   23.2   23.8
+r5f0_0    46.5      .    4.5    4.6    4.6    4.6    3.7    2.8    3.8   21.2   24.2   23.0
+r5f0_1    46.7    6.7      .    4.8    4.7    4.4    4.0    3.3    4.0   23.2   23.3   23.7
+r5f1_0    49.7    6.2    4.8      .    4.9    4.4    3.9    3.2    4.1   20.1   22.5   24.0
+r5f1_1    47.8    6.4    4.8    4.8      .    4.4    3.9    3.2    3.9   20.3   23.1   21.7
+c66x0     48.4    4.3    3.6    3.5    3.9      .    3.2    2.2    3.0   19.1   22.2   24.1
+c66x1     63.9    4.7    3.6    3.6    3.9    3.5      .    2.2    3.1   19.4   22.8   23.7
+c7x       43.2    3.8    3.2    3.4    3.4    3.2    2.6      .    2.8   19.4   21.8   21.9
+rtu0      49.0    4.4    3.8    3.8    4.1    3.8    3.3    2.6      .   19.7   22.0   23.7
+g0pru1    45.7    4.6    4.2    4.3    4.5    4.0    3.6    2.9    3.6      .   21.3   24.1
+g1pru0    47.1    4.5    4.2    4.5    5.0    4.3    3.9    2.9    4.0   22.7      .   23.5
+g1pru1    47.1    5.6    4.1    3.8    4.2    3.8    3.3    2.5    3.6   21.3   20.9      .
+
+node    starts   polls/s  pongs/s    rtt us  rtt min to max us timeouts errors  passed/s
+linux       53     11621     1100      87.1     53.4 to  122.8        0      0       100
+r5f0_0      28    307600     1100      20.3      5.1 to   97.1        0      0         0
+r5f0_1      28    444418     1100      17.2      4.8 to   91.1        0      0       100
+r5f1_0      28    443988     1100      17.1      4.7 to   91.2        0      0       100
+r5f1_1      28    443196     1100      16.9      4.8 to   91.6        0      0       100
+c66x0       28   1701300     1100      16.1      4.4 to   92.8        0      0       100
+c66x1       28   1709237     1100      17.1      4.1 to 1697.5        0      0       100
+c7x         28   1341351     1100      14.0      3.6 to   89.8        0      0       100
+rtu0        29    604754     1100      15.9      3.9 to   96.0        0      0       100
+g0pru1      28     28391     1100      41.1     36.0 to  118.9        0      0       100
+g1pru0      28     24914     1100      44.8     39.0 to  129.1        0      0       100
+g1pru1      28     24911     1100      44.4     39.1 to  121.4        0      0       100
+
+tour from r5f0_0 round every node that answers its pings: 100 laps/s, 160.3 us a lap (92.1 to 236.7), errors 0, timeouts 6
+  r5f0_0 >10.5> c66x0 >4.6> rtu0 >4.6> r5f1_0 >4.5> c7x >21.9> g1pru0 >6.1> r5f0_1 >7.8> c66x1 >16.4> g0pru1 >5.1> r5f1_1 >22.8> g1pru1 >82.7> linux >3.7> r5f0_0
+
+tally under hardware spinlock 255: 14471 adds, and the 12 counts sum to 14471
+```
+
+- **The matrix.** Between the R5Fs, DSPs, and RTU0 a message takes 2 to 7 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one. The ring PRUs only look every 64 laps, about 35 µs, so a message waits about 20 µs for one. Linux sleeps between looks, so a message to it takes 45 to 65 µs.
+- **The nodes.** `starts` counts each node's starts since the board booted; that board had run `ai64-demo` 28 times. `rtt us` is the mean round trip to all of the node's peers, which the ring PRUs and Linux pull up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
+- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and rings in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 6 timeouts.
+- **The tally.** Every add from all twelve nodes is in the total, so the lock held.
+
+The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric lines`).
+
+**A route with an action.** On the board, while the demo runs:
+
+```
+$ sudo ai64 fabric route c7x r5f1_1 g1pru0 c66x1 rtu0 arm 25000 8
+linux  -> c7x         8.5 us
+c7x    -> r5f1_1      6.6 us
+r5f1_1 -> g1pru0     19.7 us
+g1pru0 -> c66x1       8.6 us
+c66x1  -> rtu0        4.4 us   rtu0 armed Tx_PRU0
+rtu0   -> linux      24.7 us
+6 hops, 72.5 us, value ok
+```
+
+Tx_PRU0 then sends 8 pulses, 100 µs apart, on P9.25, and RTU0 tells Linux in the `rtu0` window. `xy 41 83` instead of `arm` makes PRU0 send its frame on P8.11. Any order of nodes works, a node can appear more than once, and a route that leaves out `rtu0` just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
+
+**What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ring PRUs lose a few percent of their laps ([The ICSSG rings](#the-icssg-rings)). And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr app parks in WFI with its interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
 
 ### Restarting an R5F core
 
@@ -419,7 +539,7 @@ The patched `ti_k3_r5_remoteproc` (below) stops a core by holding it in reset, w
 
 ### The DSPs: trace and jobs
 
-Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. The only peripheral they touch is their mailbox ([why](#restarting-the-c7x)). The C66x images set up no cache; the C7x image turns on its MMU and caches first ([below](#the-c7x-mmu-and-caches)).
+Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. Besides its own mailbox ([why](#restarting-the-c7x)), a DSP only touches what the [fabric](#every-core-to-every-other-the-fabric) uses. The C66x images set up no cache; the C7x image turns on its MMU and caches first ([below](#the-c7x-mmu-and-caches)).
 
 | Core | remoteproc | Image | Where it runs | Boot address |
 | --- | --- | --- | --- | --- |
@@ -427,7 +547,7 @@ Each DSP runs a small image from `dsp/`. It fills in a resource table with one e
 | C66x 1 | `4d81800000.dsp` | `ai64-c66x.elf` | its own L2 SRAM, local `0x00800000` | `0x00800000` |
 | C7x | `64800000.dsp` | `ai64-c7x.elf` | its DDR carveout, `0xa8200000` | `0xa8200000` (2 MiB aligned) |
 
-Both C66x cores run the same image: each sees its own L2 SRAM at `0x00800000`, and `DNUM` tells them apart. The C66x images stay out of DDR because the board's device tree crosses the two C66x DDR carveouts: `4d80800000.dsp` gets `memory@a7000000` for DMA but `memory@a6100000` for firmware, and `4d81800000.dsp` the other way round.
+Both C66x cores run the same image: each sees its own L2 SRAM at `0x00800000`, and `DNUM` tells them apart. The C66x images run from L2 SRAM, and only reach DDR for the fabric, because the board's device tree crosses the two C66x DDR carveouts: `4d80800000.dsp` gets `memory@a7000000` for DMA but `memory@a6100000` for firmware, and `4d81800000.dsp` the other way round.
 
 The compilers are TI's C6000 CGT 8.3.12 and C7000 CGT 1.2.0.STS, the newest versions TI serves without a login (`containers/dsp-cgt/`).
 
@@ -486,6 +606,7 @@ Both DSPs run their own path in `ai64_dsp_job.h`, with the plain C loop left for
 | `0x64801000` | 60 KiB | normal, write-back | the rest of the job block |
 | `0xa8000000` | 2 MiB | normal, non-cacheable | the DMA pool, then the trace buffer and resource table at `0xa8100000` |
 | `0xa8200000` | 14 MiB | normal, write-back | code, data, stack, and the page tables |
+| `0xa9000000` | 128 KiB | normal, non-cacheable | the fabric |
 
 Anything else faults. The register values and their order follow the secure startup in TI's PDK (`ti/csl/arch/c7x/src/Mmu.c`), which flushes no cache and no TLB before the MMU goes on. One difference: the table base goes in `TBR0` as well as `TBR0_S`. With only `TBR0_S`, the core stops the moment the MMU is on, even though the core starts in secure supervisor mode.
 
@@ -497,7 +618,7 @@ Both kernels' DSP drivers stop a C66x by asserting its local reset. A C71x has n
 
 TI's kernel, the one the Yocto image uses, sends `RP_MBOX_SHUTDOWN` through the core's mailbox before a stop, waits for `RP_MBOX_SHUTDOWN_ACK`, and then for the core to report that it is idle. The BeagleBoard kernel on the Debian image sends nothing. So both DSP images poll their receive FIFO, answer `RP_MBOX_SHUTDOWN` with the ACK, and execute `IDLE` with interrupts off (`dsp/include/ai64_dsp_mbox.h`), and `ai64 shutdown <remoteproc-name>` puts that message in the FIFO from Linux. On the BeagleBoard kernel, `ai64-demo` runs it before it stops each DSP. A C7x running an image without the handler still cannot be stopped; `ai64-demo` says so, and a reboot loads the new image.
 
-The Zephyr images answer the same message, but neither kernel's R5F driver starts a core again after a stop without the patch that keeps it powered. On TI's kernel, the C66x needs a patch as well: it never reports WFI after it has acknowledged. [Two 6.18 kernels](#two-618-kernels) lists every difference.
+The Zephyr images answer the same message, by masking their interrupts and parking in WFI. On the BeagleBoard kernel `ai64-demo` sends it to each R5F too, because a core that is busy on the bus when it is put in reset can wedge the device manager ([what it costs](#every-core-to-every-other-the-fabric)). Neither kernel's R5F driver starts a core again after a stop without the patch that keeps it powered. On TI's kernel, the C66x needs a patch as well: it never reports WFI after it has acknowledged. [Two 6.18 kernels](#two-618-kernels) lists every difference.
 
 ### Two 6.18 kernels
 
@@ -511,14 +632,14 @@ Where they differ for this demo:
 | | BeagleBoard 6.18 (Debian) | TI 6.18 (Yocto) |
 | --- | --- | --- |
 | RPMsg to an ICSSG core | No `.kick` and no vring interrupt in `pru_rproc`, so RTU0's RPMsg firmware does not start. The patched module adds them back. | Has both. Stock `pru_rproc`. |
-| Shutdown request before a stop (`RP_MBOX_SHUTDOWN`) | Sends none. `ai64 shutdown` sends it to each DSP before `ai64-demo` stops it. | Sends it to every R5F and DSP, then waits for the ACK and for the core to report WFI. |
+| Shutdown request before a stop (`RP_MBOX_SHUTDOWN`) | Sends none. `ai64 shutdown` sends it to each R5F and DSP before `ai64-demo` stops it. | Sends it to every R5F and DSP, then waits for the ACK and for the core to report WFI. |
 | Stopping an R5F | Powers the core off, which the device manager refuses. The core is stuck until a power cycle. The patched module keeps it powered. | The same power-off. Patch `0001` in `meta-ai64` keeps it powered. |
 | Stopping a C66x | Asserts the local reset. Works as shipped. | Times out waiting for WFI, which a C66x never reports: without patch `0002`, `can't stop rproc: -110` and the core keeps running. The patch resets it once it has acknowledged. |
 | Stopping the C7x | Works only after `ai64 shutdown`. | Works as shipped, through the shutdown request. |
 | How the fixes get in | Two out-of-tree modules, built against the board's headers and installed in `/lib/modules/<kernel>/updates/`. The kernel marks them with taint flag `O`. Rebuild after every kernel upgrade. | Two patches applied to the kernel source in the Yocto build. |
 | Device tree | BeagleBoard-DeviceTrees `v6.18.x`. It adds a pinmux file for BeagleBoard's overlays. | The kernel's own. The remote-core, ICSSG, and carveout nodes are the same as BeagleBoard's. |
 
-Neither device tree gives any ICSSG core a vring interrupt, so on both images the overlay gives RTU0 one. The firmware images, the overlay, and `ai64` are the same for both. `ai64-demo` tells the kernels apart by `-k3-` in `uname -r`, and only runs `ai64 shutdown` on the BeagleBoard one.
+Neither device tree gives any ICSSG core a vring interrupt, so on both images the overlay gives RTU0 one, and neither reserves the fabric's DDR, so the overlay does that too. The firmware images, the overlay, and `ai64` are the same for both. `ai64-demo` tells the kernels apart by `-k3-` in `uname -r`, and only runs `ai64 shutdown` on the BeagleBoard one.
 
 ### Why Debian needs two patched modules
 
@@ -592,6 +713,8 @@ On the bench, the image with TI's 6.18 ran `ai64-demo` eleven times in a row, st
 - **`ai64-demo` says the stock `ti_k3_r5_remoteproc` cannot start an R5F core again.** The patched R5F module is not loaded, usually after a kernel upgrade. Rebuild with `build.sh kmod`, run `bundle`, install, and reboot. Until then a reboot reloads the R5F cores.
 - **`dmesg` shows `module-reset deassert failed, ret = -19`.** An R5F core was stopped with the stock module loaded and is now stuck. Power-cycle the board; a reboot from Linux is not always enough.
 - **`ai64-demo` says it cannot stop the C7x.** The running C7x image predates the shutdown handler; see [Restarting the C7x](#restarting-the-c7x). Reboot once to load the new image.
+- **`ai64-demo` says `/proc/device-tree/reserved-memory/ai64-fabric@a9000000 is missing`.** The board booted without the demo's overlay, so the fabric's DDR belongs to Linux, and `ai64-demo` will not start cores that would write over it. Run `install-beagle.sh` and reboot, and check the `fdtoverlays` line of the default label in `/boot/firmware/extlinux/extlinux.conf`.
+- **`ai64 fabric` says another viewer is running.** Linux is node 0, and only one process can be: close the `fabric` window, or the merged console's `[Fabric]` viewer, first. `ai64 fabric route` works alongside either.
 - **The txpru0 window shows no pulses, or `ai64 pads` marks `0x1a4` DIFFERENT.** Another overlay is muxing ball W26, most likely the stock `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`. Check the `fdtoverlays` line of the default label in `/boot/firmware/extlinux/extlinux.conf`.
 
 **Builds**

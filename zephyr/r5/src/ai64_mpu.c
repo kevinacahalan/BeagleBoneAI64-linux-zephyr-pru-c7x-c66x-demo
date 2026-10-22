@@ -20,6 +20,8 @@
  *      which Linux writes
  *   6  on R5F0_0, the 128 KiB holding the bulk buffer and the RTU0 mailbox,
  *      non-cacheable: Linux and RTU0 read and write them
+ *   7  the fabric, normal non-cacheable: every demo core's inbox
+ *      (ai64_fabric.h)
  *
  * It runs at the EARLY init level, before soc_early_init_hook() invalidates
  * and enables both caches (CONFIG_CACHE_MANAGEMENT), so the regions are in
@@ -33,6 +35,7 @@
 
 #include "ai64_erpc.h"
 #include "ai64_shm.h"
+#include "ai64_fabric.h"
 
 /* The core's carveout starts at the vring region (zephyr,ipc_shm). */
 #define CARVEOUT_BASE  DT_REG_ADDR(DT_CHOSEN(zephyr_ipc_shm))
@@ -74,6 +77,9 @@ static int ai64_mpu_init(void)
 		     "the bulk buffer and the mailbox share one 128 KiB region");
 	mpu_set(6, AI64_BULK_ADDR & ~0x1ffffu, 17, ATTR_NORMAL_NC);
 #endif
+	BUILD_ASSERT((AI64_FAB_ADDR & (AI64_FAB_SIZE - 1u)) == 0u &&
+		     AI64_FAB_SIZE == 0x20000u, "the fabric is one 128 KiB region");
+	mpu_set(7, AI64_FAB_ADDR, 17, ATTR_NORMAL_NC);
 	barrier_dsync_fence_full();
 	barrier_isync_fence_full();
 	return 0;

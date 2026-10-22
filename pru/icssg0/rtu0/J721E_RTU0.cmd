@@ -3,7 +3,8 @@
  *
  * Linker script for ICSSG0 RTU0, from the PSSP J721E RTU0 RPMsg example.
  * RTU0_DMEM_0 is 2 KiB and holds the RPMsg buffers and the resource table,
- * so the stack and the trace buffer go in RTU0_DMEM_1.
+ * so the stack, the trace buffer, and the fabric node's state go in
+ * RTU0_DMEM_1.
  *
  * Copyright (C) 2019-2021 Texas Instruments Incorporated - https://www.ti.com/
  *
@@ -124,7 +125,9 @@ SECTIONS {
 	.switch		>  RTU0_DMEM_0, PAGE 1
 	.sysmem		>  RTU0_DMEM_0, PAGE 1
 	.cinit		>  RTU0_DMEM_0, PAGE 1
-	.rodata		>  RTU0_DMEM_0, PAGE 1
+	/* pru_rproc copies a segment in 32-bit words and refuses one whose size
+	 * is not a multiple of 4. palign pads the strings out to one. */
+	.rodata		: palign(4) >  RTU0_DMEM_0, PAGE 1
 	.rofardata	>  RTU0_DMEM_0, PAGE 1
 	.farbss		>  RTU0_DMEM_0, PAGE 1
 	.fardata	>  RTU0_DMEM_0, PAGE 1
@@ -132,6 +135,8 @@ SECTIONS {
 	/* 8-byte aligned for the ARMv8 kernel */
 	.resource_table : ALIGN (8) >  RTU0_DMEM_0, PAGE 1
 	.ai64_trace : ALIGN (8) >  RTU0_DMEM_1, PAGE 1
+	/* The fabric node's state (ai64_fabric.h) */
+	.ai64_fab	>  RTU0_DMEM_1, PAGE 1
 
 	.pru_irq_map (COPY) :
 	{

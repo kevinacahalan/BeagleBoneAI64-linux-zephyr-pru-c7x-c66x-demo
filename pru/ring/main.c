@@ -11,7 +11,11 @@
  * the PRU checks what comes back. The PRU times each round trip with its
  * cycle counter and logs the lap rate to its trace every 10 s or so. The PRU
  * also toggles one header pin every AI64_RING_WINDOW laps, so the pin's
- * frequency times 2 * 65536 is the lap rate. No core touches a peripheral
+ * frequency times 2 * 65536 is the lap rate.
+ *
+ * Between laps, every FAB_LAPS laps, the PRU is also a fabric node
+ * (ai64_fabric.h): it answers and sends pings, passes tours and routes on,
+ * and adds to the spinlock tally. That is the only time a ring core reaches
  * outside its ICSSG.
  *
  * Start the PRU last. It starts a run by taking the token, which is only
@@ -63,6 +67,16 @@ static void trace_name(void)
 #endif
 volatile register uint32_t __R30;
 
+/* Its fabric node: 9 for ICSSG0 slice 1, 10 and 11 for ICSSG1. */
+#define FAB_NODE (AI64_FAB_G0PRU1 + 2u * AI64_ICSSG + AI64_SLICE - 1u)
+/* A pass takes a microsecond or two; 64 laps take about 30. */
+#define FAB_LAPS 64u
+#define AI64_FAB_NOW()    (*(volatile uint32_t *)(AI64_GTC_ADDR + 8u))
+#define AI64_FAB_BASE     AI64_FAB_ADDR
+#define AI64_FAB_MBOX     AI64_FAB_MBOX_ADDR
+#define AI64_FAB_LOCKREG  (AI64_SPINLOCK_ADDR + AI64_FAB_LOCK_OFF)
+#include "ai64_fabric.h"
+
 /* PRU0 and PRU1 control registers, local address: CTRL, then CYCLE at +0xc. */
 #define PRU_CTRL_BASE (AI64_SLICE ? 0x00024000u : 0x00022000u)
 #define PRU_CTRL      (*(volatile uint32_t *)PRU_CTRL_BASE)
@@ -109,6 +123,7 @@ void main(void)
 	trace_u32(ring->run);
 	trace_puts(", passing the token\n");
 
+	fab_init(FAB_NODE);
 	cycle_restart();
 	start = PRU_CYCLE;
 	for (;;) {
@@ -147,6 +162,9 @@ void main(void)
 			lap_max = 0;
 			window = 0;
 			__R30 ^= RING_PIN;
+		}
+		if ((lap & (FAB_LAPS - 1u)) == 0) {
+			fab_poll();
 		}
 		/* 10 s, short by a restart's few cycles every 8 s or so. */
 		if (elapsed >= 10u * AI64_PRU_HZ) {

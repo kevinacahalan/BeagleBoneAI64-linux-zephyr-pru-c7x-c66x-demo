@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// BeagleBone AI-64 demo: the ICSSG pins and the RTU0 vring IRQ.
+// BeagleBone AI-64 demo: the ICSSG pins, the RTU0 vring IRQ, and the DDR
+// the cores use to talk to each other.
 //
 //   PRU0     P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, the SLIP UART
 //   Tx_PRU0  P9.25  W26   pad 0x1a4  mode 7  GPIO0_104, the pulse train
@@ -27,6 +28,18 @@
 &{/chosen} {
 	overlays {
 		k3-j721e-beagleboneai64-ai64-demo.kernel = __TIMESTAMP__;
+	};
+};
+
+/*
+ * The fabric (zephyr/include/ai64_fabric.h): every demo core's inbox, in
+ * the 16 MiB gap between the C7x's carveout and the IPC region above it.
+ * Linux must not use it, and maps it only through /dev/mem (ai64 fabric).
+ */
+&{/reserved-memory} {
+	ai64_fabric: ai64-fabric@a9000000 {
+		reg = <0x00 0xa9000000 0x00 0x00100000>;
+		no-map;
 	};
 };
 

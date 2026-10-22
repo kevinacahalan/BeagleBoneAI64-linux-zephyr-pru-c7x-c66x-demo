@@ -47,8 +47,9 @@
  *
  * ai64 shutdown <remoteproc-name>
  *   Sends a core the RP_MBOX_SHUTDOWN message TI's kernel sends before it
- *   stops a core, and waits until the core has taken it. The 6.18 kernel
- *   does not send it, and cannot stop a C7x that is not idle.
+ *   stops a core, and waits until the core has taken it. The BeagleBoard
+ *   6.18 kernel does not send it. That kernel cannot stop a C7x that is not
+ *   idle, and stopping an R5F that is busy on the bus can hang the SoC.
  *
  * ai64 trace <remoteproc-name>
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
@@ -58,9 +59,15 @@
  *   Prints how fast the token goes round the three ICSSG rings (ICSSG0
  *   slice 1, ICSSG1 slices 0 and 1), from their records in shared RAM.
  *
+ * ai64 fabric [lines|once] | route <node>... [arm ...|xy ...] | reset
+ *   Joins the fabric, where every core talks to every other one, and shows
+ *   it (ai64_fabric.c).
+ *
  * ai64 linux <dir>
  *   Sends the startup script, then reads commands such as xy and arm.
  */
+
+int fabric_main(int argc, char **argv);
 
 /* The zephyr window writes them to this path. */
 static char g_reply_path[512];
@@ -110,6 +117,10 @@ static void print_usage(const char *prog)
 	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
 	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("  dsp <remoteproc-name> [count] [taps] [runs] offload FIR jobs to a DSP\n");
+	printf("  fabric [lines|once]       every core talking to every other (the fabric window)\n");
+	printf("  fabric route <node>... [arm <period> <count> | xy <x> <y>]\n");
+	printf("                            send one message along those cores and back\n");
+	printf("  fabric reset              free the tally's spinlock and zero the tally\n");
 	printf("\n");
 	printf("In the linux window, ");
 	print_help();
@@ -826,9 +837,13 @@ static int shutdown_main(int argc, char **argv)
 		return 2;
 	}
 	mbox[(0x40 + 4 * fifo) / 4] = RP_MBOX_SHUTDOWN;
-	/* The core polls its FIFO; an empty FIFO means it took the message. */
+	/*
+	 * The core polls its FIFO; an empty FIFO means it took the message.
+	 * Give it a moment more to answer and park before Linux stops it.
+	 */
 	for (ms = 0; ms < 500; ms++) {
 		if (!(mbox[(0xc0 + 4 * fifo) / 4] & 0x3f)) {
+			usleep(10000);
 			return 0;
 		}
 		usleep(1000);
@@ -1491,7 +1506,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|ring|bench|dsp|shutdown|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|ring|bench|dsp|shutdown|fabric|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1527,6 +1542,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "ring")) {
 		return ring_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "fabric")) {
+		return fabric_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

@@ -11,7 +11,7 @@
 #
 # Temporary. These stay on disk and stay untracked.
 
-# Lab-only notes about the bench (relay, SD mux, logic analyzer).
+# Notes about your own setup and plans, kept out of git.
 local-info/
 
 # West workspace created by `west init -l zephyr` from the repo root.

@@ -17,6 +17,8 @@
  *   0xa8000000  2 MiB  normal non-cacheable: the DMA pool, then the trace
  *                      buffer and resource table (c7x.cmd), which Linux reads
  *   0xa8200000 14 MiB  normal write-back: code, data, and stack
+ *   0xa9000000 128 KiB normal non-cacheable: the fabric (ai64_fabric.h),
+ *                      which every demo core reads and writes
  *
  * Anything else faults. The tables use a 4 KiB granule and a 48-bit
  * address space, so a walk starts at level 0 (512 GiB an entry) and goes
@@ -35,6 +37,7 @@
 #include <c7x.h>
 
 #include "ai64_dsp_job.h"
+#include "ai64_fabric.h"
 #include "ai64_c7x_mmu.h"
 
 /* c7x_regs.asm */
@@ -84,16 +87,17 @@ extern void ai64_set_l2cfg(uint64_t cfg);
 #define CARVEOUT_SIZE 0x01000000ull
 
 /* The tables: level 0 and 1, one level 2 for each GiB that needs one,
- * and one level 3 for the L2 SRAM block. */
+ * and level 3 for the L2 SRAM block and for the fabric. */
 #pragma DATA_SECTION(mmu_tables, ".ai64_mmu")
 #pragma DATA_ALIGN(mmu_tables, 4096)
-static uint64_t mmu_tables[5][512];
+static uint64_t mmu_tables[6][512];
 
 #define L0      mmu_tables[0]
 #define L1      mmu_tables[1]
 #define L2_1G   mmu_tables[2] /* 0x40000000 */
 #define L2_2G   mmu_tables[3] /* 0x80000000 */
 #define L3_SRAM mmu_tables[4] /* 0x64800000 */
+#define L3_FAB  mmu_tables[5] /* 0xa9000000 */
 
 static uint64_t leaf(uint64_t type, uint64_t addr, uint32_t attr)
 {
@@ -115,7 +119,7 @@ void ai64_c7x_mmu_init(void)
 	uint64_t addr;
 	uint32_t i;
 
-	for (i = 0; i < 5u * 512u; i++) {
+	for (i = 0; i < 6u * 512u; i++) {
 		mmu_tables[i / 512u][i % 512u] = 0;
 	}
 
@@ -137,6 +141,11 @@ void ai64_c7x_mmu_init(void)
 		leaf(DESC_BLOCK, CARVEOUT_BASE, ATTR_NC);
 	for (addr = CARVEOUT_BASE + SZ_2M; addr < CARVEOUT_BASE + CARVEOUT_SIZE; addr += SZ_2M) {
 		L2_2G[(addr - 2u * SZ_1G) / SZ_2M] = leaf(DESC_BLOCK, addr, ATTR_WB);
+	}
+
+	L2_2G[(AI64_FAB_ADDR - 2u * SZ_1G) / SZ_2M] = table(L3_FAB);
+	for (i = 0; i < AI64_FAB_SIZE / SZ_4K; i++) {
+		L3_FAB[i] = leaf(DESC_PAGE, AI64_FAB_ADDR + i * SZ_4K, ATTR_NC);
 	}
 
 	ai64_set_mair(MAIR_VALUE);

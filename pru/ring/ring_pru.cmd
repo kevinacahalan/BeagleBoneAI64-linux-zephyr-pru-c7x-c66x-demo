@@ -39,6 +39,9 @@ SECTIONS {
 	.farbss		>  DMEM, PAGE 1
 	.fardata	>  DMEM, PAGE 1
 
+	/* The fabric node's state (ai64_fabric.h) */
+	.ai64_fab	>  DMEM, PAGE 1
+
 	/* 8-byte aligned for the ARMv8 kernel */
 	.resource_table : ALIGN (8) >  DMEM, PAGE 1
 	.ai64_trace : ALIGN (8) >  DMEM, PAGE 1

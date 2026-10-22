@@ -15,7 +15,7 @@ endif
 ROOT := $(abspath ..)
 BUILD := build
 SHM_H := $(ROOT)/zephyr/include/ai64_shm.h
-COMMON_H := include/ai64_trace.h include/ai64_rsc_trace.h $(SHM_H)
+COMMON_H := include/ai64_trace.h include/ai64_rsc_trace.h $(SHM_H) $(ROOT)/zephyr/include/ai64_fabric.h
 CFLAGS := -v3 -O2 --display_error_number --endian=little --hardware_mac=on
 LFLAGS := --reread_libs --warn_sections --stack_size=0x200 --heap_size=0
 INCLUDE := --include_path=$(PRU_CGT)/include \

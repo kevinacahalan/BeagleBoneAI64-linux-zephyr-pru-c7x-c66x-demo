@@ -20,6 +20,13 @@ if(NOT AI64_CORE)
 endif()
 target_compile_definitions(app PRIVATE AI64_CORE="${AI64_CORE}")
 
+# Its node number on the fabric (zephyr/include/ai64_fabric.h).
+set(AI64_FAB_NODE_r5f0_0 1)
+set(AI64_FAB_NODE_r5f0_1 2)
+set(AI64_FAB_NODE_r5f1_0 3)
+set(AI64_FAB_NODE_r5f1_1 4)
+target_compile_definitions(app PRIVATE AI64_FAB_NODE=${AI64_FAB_NODE_${AI64_CORE}})
+
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
   ${CMAKE_CURRENT_SOURCE_DIR}/../erpc/shim
@@ -38,6 +45,7 @@ target_sources(app PRIVATE
   src/ai64_restart.c
   src/ai64_mpu.c
   src/ai64_tisci.c
+  src/ai64_fabric.c
   src/ai64_erpc.cpp
   src/erpc_port_zephyr.cpp
   ../erpc/shim/c_ai64_server.cpp

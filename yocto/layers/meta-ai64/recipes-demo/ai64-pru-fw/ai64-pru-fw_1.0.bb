@@ -15,6 +15,7 @@ SRC_URI = " \
     file://pru/icssg0;subdir=src \
     file://pru/ring;subdir=src \
     file://zephyr/include/ai64_shm.h;subdir=src \
+    file://zephyr/include/ai64_fabric.h;subdir=src \
     git://git.ti.com/git/pru-software-support-package/pru-software-support-package.git;protocol=https;nobranch=1;destsuffix=pssp;name=pssp \
 "
 SRCREV_pssp = "28107daa1d184059f67676ba49d0fcaebb0f6a96"

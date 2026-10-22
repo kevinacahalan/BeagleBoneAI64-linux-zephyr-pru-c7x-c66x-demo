@@ -5,12 +5,12 @@
 #   ai64-demo                 (re)start the four main-domain R5F cores, RTU0,
 #                             PRU0, Tx_PRU0, the nine ring cores, and the DSPs
 #                             with their firmware, then one merged console
-#   ai64-demo --tmux          same start, in tmux session ai64 (twelve windows)
+#   ai64-demo --tmux          same start, in tmux session ai64 (thirteen windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
-# [RTU0], [PRU0], [TxPRU0], [Rings], [C66x0], [C66x1], or [C7x].
+# [RTU0], [PRU0], [TxPRU0], [Rings], [C66x0], [C66x1], [C7x], or [Fabric].
 
 set -euo pipefail
 
@@ -46,6 +46,7 @@ RING_SLICES=(
 	1:1:b138000.pru:b106000.rtu:b10c000.txpru
 )
 RING_NAMES=" b038000.pru b006000.rtu b00c000.txpru b134000.pru b104000.rtu b10a000.txpru b138000.pru b106000.rtu b10c000.txpru "
+FABRIC_DT=/proc/device-tree/reserved-memory/ai64-fabric@a9000000
 # The MCU R5F cluster runs the board's device manager. Never touch it.
 MCU_R5_NAMES="41000000.r5f 41400000.r5f"
 
@@ -57,10 +58,10 @@ usage: ai64-demo [--tmux] [--attach]
              ring cores, and the DSPs with their firmware. Then print one
              console. Each line is prefixed [Linux], [R5F0_0], [R5F0_1],
              [R5F1_0], [R5F1_1], [RTU0], [PRU0], [TxPRU0], [Rings], [C66x0],
-             [C66x1], or [C7x].
+             [C66x1], [C7x], or [Fabric].
   --tmux     Same start, in tmux session ai64. Windows: linux, zephyr,
              rtu0, pru0, txpru0, r5f0_1, r5f1_0, r5f1_1, rings, c66x0,
-             c66x1, c7x.
+             c66x1, c7x, fabric.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
 EOF
@@ -254,11 +255,21 @@ restart_dsps() {
 }
 
 # Stop the R5F cores in reverse start order, then start them in order.
+# A running core is always busy on the bus, polling the fabric, and putting
+# it in reset in the middle of an access can wedge the device manager (the
+# stop's TI-SCI call times out and the SoC locks up). TI's kernel sends
+# RP_MBOX_SHUTDOWN first, and the core parks in WFI; on the BeagleBoard
+# kernel ai64 shutdown sends it.
 restart_r5_cores() {
-	local i entry name fw label src
+	local i entry name fw label src state
 	for ((i = ${#R5_CORES[@]} - 1; i >= 0; i--)); do
 		name=${R5_CORES[i]%%:*}
-		[[ $(cat "$(rproc_by_name "$name")/state") == attached ]] && continue
+		state=$(cat "$(rproc_by_name "$name")/state")
+		[[ $state == attached ]] && continue
+		if [[ $state == running ]] && ! kernel_sends_shutdown && r5_restartable &&
+			! as_root "$BIN" shutdown "$name"; then
+			echo "$name did not take the shutdown request; stopping it anyway." >&2
+		fi
 		stop_core "$name"
 	done
 	for entry in "${R5_CORES[@]}"; do
@@ -395,7 +406,7 @@ viewer_pids() {
 		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
 		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
 		case ${argv[1]} in
-		peer|erpc|watch|trace|ring|linux)
+		peer|erpc|watch|trace|ring|fabric|linux)
 			echo "$pid"
 			;;
 		esac
@@ -416,6 +427,14 @@ if [[ $ATTACH -eq 0 ]]; then
 	stop_viewers
 	sleep 0.3
 	ensure_pru_kick
+	# Every demo core talks to the others through DDR the overlay reserves
+	# (zephyr/include/ai64_fabric.h). Without the overlay that DDR is
+	# Linux's own, and the cores would write over it.
+	if [[ ! -e $FABRIC_DT ]]; then
+		echo "$FABRIC_DT is missing: the ai64-demo overlay is not applied." >&2
+		echo "Run install-beagle.sh and reboot. Starting the cores without it would corrupt Linux's memory." >&2
+		exit 1
+	fi
 	RTU0_FW=$(firmware_path ai64-icssg0-rtu0.elf /lib/firmware/ai64-icssg0-rtu0.elf pru/build/ai64-icssg0-rtu0.elf)
 	PRU0_FW=$(firmware_path ai64-icssg0-pru0.elf /lib/firmware/ai64-icssg0-pru0.elf pru/build/ai64-icssg0-pru0.elf)
 	TXPRU0_FW=$(firmware_path ai64-icssg0-txpru0.elf /lib/firmware/ai64-icssg0-txpru0.elf pru/build/ai64-icssg0-txpru0.elf)
@@ -436,6 +455,8 @@ if [[ $ATTACH -eq 0 ]]; then
 	restart_r5_cores
 	restart_rings
 	restart_dsps
+	# A core stopped while it held the tally's spinlock leaves it taken.
+	as_root "$BIN" fabric reset >/dev/null
 elif [[ -n $(viewer_pids) ]]; then
 	echo "demo viewers are already running. --attach does not restart them." >&2
 	echo "Use the console that started them, or run ai64-demo without --attach." >&2
@@ -503,6 +524,8 @@ if [[ $USE_TMUX -eq 1 ]]; then
 		tmux new-window -d -t "$SESSION" -n "$label"
 		tmux send-keys -t "$SESSION:$label" "$BIN trace $name" C-m
 	done
+	tmux new-window -d -t "$SESSION" -n fabric
+	tmux send-keys -t "$SESSION:fabric" "$BIN fabric" C-m
 	tmux send-keys -t "$SESSION:zephyr" "$BIN erpc $ZEPHYR_DEV $RUN/zephyr.in" C-m
 	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
 	tmux send-keys -t "$SESSION:pru0" "$BIN watch pru0" C-m
@@ -517,6 +540,7 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	echo "  pru0   shared ram"
 	echo "  txpru0 shared ram"
 	echo "  rings  shared ram"
+	echo "  fabric ddr"
 	if [[ -t 0 && -t 1 ]]; then
 		exec tmux attach -t "$SESSION"
 	fi
@@ -566,6 +590,7 @@ for entry in "${DSP_CORES[@]}"; do
 	tag=${label/c66x/C66x}
 	spawn_prefixed "[${tag/c7x/C7x}]" "$RUN/$label.out" "$BIN" trace "$name"
 done
+spawn_prefixed '[Fabric]' "$RUN/fabric.out" "$BIN" fabric lines
 
 rm -f "$RUN/linux.out"
 mkfifo "$RUN/linux.out"

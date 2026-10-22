@@ -1,5 +1,5 @@
-SUMMARY = "BeagleBone AI-64 C66x and C7x hello firmware"
-DESCRIPTION = "Compiles the DSP hello images in dsp/ with TI's C6000 and C7000 compilers. Installs ai64-c66x.elf (for both C66x cores) and ai64-c7x.elf."
+SUMMARY = "BeagleBone AI-64 C66x and C7x firmware"
+DESCRIPTION = "Compiles the DSP images in dsp/ with TI's C6000 and C7000 compilers. Installs ai64-c66x.elf (for both C66x cores) and ai64-c7x.elf. Both include the fabric header from zephyr/include."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
@@ -7,7 +7,10 @@ DEPENDS = "ti-cgt-dsp-native"
 
 FILESEXTRAPATHS:prepend := "${@os.path.abspath(os.path.join(os.path.dirname(d.getVar('FILE')), '..', '..', '..', '..', '..'))}/:"
 
-SRC_URI = "file://dsp;subdir=src"
+SRC_URI = " \
+    file://dsp;subdir=src \
+    file://zephyr/include/ai64_fabric.h;subdir=src \
+"
 
 S = "${UNPACKDIR}/src"
 

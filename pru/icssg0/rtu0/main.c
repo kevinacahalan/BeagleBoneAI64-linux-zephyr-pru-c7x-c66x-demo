@@ -8,6 +8,10 @@
  *   "xy <x> <y>"            the X/Y record, which PRU0 sends on P8.11
  *   "arm <period> <count>"  the arm block, which Tx_PRU0 turns into pulses
  * Anything else is echoed. This core drives no pin itself.
+ *
+ * It is also a fabric node (ai64_fabric.h). A route can carry an arm or xy
+ * action for RTU0, so any core can make Tx_PRU0 pulse or PRU0 send a
+ * frame; RTU0 tells Linux over RPMsg when one does.
  */
 
 #include <stdint.h>
@@ -27,6 +31,16 @@
 #define VIRTIO_CONFIG_S_DRIVER_OK 4
 
 volatile register uint32_t __R31;
+
+static struct pru_rpmsg_transport transport;
+static volatile struct ai64_arm *const arm = (volatile struct ai64_arm *)AI64_ARM_LOCAL;
+static volatile struct ai64_xy *const xy = (volatile struct ai64_xy *)AI64_XY_LOCAL;
+static uint32_t arm_seq;
+static uint32_t xy_seq;
+/* Linux's address and RTU0's, from Linux's first message. */
+static uint16_t src;
+static uint16_t dst;
+static uint16_t peer_known;
 
 static uint8_t payload[RPMSG_MESSAGE_SIZE];
 /*
@@ -184,19 +198,17 @@ static void trace_cmd(const char *who, const char *text)
  * Run one command. Returns the reply length, or 0 when nothing should be
  * sent (a Zephyr command before Linux has said hello).
  */
-static uint16_t run_cmd(const char *who, volatile struct ai64_arm *arm,
-			volatile struct ai64_xy *xy, uint32_t *arm_seq,
-			uint32_t *xy_seq)
+static uint16_t run_cmd(const char *who)
 {
 	uint32_t a, b;
 
 	trace_cmd(who, cmd);
 	if (parse_two(cmd, "xy", &a, &b)) {
-		publish_xy(xy, xy_seq, a, b);
-		return reply_xy(tx, sizeof(tx), who, *xy_seq, a, b);
+		publish_xy(xy, &xy_seq, a, b);
+		return reply_xy(tx, sizeof(tx), who, xy_seq, a, b);
 	}
 	if (parse_two(cmd, "arm", &a, &b)) {
-		arm_pulses(arm, arm_seq, &a, &b);
+		arm_pulses(arm, &arm_seq, &a, &b);
 		return reply_arm(tx, sizeof(tx), who, a, b);
 	}
 	return reply_echo(tx, sizeof(tx), who, cmd);
@@ -211,20 +223,49 @@ static int16_t send_bytes(struct pru_rpmsg_transport *transport,
 	return pru_rpmsg_send(transport, src, dst, (void *)msg, len);
 }
 
+/*
+ * The fabric. RTU0 polls it on every pass of its main loop. A route whose
+ * action is for RTU0 runs it here, between hops.
+ */
+struct ai64_fab_msg;
+static uint32_t fab_action(struct ai64_fab_msg *m);
+
+#define AI64_FAB_NOW()    (*(volatile uint32_t *)(AI64_GTC_ADDR + 8u))
+#define AI64_FAB_BASE     AI64_FAB_ADDR
+#define AI64_FAB_MBOX     AI64_FAB_MBOX_ADDR
+#define AI64_FAB_LOCKREG  (AI64_SPINLOCK_ADDR + AI64_FAB_LOCK_OFF)
+#define AI64_FAB_ACTION(m) fab_action(m)
+#include "ai64_fabric.h"
+
+static uint32_t fab_action(struct ai64_fab_msg *m)
+{
+	static const char who[] = "A fabric route";
+	uint32_t a = m->arg0, b = m->arg1;
+	uint16_t n;
+
+	if (m->action == AI64_FAB_ACT_ARM) {
+		arm_pulses(arm, &arm_seq, &a, &b);
+		n = reply_arm(tx, sizeof(tx), who, a, b);
+	} else if (m->action == AI64_FAB_ACT_XY) {
+		publish_xy(xy, &xy_seq, a, b);
+		n = reply_xy(tx, sizeof(tx), who, xy_seq, a, b);
+	} else {
+		return 1;
+	}
+	trace_puts(tx);
+	trace_putc('\n');
+	if (peer_known) {
+		send_bytes(&transport, dst, src, tx, n);
+	}
+	return 0;
+}
+
 void main(void)
 {
-	struct pru_rpmsg_transport transport;
 	volatile struct ai64_shm *shm = (volatile struct ai64_shm *)AI64_SHM_ADDR;
-	volatile struct ai64_arm *arm = (volatile struct ai64_arm *)AI64_ARM_LOCAL;
-	volatile struct ai64_xy *xy = (volatile struct ai64_xy *)AI64_XY_LOCAL;
 	volatile uint8_t *status;
-	uint16_t src = 0;
-	uint16_t dst = 0;
 	uint16_t len;
 	uint32_t last_seq;
-	uint32_t arm_seq = 0;
-	uint32_t xy_seq = 0;
-	uint16_t peer_known = 0;
 
 	trace_init();
 	trace_puts("rtu0 up, waiting for virtio\n");
@@ -264,7 +305,11 @@ void main(void)
 	xy->magic = 0;
 	xy->seq = 0;
 
+	fab_init(AI64_FAB_RTU0);
+	trace_puts("rtu0 is fabric node 8\n");
+
 	while (1) {
+		fab_poll();
 		if (__R31 & HOST_INT) {
 			CT_INTC.STATUS_CLR_INDEX_REG_bit.STATUS_CLR_INDEX = FROM_ARM_HOST;
 			while (pru_rpmsg_receive(&transport, &src, &dst, payload, &len) ==
@@ -282,7 +327,7 @@ void main(void)
 					cmd[i] = (char)payload[i];
 				}
 				cmd[i] = 0;
-				n = run_cmd("Linux", arm, xy, &arm_seq, &xy_seq);
+				n = run_cmd("Linux");
 				send_bytes(&transport, dst, src, tx, n);
 			}
 		}
@@ -300,7 +345,7 @@ void main(void)
 				cmd[i] = shm->cmd[i];
 			}
 			cmd[i] = 0;
-			n = run_cmd("Zephyr", arm, xy, &arm_seq, &xy_seq);
+			n = run_cmd("Zephyr");
 			/* RTU0 learns Linux's address from Linux's first message. */
 			if (peer_known) {
 				send_bytes(&transport, dst, src, tx, n);
