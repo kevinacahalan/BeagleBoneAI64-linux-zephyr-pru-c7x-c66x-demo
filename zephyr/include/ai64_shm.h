@@ -9,8 +9,9 @@
  *   sends that many pulses on P9.25.
  * X/Y record: RTU0 writes it in ICSSG0 shared RAM. PRU0 reads it and sends
  *   one SLIP frame on P8.11.
- * Ring records: the PRU, RTU, and Tx_PRU of each other ICSSG slice pass a
- *   token around through one, in their ICSSG's shared RAM.
+ * Ring records: the PRU and Tx_PRU of each other ICSSG slice pass a token
+ *   back and forth through one, in their ICSSG's shared RAM. The slice's
+ *   RTU reads it, and writes the ring control record next to it.
  *
  * Do not put a loadable ELF section on the DDR addresses. The Zephyr overlay
  * and these macros must stay on the same addresses.
@@ -48,11 +49,14 @@
 /*
  * The ring records, one per slice, in its ICSSG's shared RAM: ICSSG0 slice
  * 1, ICSSG1 slice 0, and ICSSG1 slice 1 (ICSSG1 is at 0x0B100000). ICSSG0
- * slice 0 runs the demo above instead.
+ * slice 0 runs the demo above instead. Each ring's control record, which
+ * its RTU writes, follows at 0x200.
  */
 #define AI64_RING_LOCAL(slice)      (0x00010100u + 0x40u * (slice))
 #define AI64_RING_CPU(icssg, slice) (0x0B010100u + 0x100000u * (icssg) + 0x40u * (slice))
 #define AI64_RING_MAGIC             0x41493652u /* 'AI6R' */
+#define AI64_RING_CTL_LOCAL(slice)  (0x00010200u + 0x20u * (slice))
+#define AI64_RING_CTL_MAGIC         0x41493643u /* 'AI6C' */
 
 /* SLIP (RFC 1055) framing of the X/Y payload. */
 #define AI64_SLIP_END      0xC0u
@@ -128,22 +132,23 @@ struct ai64_xy {
 };
 
 /*
- * A token goes round PRU, RTU, Tx_PRU, and back to the PRU. stage says
- * whose turn it is, and only that core writes the record. The PRU sets
- * value to the lap number; the RTU rotates it left 5 bits and XORs in
- * AI64_RING_RTU_XOR, and the Tx_PRU adds AI64_RING_TXPRU_ADD. The PRU
- * checks what comes back and counts a mismatch in errors.
+ * A token goes from the PRU to the Tx_PRU and back. stage says whose turn
+ * it is, and only that core writes the record. The PRU sets value to the
+ * lap number, the Tx_PRU adds AI64_RING_TXPRU_ADD, and the PRU checks what
+ * comes back and counts a mismatch in errors. The slice's RTU only reads
+ * the record.
  *
  * The PRU starts each run: it bumps run, zeroes the counts, and only then
  * sets magic. Lap times are in ICSSG cycles, the minimum and maximum over
- * the last window of AI64_RING_WINDOW laps.
+ * the last window. A window is `window` laps, AI64_RING_WINDOW unless the
+ * RTU asked for another, and the PRU toggles its header pin once a window.
  */
-#define AI64_RING_PRU       0u
-#define AI64_RING_RTU       1u
-#define AI64_RING_TXPRU     2u
-#define AI64_RING_RTU_XOR   0xA5A5A5A5u
-#define AI64_RING_TXPRU_ADD 0x9E3779B9u
-#define AI64_RING_WINDOW    65536u
+#define AI64_RING_PRU        0u
+#define AI64_RING_TXPRU      1u
+#define AI64_RING_TXPRU_ADD  0x9E3779B9u
+#define AI64_RING_WINDOW     65536u
+#define AI64_RING_WINDOW_MIN 256u
+#define AI64_RING_WINDOW_MAX 16777216u
 
 struct ai64_ring {
 	uint32_t magic;
@@ -151,23 +156,57 @@ struct ai64_ring {
 	uint32_t stage;
 	uint32_t value;
 	uint32_t laps;
-	uint32_t rtu_hops;
 	uint32_t txpru_hops;
 	uint32_t errors;
 	uint32_t lap_last;
 	uint32_t lap_min;
 	uint32_t lap_max;
+	uint32_t window;
+	uint32_t ctl_ack;  /* the control seq the PRU applied last */
 };
 
-static inline uint32_t ai64_ring_rtu(uint32_t v)
-{
-	return ((v << 5) | (v >> 27)) ^ AI64_RING_RTU_XOR;
-}
+/*
+ * The RTU writes window, then seq. The PRU looks once a window, at the
+ * window's end, and adopts the seq it finds when it starts.
+ */
+struct ai64_ring_ctl {
+	uint32_t magic;
+	uint32_t seq;
+	uint32_t window;
+};
 
 static inline uint32_t ai64_ring_txpru(uint32_t v)
 {
 	return v + AI64_RING_TXPRU_ADD;
 }
+
+/*
+ * What each ring slice's RTU publishes in its fabric page (the app block,
+ * ai64_fabric.h), about every 10 ms, for any core to read. rate is laps a
+ * second, over the last second. errors_seen goes up once for each time the
+ * RTU found the ring's error count had grown.
+ */
+#define AI64_SLICE_MAGIC 0x41493649u /* 'AI6I' */
+
+struct ai64_slice_status {
+	uint32_t magic;
+	uint32_t icssg;
+	uint32_t slice;
+	uint32_t rpmsg;      /* 1 when Linux can also reach this RTU over RPMsg */
+	uint32_t run;
+	uint32_t laps;
+	uint32_t txpru_hops;
+	uint32_t errors;
+	uint32_t lap_last;
+	uint32_t lap_min;
+	uint32_t lap_max;
+	uint32_t window;
+	uint32_t ctl_seq;
+	uint32_t ctl_ack;
+	uint32_t rate;
+	uint32_t errors_seen;
+	uint32_t at;         /* GTC when the RTU wrote it */
+};
 
 #ifndef PRU_CORE
 static inline uint32_t ai64_crc32(const uint8_t *data, uint32_t len)

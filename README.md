@@ -7,18 +7,31 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **RTU0** (ICSSG0) takes commands from Linux (RPMsg) and from Zephyr (a shared DDR mailbox), and hands them to the other two ICSSG0 cores.
 - **PRU0** (ICSSG0) runs a cycle-counted loop and bit-bangs a UART frame on a header pin.
 - **Tx_PRU0** (ICSSG0) sends pulse trains on a header pin through the SoC's GPIO module.
-- **The other nine ICSSG cores**, the PRU, RTU, and Tx_PRU of ICSSG0 slice 1 and of both ICSSG1 slices, pass a token round in three rings through their ICSSG's shared RAM. Linux reports how fast each ring goes.
+- **The other three ICSSG slices** (ICSSG0 slice 1 and both ICSSG1 slices) each run a ring: the slice's PRU and Tx_PRU pass a token back and forth through their ICSSG's shared RAM, and the PRU toggles a header pin. The slice's RTU reports how fast the ring goes and takes commands for it. ICSSG1 RTU0 talks to Linux over RPMsg; the other two RTUs only through shared memory.
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory.
-- **The fabric** joins all of these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the PRUs, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has RTU0 pulse a pin. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](#every-core-to-every-other-the-fabric)).
+- **The fabric** joins all of these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has RTU0 pulse a pin. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](#every-core-to-every-other-the-fabric)).
+
+Every ICSSG slice splits its three cores the same way: **the RTU talks, and the PRU and Tx_PRU keep time.** The RTU is the slice's only link to the rest of the SoC. The PRU and Tx_PRU only touch their ICSSG's own RAM, so nothing elsewhere on the chip can stretch their timing; their trace log, in their own RAM, is the one exception, and the build can leave it out ([One core talks, two keep time](#one-core-talks-two-keep-time)).
 
 ```mermaid
 flowchart LR
   ai64["Linux ai64<br/>A72"]
   r5["Zephyr<br/>R5F0_0"]
   r5b["Zephyr<br/>R5F0_1, R5F1_0, R5F1_1"]
-  rtu0["RTU0"]
-  pru0["PRU0"]
-  tx["Tx_PRU0"]
+  dsp["C66x 0, C66x 1, C7x"]
+  subgraph s00["ICSSG0 slice 0"]
+    rtu0["RTU0"]
+    pru0["PRU0<br/>SLIP frame on P8.11"]
+    tx["Tx_PRU0<br/>pulses on P9.25"]
+  end
+  subgraph s10["ICSSG1 slice 0"]
+    g1rtu0["RTU0"]
+    ring10["PRU0 and Tx_PRU0<br/>ring, pin P8.18"]
+  end
+  subgraph sx1["ICSSG0 slice 1, ICSSG1 slice 1"]
+    rtu1["RTU1"]
+    ringx1["PRU1 and Tx_PRU1<br/>ring, pins P8.44, P8.21"]
+  end
   ai64 <-->|"RPMsg eRPC"| r5
   ai64 <-->|"RPMsg eRPC"| r5b
   ai64 -->|"DDR bulk buffer"| r5
@@ -28,10 +41,12 @@ flowchart LR
   rtu0 -->|"ICSSG shared RAM"| tx
   pru0 -->|"Linux reads shared RAM"| ai64
   tx -->|"Linux reads shared RAM"| ai64
-  dsp["C66x 0, C66x 1, C7x"]
+  ai64 <-->|"RPMsg text"| g1rtu0
+  g1rtu0 <-->|"ICSSG shared RAM"| ring10
+  rtu1 <-->|"ICSSG shared RAM"| ringx1
+  g1rtu0 -->|"status in its fabric page"| ai64
+  rtu1 -->|"status in its fabric page"| ai64
   dsp -->|"trace buffer"| ai64
-  rings["3 rings: PRU, RTU, Tx_PRU<br/>ICSSG0 slice 1, ICSSG1 slices 0 and 1"]
-  rings -->|"Linux reads shared RAM"| ai64
 ```
 
 ```mermaid
@@ -40,7 +55,8 @@ flowchart LR
   l["Linux"] <--> fab
   z["R5F0_0, R5F0_1,<br/>R5F1_0, R5F1_1"] <--> fab
   d["C66x 0, C66x 1, C7x"] <--> fab
-  p["RTU0, and the PRU<br/>of each ring"] <--> fab
+  p["the four RTUs,<br/>one per ICSSG slice"] <--> fab
+  p <-->|"ICSSG RAM only"| rt["each slice's PRU and Tx_PRU"]
 ```
 
 Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
@@ -140,14 +156,14 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, the nine ring cores, and the DSPs with the installed firmware, then opens a tmux session with thirteen windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `rings`, `c66x0`, `c66x1`, `c7x`, and `fabric`. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)). The `fabric` window is about 100 columns wide.
+- It restarts RTU0, PRU0, Tx_PRU0, the four R5F cores, the nine cores of the other three ICSSG slices, and the DSPs with the installed firmware, then opens a tmux session with fourteen windows: `linux`, `zephyr` (R5F0_0), `rtu0`, `pru0`, `txpru0`, `r5f0_1`, `r5f1_0`, `r5f1_1`, `g1rtu0` (ICSSG1 RTU0), `rings`, `c66x0`, `c66x1`, `c7x`, and `fabric`. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)). The `fabric` window is about 100 columns wide.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
 
 To stop the demo, run `tmux kill-session -t ai64`. Typing `quit` in the `linux` window only ends that window.
 
-Without tmux, plain `ai64-demo` prints all thirteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
+Without tmux, plain `ai64-demo` prints all fourteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
 
 ### After you change the code
 
@@ -157,7 +173,7 @@ Without tmux, plain `ai64-demo` prints all thirteen windows on one console inste
 
 ## What you should see
 
-On startup the linux window runs a short script. It pings RTU0, then sends `say`, `arm`, `chunk`, `xy 41 83`, and `spi` to Zephyr on R5F0_0, `arm` to RTU0, and `say` to each of the other R5F cores. A passing run, one block per window:
+On startup the linux window runs a short script. It pings RTU0, then sends `say`, `arm`, `chunk`, `xy 41 83`, and `spi` to Zephyr on R5F0_0, `arm` to RTU0, `say` to each of the other R5F cores, and `status` and `window 65536` (the default, so the pin keeps its frequency) to ICSSG1 RTU0. A passing run, one block per window:
 
 ```
 == linux
@@ -176,7 +192,9 @@ Linux asked Zephyr on R5F1_0 to say hello from linux
 Linux asked Zephyr on R5F1_0 to say "hello from linux", and it replied "zephyr r5f1_0: hello from linux"
 Linux asked Zephyr on R5F1_1 to say hello from linux
 Linux asked Zephyr on R5F1_1 to say "hello from linux", and it replied "zephyr r5f1_1: hello from linux"
-linux window ready. commands: zephyr say|arm|chunk|xy|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | rtu0 xy|arm|<text> | help
+Linux asked ICSSG1 RTU0 for its ring's status
+Linux asked ICSSG1 RTU0 for a 65536-lap ring window
+linux window ready. commands: zephyr say|arm|chunk|xy|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | rtu0 xy|arm|<text> | g1rtu0 status|window <laps>|<text> | help
 
 == zephyr
 Zephyr window ready on /dev/rpmsg2 (eRPC)
@@ -213,11 +231,19 @@ Tx_PRU0 finished seq 2 after 10 pulses on P9.25
 Zephyr on R5F0_1 window ready on /dev/rpmsg4 (eRPC)
 Linux asked Zephyr on R5F0_1 to say "hello from linux", and it replied "zephyr r5f0_1: hello from linux"
 
-== rings (a line per ring every 10 s; run counts the ring's restarts since boot)
+== g1rtu0 (ICSSG1 RTU0, the ring RTU with RPMsg)
+g1rtu0 window ready on /dev/rpmsg6
+sent to g1rtu0: status
+ICSSG1 RTU0: ring run 1, 2504690 laps/s, round trip 67 cycles, window 65536 laps, errors 0
+sent to g1rtu0: window 65536
+Linux asked ICSSG1 RTU0 for a 65536-lap window, and it wrote control seq 2 for ICSSG1 PRU0
+ICSSG1 PRU0 applied control seq 2: its pin on P8.18 now toggles every 65536 laps
+
+== rings (a line per ring every 10 s, from each slice's RTU; run counts the ring's restarts since boot)
 ring window ready, a line per ring every 10 s
-icssg0 slice 1: run 29, 1.82 M laps/s, round trip 92 cycles (84 to 109), hops PRU 115638312 RTU 115638313 Tx_PRU 115638313, errors 0
-icssg1 slice 0: run 29, 1.59 M laps/s, round trip 110 cycles (86 to 125), hops PRU 100039749 RTU 100039750 Tx_PRU 100039750, errors 0
-icssg1 slice 1: run 29, 1.59 M laps/s, round trip 110 cycles (85 to 122), hops PRU 98054390 RTU 98054391 Tx_PRU 98054391, errors 0
+icssg0 slice 1 (RTU1): run 1, 2.60 M laps/s, round trip 60 cycles (56 to 85), window 65536, P8.44 19.80 Hz, hops PRU 33362532 Tx_PRU 33362533, errors 0
+icssg1 slice 0 (RTU0, RPMsg): run 1, 2.50 M laps/s, round trip 66 cycles (56 to 81), window 65536, P8.18 19.11 Hz, hops PRU 30249710 Tx_PRU 30249711, errors 0
+icssg1 slice 1 (RTU1): run 1, 2.51 M laps/s, round trip 62 cycles (54 to 78), window 65536, P8.21 19.12 Hz, hops PRU 27546610 Tx_PRU 27546611, errors 0
 
 == c66x0 (c66x1 is the same, with DNUM 1)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d808028e0
@@ -281,13 +307,18 @@ Type these in the linux window:
 | `rtu0 xy <x> <y>` | RTU0 publishes X/Y directly, and PRU0 sends it |
 | `rtu0 arm <period> <count>` | RTU0 arms Tx_PRU0 directly |
 | `rtu0 <text>` | RTU0 echoes the text |
+| `g1rtu0 status` | ICSSG1 RTU0 replies with its ring's lap rate, round trip, window, and errors |
+| `g1rtu0 window <laps>` | ICSSG1 RTU0 asks its ring's PRU to toggle P8.18 every `laps` laps, from 256 to 16777216, and says when the PRU has |
+| `g1rtu0 <text>` | ICSSG1 RTU0 echoes the text |
 | `help`, `quit` | List the commands, or leave |
 
 A period is in ICSSG cycles at 250 MHz: 250000 is 1 ms, and the range is 2500 (10 µs) to 250000000 (1 s). The count is at most 100000.
 
-`ai64-demo` without `--tmux` prints all thirteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[Rings]`, `[C66x0]`, `[C66x1]`, `[C7x]`, or `[Fabric]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+The other two ring RTUs have no RPMsg. `sudo ai64 fabric route g0rtu1 window <laps>` (or `g1rtu1`) reaches them through the fabric instead, and so can any core on the route.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 ring once` prints one sample of the three rings, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [arm <period> <count> | xy <x> <y>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
+`ai64-demo` without `--tmux` prints all fourteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PRU0]`, `[TxPRU0]`, `[G1RTU0]`, `[Rings]`, `[C66x0]`, `[C66x1]`, `[C7x]`, or `[Fabric]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+
+`ai64` has a few more subcommands for checking a board: `sudo ai64 shm` prints both shared-RAM records, `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 ring once` prints one sample of the three rings, as their RTUs report them, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [arm <period> <count> | xy <x> <y> | window <laps>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
 
 ## Probe the pins
 
@@ -299,10 +330,10 @@ All signals are 3.3 V. On a Saleae Logic, choose the 1.8 V threshold setting for
 | PRU0 UART | P8.11 | one SLIP frame per X/Y, 115200 8N1, idles high |
 | Tx_PRU0 pulses | P9.25 | `count` pulses per arm, high for the first half of each period |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
-| Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every 65536 laps: about 13.9 Hz, 12.2 Hz, and 12.2 Hz |
-| A fabric route's action | P9.25, or P8.11 | `ai64 fabric route ... arm` or `xy`: the same pulses or frame, from whichever cores the route passes |
+| Ring square waves | P8.44 (ICSSG0 slice 1), P8.18 (ICSSG1 slice 0), P8.21 (ICSSG1 slice 1) | a toggle every window, 65536 laps by default: about 19.8 Hz, 19.1 Hz, and 19.1 Hz |
+| A fabric route's action | P9.25, P8.11, or a ring pin | `ai64 fabric route ... arm`, `xy`, or `window`: the same pulses or frame, or a ring pin at a new frequency, from whichever cores the route passes |
 
-For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, SPI7 measured a 1.000 µs clock, and the ring pins measured 13.87 Hz, 12.16 Hz, and 12.17 Hz, which is the lap rate `ai64 ring` reports divided by 131072. The route `c7x r5f1_1 g1pru0 c66x1 rtu0 arm 25000 8` put 8 pulses on P9.25, 99.5 to 100.5 µs apart, and `xy 41 83` the frame above on P8.11. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
+For `xy 41 83`, P8.11 carries `C0 29 00 00 00 53 00 00 00 7A C0`. [PRU0](#pru0-the-slip-frame-on-p811) explains the frame. For the startup script, P9.25 carries 20 pulses 1 ms apart, then 10 pulses 0.5 ms apart. On the bench the periods measured 1000.1–1000.4 µs and 499.9–500.4 µs, SPI7 measured a 1.000 µs clock, and the ring pins measured 19.80 Hz, 19.11 Hz, and 19.12 Hz, which is the lap rate `ai64 ring` reports divided by 131072. The route `c7x g0rtu0 arm 25000 8` put 8 pulses on P9.25, 99.5 to 100.5 µs apart, `xy 41 83` the frame above on P8.11, and `g1rtu1 window 4096` moved P8.21 to 306.0 Hz. `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
 ## How it works
 
@@ -363,6 +394,7 @@ The R5F's caches are on ([R5F caches](#r5f-caches)), but `ai64_mpu.c` maps the 1
 - Linux writes plain text: `ping`, `xy <x> <y>`, or `arm <period> <count>`.
 - RTU0 replies with one sentence that names who asked and what it did.
 - RTU0 learns Linux's address from the first message it receives, so Linux sends `ping` first. RTU0 can't report anything that Zephyr asks it to do until Linux has sent that first message.
+- ICSSG1 RTU0 runs the same channel, from the same code (`pru/include/ai64_rtu_rpmsg.h` and the resource table in `ai64_rsc_rpmsg.h`), and Linux sends it `status` first for the same reason.
 
 ### RTU0 to PRU0 and Tx_PRU0: ICSSG shared RAM
 
@@ -399,31 +431,55 @@ Tx_PRU0 has R30 like the other cores, but on this SoC its R30 does not reach any
 
 A train always finishes. An `arm` that arrives during a train starts when the train ends. If more than one arrives, only the newest runs, because the arm block is one slot.
 
+### One core talks, two keep time
+
+The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU, and a Tx_PRU: twelve cores. Every slice in the demo splits them the same way.
+
+| Slice | RTU: talks to the rest of the SoC | PRU and Tx_PRU: real-time work |
+| --- | --- | --- |
+| ICSSG0 slice 0 | RTU0: RPMsg to Linux, the DDR mailbox from Zephyr, the fabric | PRU0 sends SLIP frames on P8.11, Tx_PRU0 pulse trains on P9.25 |
+| ICSSG0 slice 1 | RTU1: the fabric only | a ring, and a square wave on P8.44 |
+| ICSSG1 slice 0 | RTU0: RPMsg to Linux, and the fabric | a ring, and a square wave on P8.18 |
+| ICSSG1 slice 1 | RTU1: the fabric only | a ring, and a square wave on P8.21 |
+
+- **The RTU does everything slow or unpredictable.** It reads and writes DDR, rings mailboxes, takes the hardware spinlock, runs RPMsg, and reads the GTC. How long any of that takes depends on what the rest of the chip is doing.
+- **The PRU and Tx_PRU only touch their ICSSG's own RAM**: shared RAM and data RAM, at a fixed few cycles an access. They talk to their RTU through records there, each written by one core and read by the other, and never wait on it. So nothing outside the ICSSG can stretch a pulse or a lap. One exception is forced by the hardware: Tx_PRU0's R30 reaches no pad, so it drives P9.25 with posted writes to the GPIO0 module ([Tx_PRU0](#tx_pru0-pulses-on-p925-through-gpio0)).
+- **The trace log is the other exception.** Every core keeps a remoteproc trace buffer in its own data RAM, which Linux reads (`ai64 trace <remoteproc-name>`); writing a line is a few local stores. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace calls out of the PRUs and Tx_PRUs. The RTUs always keep theirs.
+- **Two RTUs talk over RPMsg and two over shared memory only**, so the template has a working example of each. ICSSG0 RTU0 and ICSSG1 RTU0 announce an RPMsg channel, which needs a vring interrupt in the overlay for each and a few KiB of data RAM. ICSSG0 RTU1 and ICSSG1 RTU1 have no RPMsg; Linux and every other core reach them through the fabric. All four are fabric nodes, and all four publish what they know in their fabric page.
+- The PRU is the core that drives pins. Its R30 reaches the header through the pad mux, and the RTU's and Tx_PRU's do not, so a slice's pin work belongs on its PRU.
+
 ### The ICSSG rings
 
-The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU, and a Tx_PRU: twelve cores. ICSSG0 slice 0 runs the demo above. The other three slices each run a ring, from one source, `pru/ring/main.c`, built once per core:
+ICSSG0 slice 1 and both ICSSG1 slices each run a ring. The PRU and Tx_PRU run `pru/ring/main.c` and the RTU runs `pru/ring/rtu.c`, each built once per core:
 
-| Ring | PRU | RTU | Tx_PRU | Record (Linux address) |
+| Ring | PRU | Tx_PRU | RTU | Fabric node |
 | --- | --- | --- | --- | --- |
-| ICSSG0 slice 1 | `b038000.pru`, `ai64-icssg0-pru1.elf` | `b006000.rtu`, `ai64-icssg0-rtu1.elf` | `b00c000.txpru`, `ai64-icssg0-txpru1.elf` | `0x0b010140` |
-| ICSSG1 slice 0 | `b134000.pru`, `ai64-icssg1-pru0.elf` | `b104000.rtu`, `ai64-icssg1-rtu0.elf` | `b10a000.txpru`, `ai64-icssg1-txpru0.elf` | `0x0b110100` |
-| ICSSG1 slice 1 | `b138000.pru`, `ai64-icssg1-pru1.elf` | `b106000.rtu`, `ai64-icssg1-rtu1.elf` | `b10c000.txpru`, `ai64-icssg1-txpru1.elf` | `0x0b110140` |
+| ICSSG0 slice 1 | `b038000.pru`, `ai64-icssg0-pru1.elf` | `b00c000.txpru`, `ai64-icssg0-txpru1.elf` | `b006000.rtu`, `ai64-icssg0-rtu1.elf` | 9, `g0rtu1` |
+| ICSSG1 slice 0 | `b134000.pru`, `ai64-icssg1-pru0.elf` | `b10a000.txpru`, `ai64-icssg1-txpru0.elf` | `b104000.rtu`, `ai64-icssg1-rtu0.elf`, with RPMsg | 10, `g1rtu0` |
+| ICSSG1 slice 1 | `b138000.pru`, `ai64-icssg1-pru1.elf` | `b10c000.txpru`, `ai64-icssg1-txpru1.elf` | `b106000.rtu`, `ai64-icssg1-rtu1.elf` | 11, `g1rtu1` |
 
-- A token goes round PRU, RTU, Tx_PRU, and back, through a record in the ICSSG's shared RAM (`struct ai64_ring` in `zephyr/include/ai64_shm.h`). A `stage` field says whose turn it is, and only that core writes the record.
-- The value changes on the way: the PRU sends the lap number, the RTU rotates it and XORs in a constant, the Tx_PRU adds one. The PRU checks what comes back and counts mismatches in `errors`.
-- The PRU times each round trip with its cycle counter, and logs the laps in each 10 s to its trace. The RTU and Tx_PRU log when they first get the token, once per run.
-- The `rings` window (`ai64 ring`) reads the three records through `/dev/mem`. A round trip takes about 90 ICSSG cycles in ICSSG0 and 110–120 in ICSSG1, and a ring does about 1.6 to 1.8 million laps a second; the rest of each lap is the PRU's own bookkeeping, and its fabric pass.
+**The ring.** A token goes from the PRU to the Tx_PRU and back, through a record in the ICSSG's shared RAM (`struct ai64_ring` in `zephyr/include/ai64_shm.h`). A `stage` field says whose turn it is, and only that core writes the record.
+
+- The PRU sends the lap number, and the Tx_PRU adds a constant to it. The PRU checks what comes back and counts mismatches in `errors`.
+- The PRU times each round trip with its cycle counter. A round trip takes about 60 ICSSG cycles, and a ring does about 2.5 to 2.6 million laps a second; the rest of each lap is the PRU's own bookkeeping.
 - The PRU leaves its cycle counter running and takes differences. The counter only clears while stopped, and restarting it every lap cost tens of cycles that no lap counted.
-- A ring's PRU starts a run by taking the token and zeroing the counts, which is only safe while its RTU and Tx_PRU wait for the token. So `ai64-demo` stops the PRU first and starts it last. Each start bumps the record's `run`.
-- Each ring's PRU toggles one header pin every 65536 laps, the same window it publishes `lap_min` and `lap_max` for, so the lap loop itself does no extra work. The pin's frequency times 131072 is the lap rate. [`PINMUX.md`](PINMUX.md) has the pins. The RTUs and Tx_PRUs touch no pin, and no ring core touches a peripheral outside its ICSSG.
+- A ring's PRU starts a run by taking the token and zeroing the counts, which is only safe while its Tx_PRU waits for the token. So `ai64-demo` stops the PRU first and starts it last. Each start bumps the record's `run`.
+- The PRU toggles one header pin once a window, the same window it publishes `lap_min` and `lap_max` for, so the lap loop itself does no extra work. A window is 65536 laps unless the RTU asks for another number, so at the default the pin's frequency times 131072 is the lap rate. [`PINMUX.md`](PINMUX.md) has the pins.
 
-Each ring's PRU is also a [fabric](#every-core-to-every-other-the-fabric) node: every 64 laps it looks at its inbox, answers and sends pings, and passes tours on. That pass costs ICSSG0 slice 1 about 8% of its laps (1.98 to 1.82 M laps a second) and each ICSSG1 ring about 2.5% (1.63 to 1.59 M). The round trip itself does not change, because the PRU only looks between laps.
+**The ring's RTU** is the ring's link to everything else:
 
-A slice sees its own data RAM at local `0x0000` and the other slice's at `0x2000`, so one linker script per kind of core (`pru/ring/ring_*.cmd`) serves both slices. A ring's three cores share the first 4 KiB of their slice's data RAM: the PRU `0x000`–`0x7ff`, the RTU `0x800`–`0xbff`, the Tx_PRU `0xc00`–`0xfff`. In ICSSG0 the upper 4 KiB of slice 1's data RAM is not free: RTU0 and Tx_PRU0 keep their stack and trace buffer there, because their own 2 KiB in slice 0 is full. Moving those into ICSSG0 shared RAM instead, above `0x10000`, broke RTU0: its strings and the ring record were overwritten soon after the ring cores started.
+- Every 10 ms it copies the ring record into the app block of its fabric page (`struct ai64_slice_status`), with the lap rate it measured over the last second. Any core can read it there. The `rings` window, `ai64 ring`, reads those three pages, so Linux never reads the ICSSG.
+- It writes the ring's control record, next to the ring record in shared RAM (`struct ai64_ring_ctl`): a window size, then a sequence number. The PRU looks at the sequence number once a window, at the window's end, applies the new size, and copies the number into the ring record as `ctl_ack`. The RTU starts before the PRU and writes the default window, so a restart always begins at 65536 laps.
+- It says when the PRU has applied a window, and when the ring's error count grows: in its trace, and to Linux if it has RPMsg.
+- It takes a window from a fabric route, `window <laps>`, so any core can set one: `sudo ai64 fabric route g1rtu1 window 4096` makes P8.21 toggle sixteen times as fast. ICSSG1 RTU0 also takes `status` and `window <laps>` from Linux over RPMsg (the `g1rtu0` window).
+
+**What the RTUs cost the rings.** A running RTU still slows its ICSSG's rings a little, though the rings never wait on it. With all three ring RTUs stopped, the ring pins measured 19.95, 19.50, and 19.50 Hz; running, 19.77, 19.11, and 19.12 Hz. That is 0.9% for ICSSG0 slice 1, which shares its ICSSG with one ring RTU, and 2% for each ICSSG1 slice, which shares with two. The RTUs only read the ring record every 10 ms, so this is contention inside the ICSSG, most likely on the interconnect that both the ring's shared-RAM accesses and the RTU's reads of DDR and the mailbox cross; the cause has not been pinned down further. Making each RTU pause 10 µs between passes won back about half of it, and made a message to an RTU up to 10 µs slower, so the RTUs don't pause. Before this split, when the ring went round all three of a slice's cores and its PRU was a fabric node itself, looking at its inbox every 64 laps, the fabric cost ICSSG0 slice 1 8% of its laps, and a message to a ring waited about 20 µs for the PRU to look.
+
+A slice sees its own data RAM at local `0x0000` and the other slice's at `0x2000`, so one linker script per kind of core (`pru/ring/ring_*.cmd`) serves both slices. A ring slice's three cores share the first 4 KiB of their slice's data RAM: the PRU `0x000`–`0x3ff`, the Tx_PRU `0x400`–`0x7ff`, the RTU `0x800`–`0xfff`. In ICSSG0 the upper 4 KiB of slice 1's data RAM is not free: RTU0 and Tx_PRU0 keep their stack and trace buffer there, because their own 2 KiB in slice 0 is full. Moving those into ICSSG0 shared RAM instead, above `0x10000`, broke RTU0: its strings and the ring record were overwritten soon after the ring cores started. In ICSSG1 it is free, and ICSSG1 RTU0 keeps its RPMsg buffers there (`ring_rtu_rpmsg.cmd`). Its code fills all but about 250 bytes of its 8 KiB instruction RAM.
 
 ### Every core to every other: the fabric
 
-Every link above goes through Linux, or joins two cores that sit next to each other. The fabric joins every demo core directly to every other one, Linux included: twelve nodes, 132 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the PRUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
+Every link above goes through Linux, or joins two cores that sit next to each other. The fabric joins every demo core directly to every other one, Linux included: twelve nodes, 132 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the RTUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
 
 | Node | Name | Core | When it looks at its inbox |
 | --- | --- | --- | --- |
@@ -431,8 +487,10 @@ Every link above goes through Linux, or joins two cores that sit next to each ot
 | 1–4 | `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` | Zephyr (`zephyr/r5/src/ai64_fabric.c`) | in a thread at the lowest priority, which yields after each pass |
 | 5, 6 | `c66x0`, `c66x1` | C66x | every pass of its main loop |
 | 7 | `c7x` | C7x | every pass of its main loop |
-| 8 | `rtu0` | ICSSG0 RTU0 | every pass of its main loop, next to its RPMsg check |
-| 9–11 | `g0pru1`, `g1pru0`, `g1pru1` | the three ring PRUs | between laps, every 64 laps |
+| 8 | `g0rtu0` | ICSSG0 RTU0 (`pru/icssg0/rtu0/main.c`) | every pass of its main loop, next to its RPMsg and mailbox checks |
+| 9–11 | `g0rtu1`, `g1rtu0`, `g1rtu1` | the RTUs of the three ring slices (`pru/ring/rtu.c`) | every pass of its main loop |
+
+The PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([One core talks, two keep time](#one-core-talks-two-keep-time)).
 
 **What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
 
@@ -449,8 +507,8 @@ Every link above goes through Linux, or joins two cores that sit next to each ot
 | --- | --- | --- |
 | ping | every node, to every other, every 10 ms | carries the sender's GTC stamp and a value. The receiver stamps when it has read it, mixes its node number into the value, and sends it back. |
 | pong | the receiver of a ping | the sender checks the value and times the round trip. The receiver's stamp minus the sender's is the one-way latency. A ping with no pong in 50 ms is a timeout, and that peer counts as down until a later ping comes back. |
-| tour | R5F0_0, every 10 ms | goes round every node whose pings R5F0_0 sees answered, Linux included while its viewer runs, in an order that keeps changing the kind of core: c66x0, rtu0, r5f1_0, c7x, g1pru0, r5f0_1, c66x1, g0pru1, r5f1_1, g1pru1, linux, and home. Each hop stamps it and mixes its number into the value, and R5F0_0 checks the value when the tour comes back. |
-| route | `ai64 fabric route`, from Linux | the same as a tour, along the nodes you name and back to Linux. It can carry an action for RTU0, `arm` or `xy`, so any core on the way can make Tx_PRU0 pulse or PRU0 send its frame. Its count lives in a word of its own, so routes work while the viewer, also node 0, runs. |
+| tour | R5F0_0, every 10 ms | goes round every node whose pings R5F0_0 sees answered, Linux included while its viewer runs, in an order that keeps changing the kind of core: c66x0, g0rtu0, r5f1_0, c7x, g1rtu0, r5f0_1, c66x1, g0rtu1, r5f1_1, g1rtu1, linux, and home. Each hop stamps it and mixes its number into the value, and R5F0_0 checks the value when the tour comes back. |
+| route | `ai64 fabric route`, from Linux | the same as a tour, along the nodes you name and back to Linux. It can carry an action: `arm` or `xy` for ICSSG0 RTU0, so any core on the way can make Tx_PRU0 pulse or PRU0 send its frame, or `window` for a ring RTU, which changes its ring's pin. Its count lives in a word of its own, so routes work while the viewer, also node 0, runs. |
 
 A node that starts takes the counts it finds as already seen, and zeroes its own counters. A message sent to a stopped node is simply lost, and its sender times out, so `ai64-demo` can restart any core while the others keep going.
 
@@ -463,72 +521,85 @@ A node that starts takes the counts it finds as already seen, and zeroes its own
 | R5F | MPU region 7, normal non-cacheable (`ai64_mpu.c`) | in the low 2 GiB the MPU maps as device memory |
 | C66x | MAR register for `0xA9xxxxxx` cleared, which turns off the XMC prefetch it resets with | the mailbox and spinlock directly. The GTC, below `0x0C000000`, is the C66x's own internal space, so MPAX segment 2 maps a logical page at `0x7FFFF000` onto it (`c66x/main.c`). |
 | C7x | 32 level-3 MMU pages, normal non-cacheable (`ai64_c7x_mmu.c`) | the device-memory GiB at `0` |
-| PRU | its global address; a message moves in one or two `LBBO`/`SBBO` bursts | the same |
+| RTU | its global address; a message moves in one or two `LBBO`/`SBBO` bursts | the same |
 | Linux | `/dev/mem` | `/dev/mem` |
 
 **What you see.** The `fabric` window, `ai64 fabric`, redraws once a second. On the Debian image, with every core running:
 
 ```
 fabric: one-way latency in us, from the row's node to the column's, over the last 1.0 s
-         linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x   rtu0 g0pru1 g1pru0 g1pru1
-linux        .    4.5    3.7    3.6    3.7    4.2    3.6    3.1    3.2   20.5   23.2   23.8
-r5f0_0    46.5      .    4.5    4.6    4.6    4.6    3.7    2.8    3.8   21.2   24.2   23.0
-r5f0_1    46.7    6.7      .    4.8    4.7    4.4    4.0    3.3    4.0   23.2   23.3   23.7
-r5f1_0    49.7    6.2    4.8      .    4.9    4.4    3.9    3.2    4.1   20.1   22.5   24.0
-r5f1_1    47.8    6.4    4.8    4.8      .    4.4    3.9    3.2    3.9   20.3   23.1   21.7
-c66x0     48.4    4.3    3.6    3.5    3.9      .    3.2    2.2    3.0   19.1   22.2   24.1
-c66x1     63.9    4.7    3.6    3.6    3.9    3.5      .    2.2    3.1   19.4   22.8   23.7
-c7x       43.2    3.8    3.2    3.4    3.4    3.2    2.6      .    2.8   19.4   21.8   21.9
-rtu0      49.0    4.4    3.8    3.8    4.1    3.8    3.3    2.6      .   19.7   22.0   23.7
-g0pru1    45.7    4.6    4.2    4.3    4.5    4.0    3.6    2.9    3.6      .   21.3   24.1
-g1pru0    47.1    4.5    4.2    4.5    5.0    4.3    3.9    2.9    4.0   22.7      .   23.5
-g1pru1    47.1    5.6    4.1    3.8    4.2    3.8    3.3    2.5    3.6   21.3   20.9      .
+         linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x g0rtu0 g0rtu1 g1rtu0 g1rtu1
+linux        .    5.5    4.0    4.1    4.3    3.7    6.4    2.6    3.6    3.7    3.6    3.5
+r5f0_0    50.9      .    4.9    5.0    5.2    4.6    4.1    3.4    4.5    4.6    4.3    4.5
+r5f0_1    44.2    7.8      .    5.4    5.6    4.9    4.3    3.5    4.7    4.6    4.8    4.5
+r5f1_0    43.1    8.2    5.2      .    5.4    4.7    4.5    3.7    4.6    4.4    4.6    4.4
+r5f1_1    45.0    8.3    5.4    5.3      .    4.9    4.4    3.6    4.6    4.6    4.5    4.7
+c66x0     46.9    6.2    4.2    4.1    4.4      .    3.5    2.7    3.6    3.5    3.6    3.7
+c66x1     48.5    4.8    4.3    4.2    4.3    4.0      .    2.7    3.7    3.5    3.7    3.4
+c7x       45.9    4.3    4.0    3.8    4.1    3.4    3.1      .    3.3    3.1    3.3    3.3
+g0rtu0    46.0    5.0    4.4    4.6    4.7    4.2    3.7    3.0      .    4.0    3.8    3.8
+g0rtu1    44.3    6.8    4.2    4.6    4.6    4.3    3.8    3.0    4.3      .    3.8    3.7
+g1rtu0    43.0    6.9    4.5    4.4    5.3    4.3    3.8    3.1    3.8    3.8      .    3.8
+g1rtu1    47.3    5.1    4.6    4.6    4.6    4.2    3.7    3.0    4.0    4.0    4.1      .
 
 node    starts   polls/s  pongs/s    rtt us  rtt min to max us timeouts errors  passed/s
-linux       53     11621     1100      87.1     53.4 to  122.8        0      0       100
-r5f0_0      28    307600     1100      20.3      5.1 to   97.1        0      0         0
-r5f0_1      28    444418     1100      17.2      4.8 to   91.1        0      0       100
-r5f1_0      28    443988     1100      17.1      4.7 to   91.2        0      0       100
-r5f1_1      28    443196     1100      16.9      4.8 to   91.6        0      0       100
-c66x0       28   1701300     1100      16.1      4.4 to   92.8        0      0       100
-c66x1       28   1709237     1100      17.1      4.1 to 1697.5        0      0       100
-c7x         28   1341351     1100      14.0      3.6 to   89.8        0      0       100
-rtu0        29    604754     1100      15.9      3.9 to   96.0        0      0       100
-g0pru1      28     28391     1100      41.1     36.0 to  118.9        0      0       100
-g1pru0      28     24914     1100      44.8     39.0 to  129.1        0      0       100
-g1pru1      28     24911     1100      44.4     39.1 to  121.4        0      0       100
+linux       23     11583     1100      87.5     80.8 to  125.7        0      0        85
+r5f0_0      19    276577     1085      15.5      8.1 to   95.5        0      0         0
+r5f0_1      19    380078     1085      12.3      5.1 to   81.1        0      0       100
+r5f1_0      19    379741     1085      12.2      5.2 to   93.9        0      0       100
+r5f1_1      19    379596     1086      12.5      5.3 to   92.1        0      0       100
+c66x0       19    967387     1086      11.3      5.1 to  100.5        0      0       100
+c66x1       19    972789     1085      10.8      4.4 to   90.8        0      0       100
+c7x         19    876961     1085       9.8      4.3 to   90.9        0      0       100
+g0rtu0      22    461828     1085      11.2      5.3 to   16.6        0      0       100
+g0rtu1      19    469936     1086      11.3      5.2 to   91.6        0      0       100
+g1rtu0      19    439312     1086      11.3      4.9 to   88.5        0      0       100
+g1rtu1      19    473258     1086      11.3      4.9 to   96.5        0      0       100
 
-tour from r5f0_0 round every node that answers its pings: 100 laps/s, 160.3 us a lap (92.1 to 236.7), errors 0, timeouts 6
-  r5f0_0 >10.5> c66x0 >4.6> rtu0 >4.6> r5f1_0 >4.5> c7x >21.9> g1pru0 >6.1> r5f0_1 >7.8> c66x1 >16.4> g0pru1 >5.1> r5f1_1 >22.8> g1pru1 >82.7> linux >3.7> r5f0_0
+tour from r5f0_0 round every node that answers its pings: 100 laps/s, 101.8 us a lap (58.2 to 152.1), errors 0, timeouts 8
+  r5f0_0 >10.3> c66x0 >4.5> g0rtu0 >5.7> r5f1_0 >5.3> c7x >4.1> g1rtu0 >6.0> r5f0_1 >8.1> c66x1 >5.1> g0rtu1 >6.3> r5f1_1 >4.1> g1rtu1 >76.1> linux >4.9> r5f0_0
 
-tally under hardware spinlock 255: 14471 adds, and the 12 counts sum to 14471
+tally under hardware spinlock 255: 39192 adds, and the 12 counts sum to 39192
 ```
 
-- **The matrix.** Between the R5Fs, DSPs, and RTU0 a message takes 2 to 7 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one. The ring PRUs only look every 64 laps, about 35 µs, so a message waits about 20 µs for one. Linux sleeps between looks, so a message to it takes 45 to 65 µs.
-- **The nodes.** `starts` counts each node's starts since the board booted; that board had run `ai64-demo` 28 times. `rtt us` is the mean round trip to all of the node's peers, which the ring PRUs and Linux pull up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
-- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and rings in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 6 timeouts.
+- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 2.5 to 8 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one. Linux sleeps between looks, so a message to it takes 45 to 65 µs.
+- **The nodes.** `starts` counts each node's starts since the board booted. `rtt us` is the mean round trip to all of the node's peers, which Linux pulls up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
+- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 8 timeouts.
 - **The tally.** Every add from all twelve nodes is in the total, so the lock held.
+
+When the ring PRUs were nodes themselves and only looked at their inbox every 64 laps, a message to one took about 20 µs, and a tour lap about 160 µs.
 
 The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric lines`).
 
 **A route with an action.** On the board, while the demo runs:
 
 ```
-$ sudo ai64 fabric route c7x r5f1_1 g1pru0 c66x1 rtu0 arm 25000 8
-linux  -> c7x         8.5 us
-c7x    -> r5f1_1      6.6 us
-r5f1_1 -> g1pru0     19.7 us
-g1pru0 -> c66x1       8.6 us
-c66x1  -> rtu0        4.4 us   rtu0 armed Tx_PRU0
-rtu0   -> linux      24.7 us
-6 hops, 72.5 us, value ok
+$ sudo ai64 fabric route c7x r5f1_1 g1rtu0 c66x1 g0rtu0 arm 25000 8
+linux  -> c7x         8.7 us
+c7x    -> r5f1_1      6.4 us
+r5f1_1 -> g1rtu0      4.7 us
+g1rtu0 -> c66x1       8.7 us
+c66x1  -> g0rtu0      5.1 us   g0rtu0 armed Tx_PRU0
+g0rtu0 -> linux      25.1 us
+6 hops, 58.5 us, value ok
 ```
 
-Tx_PRU0 then sends 8 pulses, 100 µs apart, on P9.25, and RTU0 tells Linux in the `rtu0` window. `xy 41 83` instead of `arm` makes PRU0 send its frame on P8.11. Any order of nodes works, a node can appear more than once, and a route that leaves out `rtu0` just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
+Tx_PRU0 then sends 8 pulses, 100 µs apart, on P9.25, and RTU0 tells Linux in the `rtu0` window. `xy 41 83` instead of `arm` makes PRU0 send its frame on P8.11. `window <laps>` is for the first ring RTU on the route:
+
+```
+$ sudo ai64 fabric route c66x0 g1rtu1 r5f0_1 window 4096
+linux  -> c66x0      11.7 us
+c66x0  -> g1rtu1      5.5 us   g1rtu1 set its ring's window
+g1rtu1 -> r5f0_1     28.0 us
+r5f0_1 -> linux       3.2 us
+4 hops, 48.4 us, value ok
+```
+
+P8.21 then toggles every 4096 laps, at 306 Hz, and ICSSG1 RTU1 logs when its PRU has applied the change (`ai64 trace b106000.rtu`). The hop after an action is slower because the RTU builds and logs a line of text first. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
 **Restarts.** On each image, `ai64-demo` ran 15 times in a row, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all twelve nodes up, about 13,150 pongs a second, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `arm` and `xy` gave the same pulses and frame on both.
 
-**What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ring PRUs lose a few percent of their laps ([The ICSSG rings](#the-icssg-rings)). And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr app parks in WFI with its interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
+**What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ring RTUs' polling costs the rings 1 to 2% of their laps ([The ICSSG rings](#the-icssg-rings)). And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr app parks in WFI with its interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
 
 ### Restarting an R5F core
 
@@ -633,7 +704,7 @@ Where they differ for this demo:
 
 | | BeagleBoard 6.18 (Debian) | TI 6.18 (Yocto) |
 | --- | --- | --- |
-| RPMsg to an ICSSG core | No `.kick` and no vring interrupt in `pru_rproc`, so RTU0's RPMsg firmware does not start. The patched module adds them back. | Has both. Stock `pru_rproc`. |
+| RPMsg to an ICSSG core | No `.kick` and no vring interrupt in `pru_rproc`, so the RTUs' RPMsg firmware does not start. The patched module adds them back. | Has both. Stock `pru_rproc`. |
 | Shutdown request before a stop (`RP_MBOX_SHUTDOWN`) | Sends none. `ai64 shutdown` sends it to each R5F and DSP before `ai64-demo` stops it. | Sends it to every R5F and DSP, then waits for the ACK and for the core to report WFI. |
 | Stopping an R5F | Powers the core off, which the device manager refuses. The core is stuck until a power cycle. The patched module keeps it powered. | The same power-off. Patch `0001` in `meta-ai64` keeps it powered. |
 | Stopping a C66x | Asserts the local reset. Works as shipped. | Times out waiting for WFI, which a C66x never reports: without patch `0002`, `can't stop rproc: -110` and the core keeps running. The patch resets it once it has acknowledged. |
@@ -641,13 +712,13 @@ Where they differ for this demo:
 | How the fixes get in | Two out-of-tree modules, built against the board's headers and installed in `/lib/modules/<kernel>/updates/`. The kernel marks them with taint flag `O`. Rebuild after every kernel upgrade. | Two patches applied to the kernel source in the Yocto build. |
 | Device tree | BeagleBoard-DeviceTrees `v6.18.x`. It adds a pinmux file for BeagleBoard's overlays. | The kernel's own. The remote-core, ICSSG, and carveout nodes are the same as BeagleBoard's. |
 
-Neither device tree gives any ICSSG core a vring interrupt, so on both images the overlay gives RTU0 one, and neither reserves the fabric's DDR, so the overlay does that too. The firmware images, the overlay, and `ai64` are the same for both. `ai64-demo` tells the kernels apart by `-k3-` in `uname -r`, and only runs `ai64 shutdown` on the BeagleBoard one.
+Neither device tree gives any ICSSG core a vring interrupt, so on both images the overlay gives ICSSG0 RTU0 and ICSSG1 RTU0 one each, and neither reserves the fabric's DDR, so the overlay does that too. The firmware images, the overlay, and `ai64` are the same for both. `ai64-demo` tells the kernels apart by `-k3-` in `uname -r`, and only runs `ai64 shutdown` on the BeagleBoard one.
 
 ### Why Debian needs two patched modules
 
 The BeagleBoard 6.18 kernel needs two fixes for this demo. `build.sh kmod` builds both against the board's own headers, and `install-beagle.sh` puts them in `/lib/modules/<kernel>/updates/`, which the kernel prefers.
 
-**`pru_rproc`.** RPMsg is two ring buffers in shared memory, plus a doorbell in each direction. On a PRU core the Linux-to-PRU doorbell is the remoteproc `.kick` operation, which raises an ICSSG system event; the PRU-to-Linux doorbell is a "vring" interrupt. BeagleBoard's 6.18 `pru_rproc` has neither, and Linux refuses to start RPMsg firmware with `.kick method not defined`. `beagle-linux/kernel/pru_rproc/` is that driver with TI's kick and vring handler added back, the same patch as the PocketBeagle 2 demo, and one more change: a core whose firmware has no RPMsg (PRU0 and Tx_PRU0 here) starts without a vring interrupt. Neither image's J721E device tree has a vring interrupt for any ICSSG core, so the overlay gives RTU0 one (system event 20, host interrupt 4).
+**`pru_rproc`.** RPMsg is two ring buffers in shared memory, plus a doorbell in each direction. On a PRU core the Linux-to-PRU doorbell is the remoteproc `.kick` operation, which raises an ICSSG system event; the PRU-to-Linux doorbell is a "vring" interrupt. BeagleBoard's 6.18 `pru_rproc` has neither, and Linux refuses to start RPMsg firmware with `.kick method not defined`. `beagle-linux/kernel/pru_rproc/` is that driver with TI's kick and vring handler added back, the same patch as the PocketBeagle 2 demo, and one more change: a core whose firmware has no RPMsg (every ICSSG core here but the two RTU0s) starts without a vring interrupt. Neither image's J721E device tree has a vring interrupt for any ICSSG core, so the overlay gives each RTU0 one, from its own ICSSG's interrupt controller (system event 20, host interrupt 4).
 
 **`ti_k3_r5_remoteproc`.** The stock driver can start an R5F core once. Stopping it then powers the core module off through the device manager, which refuses (`module-reset assert failed, ret = -19`) and leaves the core stuck in transition. Every later start fails with `module-reset deassert failed, ret = -19` until a power cycle. `beagle-linux/kernel/k3_r5_rproc/` is the 6.18.55 driver with that power-off taken out: stopping a core asserts its reset and leaves it powered, the way TI's kernel handles AM64x cores (TI's 6.18 still powers J721E cores off, hence the Yocto patch). With it, `ai64-demo` can restart all four R5F cores as often as you like.
 
@@ -655,7 +726,7 @@ If you don't need RPMsg on an ICSSG core, a shared-RAM mailbox like PRU0's works
 
 ### Pin muxing
 
-- **The Linux overlay.** The ICSSG0 pins are set by `beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso`, written with `J721E_IOPAD()` from BeagleBoard-DeviceTrees `ti/k3-pinctrl.h`. That header isn't copied into this repo; `build.sh` fetches a pinned commit. The overlay also carries RTU0's vring interrupt and the GPIO hog for Tx_PRU0's pin.
+- **The Linux overlay.** The ICSSG0 pins are set by `beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso`, written with `J721E_IOPAD()` from BeagleBoard-DeviceTrees `ti/k3-pinctrl.h`. That header isn't copied into this repo; `build.sh` fetches a pinned commit. The overlay also carries the two RTU0s' vring interrupts and the GPIO hog for Tx_PRU0's pin.
 - **The Zephyr pins.** The SPI7 pins on header P9 are muxed by R5F0_0's Zephyr devicetree overlay, inside `ai64_r5f0_0.elf`; the UART2 console pins by the upstream board file. The other R5F cores use no pins. The R5F can write those pad registers only because Linux has already unlocked them.
 
 The full pin list is `PINMUX.md`.
@@ -712,6 +783,7 @@ On a board, the image with TI's 6.18 ran `ai64-demo` 15 times in a row, stopping
 - **`ai64-demo` says `RPMsg devices did not show up`.** Look at `dmesg | grep -i -E "remoteproc|rpmsg|kick|vring"` on the board.
   - `.kick method not defined` means the stock `pru_rproc` is loaded; see the last entry below.
   - A missing `/lib/firmware/ai64_r5f0_0.elf` or `ai64-icssg0-rtu0.elf` means `install-beagle.sh` didn't finish; run it again.
+- **`ai64-demo` says ICSSG1 RTU0's RPMsg channel did not show up**, and `dmesg` says `unable to get vring interrupt`. The board booted an older overlay, without ICSSG1 RTU0's vring interrupt. Run `install-beagle.sh` from a current bundle and reboot.
 - **`ai64-demo` says the stock `ti_k3_r5_remoteproc` cannot start an R5F core again.** The patched R5F module is not loaded, usually after a kernel upgrade. Rebuild with `build.sh kmod`, run `bundle`, install, and reboot. Until then a reboot reloads the R5F cores.
 - **`dmesg` shows `module-reset deassert failed, ret = -19`.** An R5F core was stopped with the stock module loaded and is now stuck. Power-cycle the board; a reboot from Linux is not always enough.
 - **`ai64-demo` says it cannot stop the C7x.** The running C7x image predates the shutdown handler; see [Restarting the C7x](#restarting-the-c7x). Reboot once to load the new image.

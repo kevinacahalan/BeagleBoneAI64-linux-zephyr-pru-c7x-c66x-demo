@@ -2,7 +2,10 @@
 /*
  * The fabric: every demo core talks to every other one, with no Linux in
  * the path. Twelve nodes take part: Linux (while `ai64 fabric` runs), the
- * four main-domain R5Fs, both C66x, the C7x, RTU0, and the three ring PRUs.
+ * four main-domain R5Fs, both C66x, the C7x, and the RTU of each of the four
+ * ICSSG slices. The RTU is its slice's link to the rest of the SoC; the
+ * slice's PRU and Tx_PRU keep to their real-time work and never touch the
+ * fabric.
  * Linux, Zephyr, both DSP compilers, and the PRU compiler all include this
  * file, so it only uses 32-bit fields at fixed offsets.
  *
@@ -62,10 +65,10 @@
 #define AI64_FAB_C66X0     5u
 #define AI64_FAB_C66X1     6u
 #define AI64_FAB_C7X       7u
-#define AI64_FAB_RTU0      8u /* ICSSG0 RTU0, the demo's transfer core */
-#define AI64_FAB_G0PRU1    9u /* the ring PRU of ICSSG0 slice 1 */
-#define AI64_FAB_G1PRU0    10u
-#define AI64_FAB_G1PRU1    11u
+#define AI64_FAB_G0RTU0    8u /* ICSSG0 RTU0, the demo slice's RTU */
+#define AI64_FAB_G0RTU1    9u /* the RTUs of the three ring slices */
+#define AI64_FAB_G1RTU0    10u
+#define AI64_FAB_G1RTU1    11u
 
 #define AI64_FAB_REQ       0u
 #define AI64_FAB_REPLY     1u
@@ -105,6 +108,7 @@
 #define AI64_FAB_ACT_NONE  0u
 #define AI64_FAB_ACT_ARM   1u /* RTU0: arg0 period, arg1 count, as "arm" */
 #define AI64_FAB_ACT_XY    2u /* RTU0: arg0 x, arg1 y, as "xy" */
+#define AI64_FAB_ACT_WINDOW 3u /* a ring RTU: arg0 laps a window, as "window" */
 
 /*
  * One message, 64 bytes. A ping is its first AI64_FAB_PING_WORDS words;
@@ -184,7 +188,10 @@ struct ai64_fab_page {
 	/* The hops of this node's tour (TOUR) and route (ROUTE) write the GTC
 	 * here when they read it: trip[cls - AI64_FAB_TOUR][hop]. */
 	uint32_t trip[2][AI64_FAB_MAX_HOPS];             /* 0x280 */
-	uint32_t pad0[(0x400u - 0x300u) / 4u];
+	/* Whatever the node publishes for the others to read, such as a
+	 * ring RTU's struct ai64_slice_status (ai64_shm.h). */
+	uint32_t app[32];                                /* 0x300 */
+	uint32_t pad0[(0x400u - 0x380u) / 4u];
 	/* The inbox. seq[s] and rseq[s] are written by sender s only:
 	 * byte c of seq[s] counts its class c messages, rseq[s] its routes. */
 	uint32_t seq[AI64_FAB_NODES];                    /* 0x400 */
@@ -230,7 +237,7 @@ static inline uint32_t ai64_fab_route_node(const uint32_t *route, uint32_t hop)
  *   AI64_FAB_COPY_IN(d, s, n)  copy n words of a message out of DDR, and
  *   AI64_FAB_COPY_OUT(d, s, n) into it. The defaults move a word at a time;
  *                           a core that maps the fabric as normal memory can
- *                           use memcpy, for bursts. The PRUs use bursts too.
+ *                           use memcpy, for bursts. The RTUs use bursts too.
  *   AI64_FAB_ACTION(m)      run a route's action here; returns its status
  *   AI64_FAB_LOCK_ENTER(), AI64_FAB_LOCK_EXIT()
  *                           around the time the node holds the spinlock, so
@@ -519,9 +526,9 @@ static void fab_ping(uint32_t to, uint32_t now)
 /* Every node that answers this one's pings, in an order that keeps
  * crossing between kinds of core, then home. */
 static const uint8_t fab_tour_order[] = {
-	AI64_FAB_C66X0, AI64_FAB_RTU0, AI64_FAB_R5F1_0, AI64_FAB_C7X,
-	AI64_FAB_G1PRU0, AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0PRU1,
-	AI64_FAB_R5F1_1, AI64_FAB_G1PRU1, AI64_FAB_LINUX,
+	AI64_FAB_C66X0, AI64_FAB_G0RTU0, AI64_FAB_R5F1_0, AI64_FAB_C7X,
+	AI64_FAB_G1RTU0, AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0RTU1,
+	AI64_FAB_R5F1_1, AI64_FAB_G1RTU1, AI64_FAB_LINUX,
 };
 
 static void fab_tour(uint32_t now)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-// BeagleBone AI-64 demo: the ICSSG pins, the RTU0 vring IRQ, and the DDR
-// the cores use to talk to each other.
+// BeagleBone AI-64 demo: the ICSSG pins, the vring IRQs of the two RTUs
+// with RPMsg (ICSSG0 RTU0 and ICSSG1 RTU0), and the DDR the cores use to
+// talk to each other.
 //
 //   PRU0     P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, the SLIP UART
 //   Tx_PRU0  P9.25  W26   pad 0x1a4  mode 7  GPIO0_104, the pulse train
@@ -105,6 +106,13 @@
  */
 &rtu0_0 {
 	interrupt-parent = <&icssg0_intc>;
+	interrupts = <20 4 4>;
+	interrupt-names = "vring";
+};
+
+/* ICSSG1 RTU0's RPMsg, the same way through ICSSG1's own INTC. */
+&rtu1_0 {
+	interrupt-parent = <&icssg1_intc>;
 	interrupts = <20 4 4>;
 	interrupt-names = "vring";
 };

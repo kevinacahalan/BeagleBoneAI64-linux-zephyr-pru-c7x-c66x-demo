@@ -16,10 +16,11 @@
 #include "ai64_erpc_linux.h"
 #include "ai64_dsp_job.h"
 #include "ai64_shm.h"
+#include "ai64_fabric.h"
 
 /*
  * ai64 peer <label> <rpmsg-dev> <fifo>
- *   Owns one RPMsg device. Used for RTU0.
+ *   Owns one RPMsg device. Used for ICSSG0 RTU0 and ICSSG1 RTU0.
  *
  * ai64 erpc [core] <rpmsg-dev> <fifo>
  *   Calls Zephyr functions over eRPC on the existing RPMsg fd. core names
@@ -57,7 +58,8 @@
  *
  * ai64 ring [seconds|once]
  *   Prints how fast the token goes round the three ICSSG rings (ICSSG0
- *   slice 1, ICSSG1 slices 0 and 1), from their records in shared RAM.
+ *   slice 1, ICSSG1 slices 0 and 1), from what each slice's RTU publishes
+ *   in its fabric page.
  *
  * ai64 fabric [lines|once] | route <node>... [arm ...|xy ...] | reset
  *   Joins the fabric, where every core talks to every other one, and shows
@@ -98,6 +100,9 @@ static void print_help(void)
 	printf("  rtu0 xy <x> <y>\n");
 	printf("  rtu0 arm <period> <count>\n");
 	printf("  rtu0 <text>\n");
+	printf("  g1rtu0 status\n");
+	printf("  g1rtu0 window <laps>\n");
+	printf("  g1rtu0 <text>\n");
 	printf("  help\n");
 	printf("  quit\n");
 	fflush(stdout);
@@ -108,17 +113,17 @@ static void print_usage(const char *prog)
 	printf("usage: %s <subcommand>\n", prog);
 	printf("  linux <fifo-dir>          the linux window (ai64-demo starts it)\n");
 	printf("  erpc [core] <rpmsg-dev> <fifo>  a zephyr window (core: r5f0_1 ...)\n");
-	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 window\n");
+	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 and g1rtu0 windows\n");
 	printf("  watch pru0|txpru0         the pru0 and txpru0 windows\n");
 	printf("  shm                       print the shared-RAM records once\n");
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
-	printf("  ring [seconds|once]       lap rates of the three ICSSG rings (the rings window)\n");
+	printf("  ring [seconds|once]       the three ICSSG rings, as their RTUs report them (the rings window)\n");
 	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
 	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("  dsp <remoteproc-name> [count] [taps] [runs] offload FIR jobs to a DSP\n");
 	printf("  fabric [lines|once]       every core talking to every other (the fabric window)\n");
-	printf("  fabric route <node>... [arm <period> <count> | xy <x> <y>]\n");
+	printf("  fabric route <node>... [arm <period> <count> | xy <x> <y> | window <laps>]\n");
 	printf("                            send one message along those cores and back\n");
 	printf("  fabric reset              free the tally's spinlock and zero the tally\n");
 	printf("\n");
@@ -684,37 +689,36 @@ static int trace_main(int argc, char **argv)
 	}
 }
 
-/* The three rings, by the remoteproc name of the PRU that starts each. */
+/*
+ * The three rings: the remoteproc name of each slice's RTU, its fabric
+ * node, and the header pin its PRU toggles.
+ */
 static const struct {
 	const char *label;
-	const char *pru;
-	uint32_t icssg;
-	uint32_t slice;
+	const char *rtu;
+	uint32_t node;
+	const char *pin;
 } rings[] = {
-	{ "icssg0 slice 1", "b038000.pru", 0, 1 },
-	{ "icssg1 slice 0", "b134000.pru", 1, 0 },
-	{ "icssg1 slice 1", "b138000.pru", 1, 1 },
+	{ "icssg0 slice 1", "b006000.rtu", AI64_FAB_G0RTU1, "P8.44" },
+	{ "icssg1 slice 0", "b104000.rtu", AI64_FAB_G1RTU0, "P8.18" },
+	{ "icssg1 slice 1", "b106000.rtu", AI64_FAB_G1RTU1, "P8.21" },
 };
 
 #define NRINGS (sizeof(rings) / sizeof(rings[0]))
-/* The shared-RAM page that holds an ICSSG's ring records. */
-#define RING_PAGE(icssg) (AI64_RING_CPU(icssg, 0) & ~0xfffu)
-
-static double now_us(void);
+#define FABRIC_DT "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
 
 /*
- * ai64 ring [seconds|once]: every few seconds, one line per ring: laps a
- * second, the lap time, and whether every core kept up. once prints one
- * 1-second sample and exits.
+ * ai64 ring [seconds|once]: every few seconds, one line per ring, from the
+ * status its RTU publishes in the app block of its fabric page (struct
+ * ai64_slice_status). Linux never reads the ICSSG itself: the RTU is the
+ * slice's link to everything else. once prints one sample and exits.
  */
 static int ring_main(int argc, char **argv)
 {
-	volatile struct ai64_ring *ring[NRINGS] = { 0 };
-	volatile uint8_t *page[2] = { 0 };
-	uint32_t laps[NRINGS], run[NRINGS];
+	volatile struct ai64_slice_status *st[NRINGS] = { 0 };
+	uint32_t at[NRINGS] = { 0 };
 	int once = argc > 2 && !strcmp(argv[2], "once");
 	int every = argc > 2 && !once ? atoi(argv[2]) : 10;
-	double t0, t1;
 	char state[32];
 	size_t r;
 
@@ -722,70 +726,60 @@ static int ring_main(int argc, char **argv)
 		fprintf(stderr, "usage: %s ring [seconds|once]\n", argv[0]);
 		return 2;
 	}
+	if (access(FABRIC_DT, F_OK)) {
+		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", FABRIC_DT);
+		return 1;
+	}
 	for (r = 0; r < NRINGS; r++) {
-		uint32_t g = rings[r].icssg;
+		volatile uint8_t *page = map_phys(AI64_FAB_ADDR + rings[r].node * AI64_FAB_PAGE,
+						  AI64_FAB_PAGE);
 
-		/* Only an ICSSG whose cores Linux runs is sure to be powered. */
-		if (rproc_attr(rings[r].pru, "state", state, sizeof(state)) ||
-		    strcmp(state, "running")) {
-			printf("%s: %s is not running\n", rings[r].label, rings[r].pru);
-			continue;
+		if (!page) {
+			return 1;
 		}
-		if (!page[g]) {
-			page[g] = map_phys(RING_PAGE(g), 4096);
-			if (!page[g]) {
-				return 1;
-			}
-		}
-		ring[r] = (volatile struct ai64_ring *)(page[g] + (AI64_RING_CPU(g, rings[r].slice) -
-								    RING_PAGE(g)));
+		st[r] = (volatile struct ai64_slice_status *)
+			((volatile struct ai64_fab_page *)page)->app;
+		at[r] = st[r]->at;
 	}
 	if (!once) {
 		printf("ring window ready, a line per ring every %d s\n", every);
 	}
 	fflush(stdout);
-	for (r = 0; r < NRINGS; r++) {
-		laps[r] = ring[r] ? ring[r]->laps : 0;
-		run[r] = ring[r] ? ring[r]->run : 0;
-	}
-	t0 = now_us();
 	for (;;) {
 		sleep(once ? 1 : (unsigned int)every);
-		t1 = now_us();
 		for (r = 0; r < NRINGS; r++) {
-			volatile struct ai64_ring *g = ring[r];
-			uint32_t n, l, rtu, tx;
-			double rate;
+			volatile struct ai64_slice_status *s = st[r];
+			double rate, pin;
 
-			if (!g) {
+			if (rproc_attr(rings[r].rtu, "state", state, sizeof(state)) ||
+			    strcmp(state, "running")) {
+				printf("%s: its RTU, %s, is not running\n", rings[r].label, rings[r].rtu);
 				continue;
 			}
-			if (g->magic != AI64_RING_MAGIC) {
-				printf("%s: no ring record yet\n", rings[r].label);
+			if (s->magic != AI64_SLICE_MAGIC) {
+				printf("%s: no status from its RTU yet\n", rings[r].label);
 				continue;
 			}
-			l = g->laps;
-			rtu = g->rtu_hops;
-			tx = g->txpru_hops;
-			if (g->run != run[r]) {
-				/* The PRU restarted and zeroed the counts. */
-				run[r] = g->run;
-				laps[r] = 0;
+			if (s->at == at[r]) {
+				printf("%s: its RTU has stopped publishing\n", rings[r].label);
+				continue;
 			}
-			n = l - laps[r];
-			laps[r] = l;
-			rate = n / ((t1 - t0) / 1e6);
+			at[r] = s->at;
+			rate = s->rate;
+			pin = s->window ? rate / (2.0 * s->window) : 0;
 			/*
-			 * The PRU times the token's trip, RTU and Tx_PRU included.
-			 * The lap rate also counts the PRU's own bookkeeping.
+			 * The PRU times the token's trip, the Tx_PRU's hop
+			 * included. The lap rate also counts the PRU's own
+			 * bookkeeping.
 			 */
-			printf("%s: run %u, %.2f M laps/s, round trip %u cycles (%u to %u), "
-			       "hops PRU %u RTU %u Tx_PRU %u, errors %u%s\n",
-			       rings[r].label, g->run, rate / 1e6, g->lap_last, g->lap_min,
-			       g->lap_max, l, rtu, tx, g->errors, n == 0 ? ", STOPPED" : "");
+			printf("%s (RTU%u%s): run %u, %.2f M laps/s, round trip %u cycles (%u to %u), "
+			       "window %u, %s %.2f Hz, hops PRU %u Tx_PRU %u, errors %u%s\n",
+			       rings[r].label, s->slice, s->rpmsg ? ", RPMsg" : "", s->run,
+			       rate / 1e6, s->lap_last, s->lap_min, s->lap_max, s->window,
+			       rings[r].pin, pin, s->laps, s->txpru_hops, s->errors,
+			       s->rate == 0 ? ", STOPPED" : "");
 		}
 		fflush(stdout);
-		t0 = t1;
 		if (once) {
 			return 0;
 		}
@@ -1342,6 +1336,23 @@ static int write_line(int fd, const char *what, const char *msg)
 	return 0;
 }
 
+/* ICSSG1 RTU0, the ring RTU with RPMsg. */
+static int send_g1rtu0(int fd, const char *msg)
+{
+	if (write_line(fd, "g1rtu0", msg)) {
+		return -1;
+	}
+	if (!strncmp(msg, "window ", 7)) {
+		printf("Linux asked ICSSG1 RTU0 for a %s-lap ring window\n", msg + 7);
+	} else if (!strcmp(msg, "status")) {
+		printf("Linux asked ICSSG1 RTU0 for its ring's status\n");
+	} else {
+		printf("Linux sent \"%s\" to ICSSG1 RTU0\n", msg);
+	}
+	fflush(stdout);
+	return 0;
+}
+
 static int send_rtu0(int fd, const char *msg)
 {
 	if (write_line(fd, "rtu0", msg)) {
@@ -1404,18 +1415,23 @@ static const struct {
 	{ "r5f0_1", "say hello from linux" },
 	{ "r5f1_0", "say hello from linux" },
 	{ "r5f1_1", "say hello from linux" },
+	/* ICSSG1 RTU0 learns Linux's endpoint the same way. 65536 laps is
+	 * the default window, so the pin keeps its frequency. */
+	{ "g1rtu0", "status" },
+	{ "g1rtu0", "window 65536" },
 };
 
 static void usage_hint(void)
 {
-	printf("use zephyr say|arm|chunk|xy|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, rtu0 xy|arm|<text>, or help\n");
+	printf("use zephyr say|arm|chunk|xy|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, rtu0 xy|arm|<text>, "
+	       "g1rtu0 status|window|<text>, or help\n");
 	fflush(stdout);
 }
 
 static int linux_main(int argc, char **argv)
 {
 	const char *dir;
-	int rtu0;
+	int rtu0, g1rtu0;
 	char input[512];
 	size_t i;
 
@@ -1441,7 +1457,8 @@ static int linux_main(int argc, char **argv)
 		}
 	}
 	rtu0 = open_out(dir, "rtu0");
-	if (rtu0 < 0) {
+	g1rtu0 = open_out(dir, "g1rtu0");
+	if (rtu0 < 0 || g1rtu0 < 0) {
 		return 1;
 	}
 
@@ -1453,6 +1470,8 @@ static int linux_main(int argc, char **argv)
 		}
 		if (!strcmp(startup[i].who, "rtu0")) {
 			ret = send_rtu0(rtu0, startup[i].msg);
+		} else if (!strcmp(startup[i].who, "g1rtu0")) {
+			ret = send_g1rtu0(g1rtu0, startup[i].msg);
 		} else {
 			ret = send_zephyr(find_zt(startup[i].who), startup[i].msg);
 		}
@@ -1461,7 +1480,8 @@ static int linux_main(int argc, char **argv)
 		}
 	}
 
-	printf("linux window ready. commands: zephyr say|arm|chunk|xy|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | rtu0 xy|arm|<text> | help\n");
+	printf("linux window ready. commands: zephyr say|arm|chunk|xy|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
+	       "rtu0 xy|arm|<text> | g1rtu0 status|window <laps>|<text> | help\n");
 	fflush(stdout);
 
 	while (fgets(input, sizeof(input), stdin)) {
@@ -1496,6 +1516,8 @@ static int linux_main(int argc, char **argv)
 			send_zephyr(z, msg);
 		} else if (!strcmp(input, "rtu0")) {
 			send_rtu0(rtu0, msg);
+		} else if (!strcmp(input, "g1rtu0")) {
+			send_g1rtu0(g1rtu0, msg);
 		} else {
 			usage_hint();
 		}

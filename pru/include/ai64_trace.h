@@ -7,12 +7,23 @@
  * next to its resource table. Linux prints the buffer up to the first NUL.
  * When the log fills up it starts again from the top, so the newest lines
  * are always there.
+ *
+ * A real-time core built with AI64_TRACE=0 (make TRACE=0) keeps the buffer,
+ * so its resource table does not change, but every call below does nothing.
  */
 #ifndef AI64_TRACE_H_
 #define AI64_TRACE_H_
 
 #include <stdint.h>
 
+#if defined(AI64_TRACE) && AI64_TRACE == 0
+#define AI64_TRACE_ON 0
+#define trace_putc(c) ((void)(c))
+#define trace_puts(s) ((void)(s))
+#define trace_u32(v)  ((void)(v))
+#define trace_init()  ((void)0)
+#else
+#define AI64_TRACE_ON 1
 static uint16_t ai64_trace_pos;
 
 static void trace_putc(char c)
@@ -63,5 +74,6 @@ static void trace_init(void)
 	}
 	ai64_trace_pos = 0;
 }
+#endif
 
 #endif

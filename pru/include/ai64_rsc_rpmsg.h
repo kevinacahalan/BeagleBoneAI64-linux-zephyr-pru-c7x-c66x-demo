@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * RTU0 resource table: the RPMsg vdev, its two vrings, and a trace buffer.
+ * Resource table for an RTU with RPMsg: the RPMsg vdev, its two vrings, and
+ * a trace buffer. Used by ICSSG0 RTU0 and ICSSG1 RTU0. Define
+ * AI64_TRACE_SIZE and AI64_TRACE_NAME first.
  * Adapted from TI PSSP examples/j721e/RTU_RPMsg_Echo_Interrupt0.
  *
  * Copyright (C) 2015-2021 Texas Instruments Incorporated - https://www.ti.com/
@@ -9,8 +11,8 @@
  * padded to a multiple of 16: 16 (header) + 8 (offsets) + 68 (vdev and two
  * vrings) + 48 (trace) = 140, plus 4 bytes of padding is 144.
  */
-#ifndef RTU0_RESOURCE_TABLE_H_
-#define RTU0_RESOURCE_TABLE_H_
+#ifndef AI64_RSC_RPMSG_H_
+#define AI64_RSC_RPMSG_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,12 +24,6 @@
 
 #define VIRTIO_RPMSG_F_NS 0
 #define RPMSG_PRU_C0_FEATURES (1 << VIRTIO_RPMSG_F_NS)
-
-/*
- * RTU0's first data RAM slice is 2 KiB and holds the RPMsg buffers, so the
- * log stays small and sits in the second slice with the stack.
- */
-#define AI64_TRACE_SIZE 512
 
 #pragma DATA_SECTION(ai64_trace_buf, ".ai64_trace")
 #pragma RETAIN(ai64_trace_buf)
@@ -71,15 +67,16 @@ struct my_resource_table resourceTable = {
 		(uint32_t)ai64_trace_buf,
 		AI64_TRACE_SIZE,
 		0,
-		"trace:rtu0",
+		AI64_TRACE_NAME,
 	},
 	{ 0 },
 };
 
 /*
- * The INTC map. Linux's kick raises system event 21, which this maps to
- * channel 10 and host interrupt 10, R31 bit 30 on RTU0. The return path,
- * system event 20, is mapped by the device tree overlay (<20 4 4>), not here.
+ * The INTC map, in the RTU's own ICSSG. Linux's kick raises system event 21,
+ * which this maps to channel 10 and host interrupt 10, R31 bit 30 on a
+ * slice-0 RTU. The return path, system event 20, is mapped by the device
+ * tree overlay (<20 4 4>), not here.
  */
 #pragma DATA_SECTION(my_irq_rsc, ".pru_irq_map")
 #pragma RETAIN(my_irq_rsc)

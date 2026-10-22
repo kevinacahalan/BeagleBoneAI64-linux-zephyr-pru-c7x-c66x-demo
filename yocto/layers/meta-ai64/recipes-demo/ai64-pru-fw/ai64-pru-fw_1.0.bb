@@ -1,5 +1,5 @@
-SUMMARY = "BeagleBone AI-64 ICSSG firmware: the ICSSG0 slice-0 demo and the three rings"
-DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package: ai64-icssg0-pru0.elf, ai64-icssg0-rtu0.elf, and ai64-icssg0-txpru0.elf for the ICSSG0 slice-0 demo, and the ring images for ICSSG0 slice 1 and both ICSSG1 slices."
+SUMMARY = "BeagleBone AI-64 ICSSG firmware: the ICSSG0 slice-0 demo and the three ring slices"
+DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package: ai64-icssg0-pru0.elf, ai64-icssg0-rtu0.elf, and ai64-icssg0-txpru0.elf for the ICSSG0 slice-0 demo, and for ICSSG0 slice 1 and both ICSSG1 slices the ring images for each PRU and Tx_PRU and the RTU image that talks for them."
 # The demo is MIT. The PRU Software Support Package it links is BSD-3-Clause.
 LICENSE = "MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302 \

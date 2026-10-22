@@ -144,14 +144,18 @@ build_linux() {
 }
 
 # PSSP ships rpmsg_lib.lib prebuilt, so the PRU build only needs the headers
-# and that library from the checkout.
+# and that library from the checkout. TRACE=0 in the environment builds the
+# trace out of the real-time PRU and Tx_PRU cores (pru/Makefile); the PRU
+# build starts clean, so switching it takes effect.
 build_pru() {
 	build_image "$IMAGE_PRU" "$ROOT/containers/pru-cgt/Containerfile"
 	fetch_pssp
 	engine_run \
 		-v "$ROOT:/work" -w /work \
 		"$IMAGE_PRU" \
-		make -C pru PRU_CGT=/opt/ti-cgt-pru PSSP=/work/third_party/pru-software-support-package
+		sh -c 'rm -rf pru/build && make -C pru "$@"' _ \
+		PRU_CGT=/opt/ti-cgt-pru PSSP=/work/third_party/pru-software-support-package \
+		TRACE="${TRACE:-1}"
 }
 
 # Both modules have to match the board kernel. Headers are copied from the

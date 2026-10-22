@@ -15,9 +15,10 @@
  * so RPMsg firmware fails with ".kick method not defined". The kick and
  * vring IRQ handler below are the missing pieces from the earlier TI driver.
  *
- * BeagleBone AI-64: only cores whose firmware has a vdev (RTU0 in this demo)
- * request the "vring" interrupt. PRU0 and Tx_PRU0 run trace-only firmware and
- * have no vring interrupt in the device tree, so they start without one.
+ * BeagleBone AI-64: only cores whose firmware has a vdev (the two RTU0s in
+ * this demo) request the "vring" interrupt. The other ICSSG cores run
+ * trace-only firmware and have no vring interrupt in the device tree, so
+ * they start without one.
  */
 
 #include <linux/bitops.h>

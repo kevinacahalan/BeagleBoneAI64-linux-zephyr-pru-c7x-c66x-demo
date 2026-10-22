@@ -64,9 +64,9 @@
 
 `beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
 
-`beagle-linux/overlays/` — the Linux device-tree overlay: the pins, RTU0's vring interrupt, and the DDR the fabric uses. The `.dtbo` blob is a build product.
+`beagle-linux/overlays/` — the Linux device-tree overlay: the pins, the vring interrupts of the two RTUs with RPMsg, and the DDR the fabric uses. The `.dtbo` blob is a build product.
 
-`beagle-linux/kernel/pru_rproc/` — `pru_rproc` with the virtio kick, for RTU0's RPMsg.
+`beagle-linux/kernel/pru_rproc/` — `pru_rproc` with the virtio kick, for the RTUs' RPMsg.
 
 `beagle-linux/kernel/k3_r5_rproc/` — `ti_k3_r5_remoteproc` that can start an R5F again after a stop.
 
@@ -82,17 +82,17 @@
 
 `.west/`, `modules/`, `bootloader/`, `tools/`, `build/` — generated west workspace. `build/zephyr-main_r5f0_0/zephyr/ai64_r5f0_0.elf` is the R5F0_0 image, and the other three cores build next to it.
 
-`pru/icssg0/rtu0/` — RTU0, the transfer core (RPMsg and the DDR mailbox), and a fabric node.
+`pru/icssg0/rtu0/` — RTU0, ICSSG0 slice 0's link to the rest of the SoC: RPMsg, the DDR mailbox, and the fabric.
 
 `pru/icssg0/pru0/` — PRU0, the SLIP frame on P8.11.
 
 `pru/icssg0/txpru0/` — Tx_PRU0, the pulse trains on P9.25.
 
-`pru/ring/` — the ring that the other nine ICSSG cores run (ICSSG0 slice 1, ICSSG1 slices 0 and 1): one `main.c`, built once per core, and a linker script for each kind of core. Each ring's PRU drives a square wave on one header pin, and is a fabric node.
+`pru/ring/` — the other three slices (ICSSG0 slice 1, ICSSG1 slices 0 and 1). `main.c` is the ring their PRU and Tx_PRU run, and `rtu.c` their RTU, each built once per core, with a linker script for each kind of core. Each ring's PRU drives a square wave on one header pin. Each RTU is a fabric node; ICSSG1 RTU0's build also has RPMsg.
 
-`pru/include/` — the trace-buffer log and resource table the ICSSG cores share.
+`pru/include/` — what the ICSSG cores share: the trace-buffer log, the two resource tables (trace only, and RPMsg with trace), the RTUs' RPMsg channel, and text helpers.
 
-`pru/build/` — generated ICSSG images: `ai64-icssg0-pru0.elf`, `ai64-icssg0-rtu0.elf`, and `ai64-icssg0-txpru0.elf` for the demo, and `ai64-icssg<ICSSG>-<pru|rtu|txpru><slice>.elf` for the rings.
+`pru/build/` — generated ICSSG images: `ai64-icssg0-pru0.elf`, `ai64-icssg0-rtu0.elf`, and `ai64-icssg0-txpru0.elf` for the demo, and `ai64-icssg<ICSSG>-<pru|rtu|txpru><slice>.elf` for the other slices.
 
 `dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. Both are fabric nodes; the C66x maps the GTC through an MPAX window. `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
 

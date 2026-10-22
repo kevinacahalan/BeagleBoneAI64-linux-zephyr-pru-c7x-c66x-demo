@@ -60,17 +60,19 @@ The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dt
 
 ## The rings: P8.44, P8.18, P8.21
 
-Each ring's PRU toggles one R30 bit every 65536 laps, so its pin is a square wave at the lap rate divided by 131072: about 13.9 Hz for ICSSG0 slice 1 (1.82 M laps/s) and 12.2 Hz for each ICSSG1 slice (1.59 M laps/s). The pads are muxed the same way as P8.11, mode 0 to the PRU's own GPO, with the pinctrl on the `&pru0_1`, `&pru1_0`, and `&pru1_1` nodes. Each of these header pins has only one ball, so there is no second ball to hold off. Neither ICSSG sets its GPCFG registers: both read `0`, direct GPO mode, the same as ICSSG0 slice 0, where P8.11 works.
+Each ring's PRU toggles one R30 bit once a window, 65536 laps unless the slice's RTU has been asked for another number, so its pin is a square wave at the lap rate divided by twice the window: about 19.8 Hz for ICSSG0 slice 1 (2.60 M laps/s) and 19.1 Hz for each ICSSG1 slice (2.51 M laps/s) at the default. The pads are muxed the same way as P8.11, mode 0 to the PRU's own GPO, with the pinctrl on the `&pru0_1`, `&pru1_0`, and `&pru1_1` nodes. Each of these header pins has only one ball, so there is no second ball to hold off. Neither ICSSG sets its GPCFG registers: both read `0`, direct GPO mode, the same as ICSSG0 slice 0, where P8.11 works.
 
-A 2 s Saleae capture on the Debian image, with all 19 cores and the fabric running, measured:
+A 10 s Saleae capture on the Debian image, with all 19 cores and the fabric running, measured:
 
 | Pin | Period | Square wave | Laps/s (× 131072) | `ai64 ring` |
 | --- | --- | --- | --- | --- |
-| P8.44 | 72.12 ms (72.08 to 72.15) | 13.87 Hz | 1.818 M | 1.82 M |
-| P8.18 | 82.26 ms (82.19 to 82.33) | 12.16 Hz | 1.594 M | 1.59 M |
-| P8.21 | 82.20 ms (82.15 to 82.31) | 12.17 Hz | 1.595 M | 1.59 M |
+| P8.44 | 50.50 ms (50.45 to 50.55) | 19.80 Hz | 2.596 M | 2.60 M |
+| P8.18 | 52.34 ms (52.25 to 52.42) | 19.11 Hz | 2.504 M | 2.51 M |
+| P8.21 | 52.31 ms (52.23 to 52.40) | 19.12 Hz | 2.506 M | 2.51 M |
 
-Before the ring PRUs joined the fabric, which costs them a pass every 64 laps, the same pins measured 15.10, 12.46, and 12.47 Hz.
+`ai64 fabric route g1rtu1 window 4096` changed P8.21 to 306.0 Hz, sixteen times as fast, and `window 65536` changed it back.
+
+With the three ring RTUs stopped, the same pins measured 19.95, 19.50, and 19.50 Hz: a running RTU costs its ICSSG's rings about 1% each ([The ICSSG rings](README.md#the-icssg-rings)). Before each slice had an RTU of its own to talk for it, when the ring went round all three cores and the PRU was a fabric node itself, they measured 13.87, 12.16, and 12.17 Hz.
 
 ## Zephyr: SPI7 and UART2
 

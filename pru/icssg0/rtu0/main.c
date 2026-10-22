@@ -9,111 +9,38 @@
  *   "arm <period> <count>"  the arm block, which Tx_PRU0 turns into pulses
  * Anything else is echoed. This core drives no pin itself.
  *
- * It is also a fabric node (ai64_fabric.h). A route can carry an arm or xy
+ * It is also fabric node 8 (ai64_fabric.h). A route can carry an arm or xy
  * action for RTU0, so any core can make Tx_PRU0 pulse or PRU0 send a
  * frame; RTU0 tells Linux over RPMsg when one does.
+ *
+ * RTU0 is the slice's only link to the rest of the SoC. PRU0 and Tx_PRU0
+ * only read the records RTU0 writes, and do their timed work.
  */
 
 #include <stdint.h>
 #include "ai64_shm.h"
 
-#include <pru_intc.h>
-#include <rsc_types.h>
-#include <pru_rpmsg.h>
-#include "resource_table.h"
+/*
+ * RTU0's first data RAM slice is 2 KiB and holds the RPMsg buffers, so the
+ * log stays small and sits in the second slice with the stack.
+ */
+#define AI64_TRACE_SIZE 512
+#define AI64_TRACE_NAME "trace:rtu0"
+#include "ai64_rsc_rpmsg.h"
+#include "ai64_rtu_rpmsg.h"
+#include "ai64_text.h"
 
-/* Host interrupt 10 is R31 bit 30 on the RTU. */
-#define HOST_INT      ((uint32_t)1 << 30)
-#define TO_ARM_HOST   20
-#define FROM_ARM_HOST 21
-#define CHAN_PORT     30
-#define CHAN_NAME     "rpmsg-raw"
-#define VIRTIO_CONFIG_S_DRIVER_OK 4
-
-volatile register uint32_t __R31;
-
-static struct pru_rpmsg_transport transport;
 static volatile struct ai64_arm *const arm = (volatile struct ai64_arm *)AI64_ARM_LOCAL;
 static volatile struct ai64_xy *const xy = (volatile struct ai64_xy *)AI64_XY_LOCAL;
 static uint32_t arm_seq;
 static uint32_t xy_seq;
-/* Linux's address and RTU0's, from Linux's first message. */
-static uint16_t src;
-static uint16_t dst;
-static uint16_t peer_known;
 
-static uint8_t payload[RPMSG_MESSAGE_SIZE];
 /*
  * tx and cmd stay in .bss. A 496-byte local on the stack would not fit next
  * to what pru_rpmsg_channel() needs for the name-service announce.
  */
 static char tx[RPMSG_MESSAGE_SIZE];
 static char cmd[56];
-
-static uint16_t append_str(char *dst, uint16_t n, uint16_t max, const char *s)
-{
-	while (*s && n + 1 < max) {
-		dst[n++] = *s++;
-	}
-	dst[n] = 0;
-	return n;
-}
-
-static uint16_t append_u32(char *dst, uint16_t n, uint16_t max, uint32_t v)
-{
-	char tmp[10];
-	uint16_t i = 0;
-
-	if (v == 0) {
-		return append_str(dst, n, max, "0");
-	}
-	while (v && i < sizeof(tmp)) {
-		tmp[i++] = (char)('0' + (v % 10));
-		v /= 10;
-	}
-	while (i && n + 1 < max) {
-		dst[n++] = tmp[--i];
-	}
-	dst[n] = 0;
-	return n;
-}
-
-static int parse_u32(const char **pp, uint32_t *out)
-{
-	const char *s = *pp;
-	uint32_t v = 0;
-	int any = 0;
-
-	while (*s >= '0' && *s <= '9') {
-		v = v * 10u + (uint32_t)(*s - '0');
-		s++;
-		any = 1;
-	}
-	if (!any) {
-		return 0;
-	}
-	*out = v;
-	*pp = s;
-	return 1;
-}
-
-/* "<word> <a> <b>", both decimal uint32. */
-static int parse_two(const char *s, const char *word, uint32_t *a, uint32_t *b)
-{
-	while (*word) {
-		if (*s++ != *word++) {
-			return 0;
-		}
-	}
-	if (*s++ != ' ') {
-		return 0;
-	}
-	if (!parse_u32(&s, a) || *s != ' ') {
-		return 0;
-	}
-	s++;
-	return parse_u32(&s, b);
-}
 
 static void publish_xy(volatile struct ai64_xy *xy, uint32_t *xy_seq,
 		       uint32_t x, uint32_t y)
@@ -214,15 +141,6 @@ static uint16_t run_cmd(const char *who)
 	return reply_echo(tx, sizeof(tx), who, cmd);
 }
 
-static int16_t send_bytes(struct pru_rpmsg_transport *transport,
-			  uint16_t src, uint16_t dst, const char *msg, uint16_t len)
-{
-	if (len > RPMSG_MESSAGE_SIZE) {
-		len = RPMSG_MESSAGE_SIZE;
-	}
-	return pru_rpmsg_send(transport, src, dst, (void *)msg, len);
-}
-
 /*
  * The fabric. RTU0 polls it on every pass of its main loop. A route whose
  * action is for RTU0 runs it here, between hops.
@@ -254,32 +172,18 @@ static uint32_t fab_action(struct ai64_fab_msg *m)
 	}
 	trace_puts(tx);
 	trace_putc('\n');
-	if (peer_known) {
-		send_bytes(&transport, dst, src, tx, n);
-	}
+	rtu_rpmsg_send(tx, n);
 	return 0;
 }
 
 void main(void)
 {
 	volatile struct ai64_shm *shm = (volatile struct ai64_shm *)AI64_SHM_ADDR;
-	volatile uint8_t *status;
-	uint16_t len;
 	uint32_t last_seq;
 
 	trace_init();
 	trace_puts("rtu0 up, waiting for virtio\n");
-
-	CT_INTC.STATUS_CLR_INDEX_REG_bit.STATUS_CLR_INDEX = FROM_ARM_HOST;
-	status = &resourceTable.rpmsg_vdev.status;
-	while (!(*status & VIRTIO_CONFIG_S_DRIVER_OK)) {
-	}
-
-	pru_rpmsg_init(&transport, &resourceTable.rpmsg_vring0,
-		       &resourceTable.rpmsg_vring1, TO_ARM_HOST, FROM_ARM_HOST);
-	while (pru_rpmsg_channel(RPMSG_NS_CREATE, &transport, CHAN_NAME,
-				 CHAN_PORT) != PRU_RPMSG_SUCCESS) {
-	}
+	rtu_rpmsg_up();
 	trace_puts("rtu0 channel rpmsg-raw port 30 is up\n");
 
 	/*
@@ -305,31 +209,15 @@ void main(void)
 	xy->magic = 0;
 	xy->seq = 0;
 
-	fab_init(AI64_FAB_RTU0);
+	fab_init(AI64_FAB_G0RTU0);
 	trace_puts("rtu0 is fabric node 8\n");
 
 	while (1) {
 		fab_poll();
-		if (__R31 & HOST_INT) {
-			CT_INTC.STATUS_CLR_INDEX_REG_bit.STATUS_CLR_INDEX = FROM_ARM_HOST;
-			while (pru_rpmsg_receive(&transport, &src, &dst, payload, &len) ==
-			       PRU_RPMSG_SUCCESS) {
-				uint16_t i;
-				uint16_t copy = len;
-				uint16_t n;
+		if (rtu_rpmsg_receive(cmd, sizeof(cmd))) {
+			uint16_t n = run_cmd("Linux");
 
-				peer_known = 1;
-				while (copy && (payload[copy - 1] == '\n' ||
-						payload[copy - 1] == '\r')) {
-					copy--;
-				}
-				for (i = 0; i < copy && i + 1 < sizeof(cmd); i++) {
-					cmd[i] = (char)payload[i];
-				}
-				cmd[i] = 0;
-				n = run_cmd("Linux");
-				send_bytes(&transport, dst, src, tx, n);
-			}
+			rtu_rpmsg_send(tx, n);
 		}
 
 		if (shm->magic == AI64_SHM_MAGIC && shm->seq != last_seq) {
@@ -347,9 +235,7 @@ void main(void)
 			cmd[i] = 0;
 			n = run_cmd("Zephyr");
 			/* RTU0 learns Linux's address from Linux's first message. */
-			if (peer_known) {
-				send_bytes(&transport, dst, src, tx, n);
-			}
+			rtu_rpmsg_send(tx, n);
 		}
 	}
 }
