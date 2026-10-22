@@ -526,6 +526,8 @@ rtu0   -> linux      24.7 us
 
 Tx_PRU0 then sends 8 pulses, 100 µs apart, on P9.25, and RTU0 tells Linux in the `rtu0` window. `xy 41 83` instead of `arm` makes PRU0 send its frame on P8.11. Any order of nodes works, a node can appear more than once, and a route that leaves out `rtu0` just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
+**Restarts.** On each image, `ai64-demo` ran 15 times in a row, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all twelve nodes up, about 13,150 pongs a second, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `arm` and `xy` gave the same pulses and frame on both.
+
 **What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ring PRUs lose a few percent of their laps ([The ICSSG rings](#the-icssg-rings)). And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr app parks in WFI with its interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
 
 ### Restarting an R5F core
@@ -677,7 +679,7 @@ KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 
 Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port), and `/root` holds `ai64`, `ai64-demo`, and the firmware. Then `./ai64-demo --tmux`.
 
-On the bench, the image with TI's 6.18 ran `ai64-demo` eleven times in a row, stopping and starting all 19 demo cores each time, with every core up and no kernel errors, and gave the same ring and DSP timings as the Debian image.
+On a board, the image with TI's 6.18 ran `ai64-demo` 15 times in a row, stopping and starting all 19 demo cores each time, with every core up, the fabric clean after each run, and no kernel errors, and gave the same ring, fabric, and DSP timings as the Debian image.
 
 `ai64-poky.yml` points the kernel, U-Boot, `ti-linux-firmware` (the boot firmware), and `core-secdev-k3` (image signing) at TI's GitHub mirrors, which carry the commits meta-ti pins. The one fetch left on git.ti.com is the PRU Software Support Package, which TI does not mirror. That server sometimes fails a first request and answers the next; if the fetch fails, run the build again, or copy its clone from another Yocto tree's `downloads/git2/` into `yocto/downloads/git2/`, `.done` file included.
 
