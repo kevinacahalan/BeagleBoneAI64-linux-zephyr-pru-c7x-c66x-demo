@@ -73,9 +73,9 @@ ai64-demo starts the demo.
 ai64 is the Linux program it runs.
 ai64_r5f0_0.elf, ai64_r5f0_1.elf, ai64_r5f1_0.elf, and ai64_r5f1_1.elf are
 the Zephyr firmwares for the four main-domain R5F cores.
-ai64-icssg0-rtu0.elf, ai64-icssg0-pru0.elf, and ai64-icssg0-txpru0.elf are
-the ICSSG0 slice-0 firmwares. The other nine ai64-icssg*.elf files run the
-rings on ICSSG0 slice 1 and both ICSSG1 slices.
+The six ai64-icssg0-*.elf files are ICSSG0's PWM project: software PWM on
+slice 0, the ICSSG's PWM module on slice 1. The six ai64-icssg1-*.elf files
+are ICSSG1's multicore scheduler, a port of TI's open-pru example.
 ai64-c66x.elf and ai64-c7x.elf are the C66x and C7x images.
 
 From this directory:

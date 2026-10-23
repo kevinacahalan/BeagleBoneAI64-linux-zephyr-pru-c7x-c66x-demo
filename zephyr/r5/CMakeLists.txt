@@ -45,6 +45,8 @@ target_sources(app PRIVATE
   src/ai64_restart.c
   src/ai64_mpu.c
   src/ai64_tisci.c
+  src/ai64_sproxy.c
+  src/ai64_pwm.c
   src/ai64_fabric.c
   src/ai64_erpc.cpp
   src/erpc_port_zephyr.cpp

@@ -15,6 +15,7 @@ SRC_URI = " \
     file://zephyr/include \
     file://zephyr/erpc \
     file://zephyr/scripts \
+    file://zephyr/patches \
     git://github.com/EmbeddedRPC/erpc.git;protocol=https;nobranch=1;destsuffix=src/third_party/erpc;name=erpc \
     https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/zephyr-sdk-1.0.1_linux-x86_64_minimal.tar.xz;name=sdk;subdir=sdk \
     https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/toolchain_gnu_linux-x86_64_arm-zephyr-eabi.tar.xz;name=armtc;subdir=sdk/zephyr-sdk-1.0.1/gnu \

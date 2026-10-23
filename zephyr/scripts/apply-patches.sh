@@ -16,10 +16,11 @@ if [[ ! -e $root/zephyr/upstream/.git ]]; then
 	exit 1
 fi
 
+# The checks only probe which way a patch goes; their complaints are noise.
 for p in "${patches[@]}"; do
-	if git -C "$root/zephyr/upstream" apply --check "$p"; then
+	if git -C "$root/zephyr/upstream" apply --check "$p" 2>/dev/null; then
 		git -C "$root/zephyr/upstream" apply "$p"
-	elif git -C "$root/zephyr/upstream" apply --reverse --check "$p"; then
+	elif git -C "$root/zephyr/upstream" apply --reverse --check "$p" 2>/dev/null; then
 		echo "already applied: $(basename "$p")"
 	else
 		echo "patch does not apply: $p" >&2

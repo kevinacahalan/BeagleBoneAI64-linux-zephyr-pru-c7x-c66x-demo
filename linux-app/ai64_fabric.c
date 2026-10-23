@@ -8,13 +8,13 @@
  *   tally. It redraws every second; lines prints one line every 10 s
  *   instead, for the merged console, and once draws one screen and exits.
  *
- * ai64 fabric route <node>... [arm <period> <count> | xy <x> <y> | window <laps>]
+ * ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]
  *   Sends one message along the nodes given, and back to Linux. Each node
- *   stamps it as it passes. With arm or xy, ICSSG0 RTU0 (g0rtu0) runs that
- *   command when the message reaches it, so any core can make Tx_PRU0 pulse
- *   or PRU0 send a frame. With window, the first ring RTU on the route
- *   (g0rtu1, g1rtu0, or g1rtu1) sets its ring's window. Prints the time each
- *   hop took. It works with the viewer running.
+ *   stamps it as it passes. With an action, the first PWM generator on the
+ *   route runs it when the message reaches it, so any core can change a
+ *   PWM: g0rtu0 (ICSSG0 slice 0, software), g0rtu1 (slice 1, the ICSSG
+ *   PWM module), or, for pwm only, r5f0_0 (EHRPWM4 on P9.25). Prints the
+ *   time each hop took. It works with the viewer running.
  *
  * ai64 fabric reset
  *   Frees the tally's spinlock and zeroes the tally, for a core that was
@@ -60,8 +60,17 @@ int fabric_main(int argc, char **argv);
 
 static const char *const node_name[AI64_FAB_NODES] = {
 	"linux", "r5f0_0", "r5f0_1", "r5f1_0", "r5f1_1", "c66x0",
-	"c66x1", "c7x", "g0rtu0", "g0rtu1", "g1rtu0", "g1rtu1",
+	"c66x1", "c7x", "g0rtu0", "g0rtu1",
 };
+
+/* Which nodes take which route action (ai64_fabric.h). */
+static int acts(uint32_t node, uint32_t action)
+{
+	if (node == AI64_FAB_G0RTU0 || node == AI64_FAB_G0RTU1) {
+		return 1;
+	}
+	return node == AI64_FAB_R5F0_0 && action == AI64_FAB_ACT_PWM;
+}
 
 static void *map(off_t addr, size_t len)
 {
@@ -404,21 +413,21 @@ static int route_main(int argc, char **argv)
 	int i, fd, node;
 
 	for (i = 3; i < argc; i++) {
-		if (!strcmp(argv[i], "arm") || !strcmp(argv[i], "xy")) {
+		if (!strcmp(argv[i], "pwm")) {
 			if (i + 3 != argc) {
 				break;
 			}
-			action = !strcmp(argv[i], "arm") ? AI64_FAB_ACT_ARM : AI64_FAB_ACT_XY;
+			action = AI64_FAB_ACT_PWM;
 			a0 = strtoul(argv[i + 1], NULL, 0);
 			a1 = strtoul(argv[i + 2], NULL, 0);
 			i = argc;
 			break;
 		}
-		if (!strcmp(argv[i], "window")) {
+		if (!strcmp(argv[i], "dead") || !strcmp(argv[i], "sweep")) {
 			if (i + 2 != argc) {
 				break;
 			}
-			action = AI64_FAB_ACT_WINDOW;
+			action = !strcmp(argv[i], "dead") ? AI64_FAB_ACT_DEAD : AI64_FAB_ACT_SWEEP;
 			a0 = strtoul(argv[i + 1], NULL, 0);
 			i = argc;
 			break;
@@ -432,7 +441,7 @@ static int route_main(int argc, char **argv)
 	}
 	if (n == 0 || i != argc) {
 		fprintf(stderr, "usage: ai64 fabric route <node>... "
-			"[arm <period> <count> | xy <x> <y> | window <laps>]\n"
+			"[pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n"
 			"nodes:");
 		for (h = 1; h < AI64_FAB_NODES; h++) {
 			fprintf(stderr, " %s", node_name[h]);
@@ -444,19 +453,13 @@ static int route_main(int argc, char **argv)
 		fprintf(stderr, "the route starts at Linux; name the nodes after it\n");
 		return 2;
 	}
-	if (action == AI64_FAB_ACT_ARM || action == AI64_FAB_ACT_XY) {
-		act_node = AI64_FAB_G0RTU0;
-		for (h = 0; h < n && route[h] != AI64_FAB_G0RTU0; h++) {
+	if (action != AI64_FAB_ACT_NONE) {
+		for (h = 0; h < n && !acts(route[h], action); h++) {
 		}
 		if (h == n) {
-			fprintf(stderr, "arm and xy run on g0rtu0, so the route has to pass g0rtu0\n");
-			return 2;
-		}
-	} else if (action == AI64_FAB_ACT_WINDOW) {
-		for (h = 0; h < n && (route[h] < AI64_FAB_G0RTU1 || route[h] > AI64_FAB_G1RTU1); h++) {
-		}
-		if (h == n) {
-			fprintf(stderr, "window runs on a ring RTU, so the route has to pass g0rtu1, g1rtu0, or g1rtu1\n");
+			fprintf(stderr, "%s runs on a PWM generator: the route has to pass g0rtu0 or g0rtu1%s\n",
+				action == AI64_FAB_ACT_PWM ? "pwm" : action == AI64_FAB_ACT_DEAD ? "dead" : "sweep",
+				action == AI64_FAB_ACT_PWM ? ", or r5f0_0" : "");
 			return 2;
 		}
 		act_node = route[h];
@@ -535,9 +538,9 @@ static int route_main(int argc, char **argv)
 			act_node = AI64_FAB_NODES; /* only the first pass acts */
 			printf("   %s %s", node_name[route[h]],
 			       m.status ? "did not run the action" :
-			       action == AI64_FAB_ACT_ARM ? "armed Tx_PRU0" :
-			       action == AI64_FAB_ACT_XY ? "handed PRU0 the X/Y" :
-			       "set its ring's window");
+			       action == AI64_FAB_ACT_PWM ? "set its PWM" :
+			       action == AI64_FAB_ACT_DEAD ? "set its dead band" :
+			       "set its sweep");
 		}
 		printf("\n");
 		prev = stamp[h];
@@ -588,7 +591,7 @@ int fabric_main(int argc, char **argv)
 	}
 	if (argc > 3 || (argc == 3 && strcmp(mode, "lines") && strcmp(mode, "once"))) {
 		fprintf(stderr, "usage: %s fabric [lines|once]\n"
-			"       %s fabric route <node>... [arm <period> <count> | xy <x> <y>]\n"
+			"       %s fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n"
 			"       %s fabric reset\n", argv[0], argv[0], argv[0]);
 		return 2;
 	}

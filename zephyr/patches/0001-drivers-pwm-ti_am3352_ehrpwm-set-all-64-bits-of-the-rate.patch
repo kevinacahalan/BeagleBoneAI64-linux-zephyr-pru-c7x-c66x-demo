@@ -1,0 +1,26 @@
+diff --git a/drivers/pwm/pwm_ti_am3352_ehrpwm.c b/drivers/pwm/pwm_ti_am3352_ehrpwm.c
+index 0de46dbec1c..ebe70b834b6 100644
+--- a/drivers/pwm/pwm_ti_am3352_ehrpwm.c
++++ b/drivers/pwm/pwm_ti_am3352_ehrpwm.c
+@@ -412,8 +412,20 @@ static int ti_ehrpwm_get_cycles_per_sec(const struct device *dev, uint32_t chann
+ {
+ 	ARG_UNUSED(channel);
+ 	const struct ti_ehrpwm_cfg *cfg = DEV_CFG(dev);
++	uint32_t rate;
++	int err;
+ 
+-	return clock_control_get_rate(cfg->clock_dev, cfg->clock_subsys, (uint32_t *)cycles);
++	/* the clock rate is 32 bits wide; writing it through a cast pointer
++	 * would leave the upper half of *cycles unset
++	 */
++	err = clock_control_get_rate(cfg->clock_dev, cfg->clock_subsys, &rate);
++	if (err != 0) {
++		return err;
++	}
++
++	*cycles = rate;
++
++	return 0;
+ }
+ 
+ #ifdef CONFIG_PWM_EVENT

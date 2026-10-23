@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * The fabric: every demo core talks to every other one, with no Linux in
- * the path. Twelve nodes take part: Linux (while `ai64 fabric` runs), the
- * four main-domain R5Fs, both C66x, the C7x, and the RTU of each of the four
- * ICSSG slices. The RTU is its slice's link to the rest of the SoC; the
- * slice's PRU and Tx_PRU keep to their real-time work and never touch the
- * fabric.
+ * the path. Ten nodes take part: Linux (while `ai64 fabric` runs), the four
+ * main-domain R5Fs, both C66x, the C7x, and the RTU of each ICSSG0 slice.
+ * The RTU is its slice's link to the rest of the SoC; the slice's PRU and
+ * Tx_PRU keep to their real-time work and never touch the fabric. ICSSG1
+ * runs TI's multicore scheduler on all six of its cores (pru/
+ * multicore_scheduler/), with no core left to talk, so it is not a node.
+ * The layout has room for AI64_FAB_SLOTS nodes; the last two are spare.
  * Linux, Zephyr, both DSP compilers, and the PRU compiler all include this
  * file, so it only uses 32-bit fields at fixed offsets.
  *
@@ -53,9 +55,10 @@
 #define AI64_FAB_ADDR      0xA9000000u
 #define AI64_FAB_SIZE      0x00020000u /* what the cores map; the overlay reserves 1 MiB */
 #define AI64_FAB_PAGE      0x2000u
-#define AI64_FAB_NODES     12u
+#define AI64_FAB_SLOTS     12u /* what the layout has room for */
+#define AI64_FAB_NODES     10u /* the nodes there are */
 #define AI64_FAB_MAGIC     0x46364941u /* "AI6F" */
-#define AI64_FAB_TALLY_OFF (AI64_FAB_NODES * AI64_FAB_PAGE)
+#define AI64_FAB_TALLY_OFF (AI64_FAB_SLOTS * AI64_FAB_PAGE)
 
 #define AI64_FAB_LINUX     0u
 #define AI64_FAB_R5F0_0    1u
@@ -65,10 +68,8 @@
 #define AI64_FAB_C66X0     5u
 #define AI64_FAB_C66X1     6u
 #define AI64_FAB_C7X       7u
-#define AI64_FAB_G0RTU0    8u /* ICSSG0 RTU0, the demo slice's RTU */
-#define AI64_FAB_G0RTU1    9u /* the RTUs of the three ring slices */
-#define AI64_FAB_G1RTU0    10u
-#define AI64_FAB_G1RTU1    11u
+#define AI64_FAB_G0RTU0    8u /* ICSSG0 RTU0: slice 0, the software PWM */
+#define AI64_FAB_G0RTU1    9u /* ICSSG0 RTU1: slice 1, the ICSSG PWM */
 
 #define AI64_FAB_REQ       0u
 #define AI64_FAB_REPLY     1u
@@ -104,11 +105,15 @@
 
 #define AI64_FAB_MAX_HOPS  16u
 
-/* What a route does at action_node on its way. */
+/*
+ * What a route does at action_node on its way. Each PWM generator's
+ * talking core takes them: ICSSG0 RTU0 and RTU1 all three, R5F0_0 (its
+ * EHRPWM) only pwm.
+ */
 #define AI64_FAB_ACT_NONE  0u
-#define AI64_FAB_ACT_ARM   1u /* RTU0: arg0 period, arg1 count, as "arm" */
-#define AI64_FAB_ACT_XY    2u /* RTU0: arg0 x, arg1 y, as "xy" */
-#define AI64_FAB_ACT_WINDOW 3u /* a ring RTU: arg0 laps a window, as "window" */
+#define AI64_FAB_ACT_PWM   1u /* arg0 period ns, arg1 duty ns, as "pwm" */
+#define AI64_FAB_ACT_DEAD  2u /* arg0 dead band ns, as "dead" */
+#define AI64_FAB_ACT_SWEEP 3u /* arg0 ms, 0 to stop, as "sweep" */
 
 /*
  * One message, 64 bytes. A ping is its first AI64_FAB_PING_WORDS words;
@@ -184,20 +189,20 @@ struct ai64_fab_own {
 
 struct ai64_fab_page {
 	struct ai64_fab_own own;                         /* 0x000 */
-	struct ai64_fab_peer peer[AI64_FAB_NODES];       /* 0x100 */
+	struct ai64_fab_peer peer[AI64_FAB_SLOTS];       /* 0x100 */
 	/* The hops of this node's tour (TOUR) and route (ROUTE) write the GTC
 	 * here when they read it: trip[cls - AI64_FAB_TOUR][hop]. */
 	uint32_t trip[2][AI64_FAB_MAX_HOPS];             /* 0x280 */
 	/* Whatever the node publishes for the others to read, such as a
-	 * ring RTU's struct ai64_slice_status (ai64_shm.h). */
+	 * PWM generator's struct ai64_pwm_status (ai64_shm.h). */
 	uint32_t app[32];                                /* 0x300 */
 	uint32_t pad0[(0x400u - 0x380u) / 4u];
 	/* The inbox. seq[s] and rseq[s] are written by sender s only:
 	 * byte c of seq[s] counts its class c messages, rseq[s] its routes. */
-	uint32_t seq[AI64_FAB_NODES];                    /* 0x400 */
-	uint32_t rseq[AI64_FAB_NODES];                   /* 0x430 */
+	uint32_t seq[AI64_FAB_SLOTS];                    /* 0x400 */
+	uint32_t rseq[AI64_FAB_SLOTS];                   /* 0x430 */
 	uint32_t pad1[(0x800u - 0x460u) / 4u];
-	struct ai64_fab_msg slot[AI64_FAB_CLASSES][AI64_FAB_NODES]; /* 0x800 */
+	struct ai64_fab_msg slot[AI64_FAB_CLASSES][AI64_FAB_SLOTS]; /* 0x800 */
 };
 
 /* The spinlock tally, after the pages. Only the lock holder writes it. */
@@ -205,7 +210,7 @@ struct ai64_fab_tally {
 	uint32_t magic;
 	uint32_t total;
 	uint32_t holder;       /* node + 1 inside the lock, else 0 */
-	uint32_t count[AI64_FAB_NODES];
+	uint32_t count[AI64_FAB_SLOTS];
 };
 
 /* What a node does to a tour's or a route's value. */
@@ -527,8 +532,8 @@ static void fab_ping(uint32_t to, uint32_t now)
  * crossing between kinds of core, then home. */
 static const uint8_t fab_tour_order[] = {
 	AI64_FAB_C66X0, AI64_FAB_G0RTU0, AI64_FAB_R5F1_0, AI64_FAB_C7X,
-	AI64_FAB_G1RTU0, AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0RTU1,
-	AI64_FAB_R5F1_1, AI64_FAB_G1RTU1, AI64_FAB_LINUX,
+	AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0RTU1, AI64_FAB_R5F1_1,
+	AI64_FAB_LINUX,
 };
 
 static void fab_tour(uint32_t now)

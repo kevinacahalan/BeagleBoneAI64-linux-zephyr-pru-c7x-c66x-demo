@@ -114,16 +114,9 @@ extern "C" int ai64_erpc_spi(const char *text, char *out, size_t outlen)
 	return 0;
 }
 
-extern "C" int ai64_erpc_arm(uint32_t period, uint32_t count)
+extern "C" int ai64_erpc_pwm(uint32_t period_ns, uint32_t duty_ns)
 {
-	int32_t rc = armPulses(period, count);
-
-	return rc == 0 ? 0 : -1;
-}
-
-extern "C" int ai64_erpc_xy(uint32_t x, uint32_t y)
-{
-	int32_t rc = sendXy(x, y);
+	int32_t rc = setPwm(period_ns, duty_ns);
 
 	return rc == 0 ? 0 : -1;
 }

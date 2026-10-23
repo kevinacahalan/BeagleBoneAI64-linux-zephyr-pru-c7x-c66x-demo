@@ -1,6 +1,7 @@
-SUMMARY = "BeagleBone AI-64 ICSSG firmware: the ICSSG0 slice-0 demo and the three ring slices"
-DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package: ai64-icssg0-pru0.elf, ai64-icssg0-rtu0.elf, and ai64-icssg0-txpru0.elf for the ICSSG0 slice-0 demo, and for ICSSG0 slice 1 and both ICSSG1 slices the ring images for each PRU and Tx_PRU and the RTU image that talks for them."
-# The demo is MIT. The PRU Software Support Package it links is BSD-3-Clause.
+SUMMARY = "BeagleBone AI-64 ICSSG firmware: the PWM project on ICSSG0 and the multicore scheduler on ICSSG1"
+DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package, from the two open-pru style projects in pru/: pwm (ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1) and multicore_scheduler (ICSSG1: a port of open-pru's examples/multicore_scheduler on all six cores)."
+# The demo is MIT. The PRU Software Support Package it links, and the
+# multicore scheduler ported from open-pru, are BSD-3-Clause.
 LICENSE = "MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302 \
     file://${COMMON_LICENSE_DIR}/BSD-3-Clause;md5=550794465ba0ec5312d6919e203a55f9"
@@ -11,9 +12,10 @@ FILESEXTRAPATHS:prepend := "${@os.path.abspath(os.path.join(os.path.dirname(d.ge
 
 SRC_URI = " \
     file://pru/Makefile;subdir=src \
-    file://pru/include;subdir=src \
-    file://pru/icssg0;subdir=src \
-    file://pru/ring;subdir=src \
+    file://pru/pru_rules.mak;subdir=src \
+    file://pru/common;subdir=src \
+    file://pru/pwm;subdir=src \
+    file://pru/multicore_scheduler;subdir=src \
     file://zephyr/include/ai64_shm.h;subdir=src \
     file://zephyr/include/ai64_fabric.h;subdir=src \
     git://git.ti.com/git/pru-software-support-package/pru-software-support-package.git;protocol=https;nobranch=1;destsuffix=pssp;name=pssp \

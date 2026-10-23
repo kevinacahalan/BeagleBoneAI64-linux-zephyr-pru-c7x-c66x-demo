@@ -20,18 +20,21 @@
 
 /*
  * ai64 peer <label> <rpmsg-dev> <fifo>
- *   Owns one RPMsg device. Used for ICSSG0 RTU0 and ICSSG1 RTU0.
+ *   Owns one RPMsg device. Used for ICSSG0 RTU0.
  *
  * ai64 erpc [core] <rpmsg-dev> <fifo>
  *   Calls Zephyr functions over eRPC on the existing RPMsg fd. core names
  *   one of the other R5F cores (r5f0_1, ...); leave it out for R5F0_0.
  *
- * ai64 watch pru0|txpru0
- *   Prints what PRU0 or Tx_PRU0 does, from ICSSG0 shared RAM. Neither core
- *   has an RPMsg endpoint.
+ * ai64 pwm [seconds|once]
+ *   Prints what the three PWM generators run: ICSSG0 slice 0 (software),
+ *   ICSSG0 slice 1 (the ICSSG PWM module), and EHRPWM4 on P9.25 (Zephyr),
+ *   from the status each one's talking core publishes in its fabric page.
  *
- * ai64 shm
- *   Prints both shared-RAM records once and exits.
+ * ai64 sched [seconds|once]
+ *   Shows ICSSG1's multicore scheduler: IEP0's period, each core's task and
+ *   compare, and what P8.17 spends its time at. ICSSG1 has no talking core,
+ *   so this reads its registers, and only reads them.
  *
  * ai64 pads
  *   Prints the pad registers of every pin the demo muxes, next to the value
@@ -56,17 +59,13 @@
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
  *   the buffer through /dev/mem, so it needs no root and no debugfs.
  *
- * ai64 ring [seconds|once]
- *   Prints how fast the token goes round the three ICSSG rings (ICSSG0
- *   slice 1, ICSSG1 slices 0 and 1), from what each slice's RTU publishes
- *   in its fabric page.
- *
- * ai64 fabric [lines|once] | route <node>... [arm ...|xy ...] | reset
+ * ai64 fabric [lines|once] | route <node>... [pwm ...|dead ...|sweep ...] | reset
  *   Joins the fabric, where every core talks to every other one, and shows
  *   it (ai64_fabric.c).
  *
  * ai64 linux <dir>
- *   Sends the startup script, then reads commands such as xy and arm.
+ *   Sends the startup script, then reads commands such as zephyr pwm and
+ *   rtu0 sweep.
  */
 
 int fabric_main(int argc, char **argv);
@@ -92,17 +91,14 @@ static void print_help(void)
 {
 	printf("commands:\n");
 	printf("  zephyr say <text>\n");
-	printf("  zephyr arm <period> <count>\n");
+	printf("  zephyr pwm <period_ns> <duty_ns>    EHRPWM4 on P9.25\n");
 	printf("  zephyr chunk <text>\n");
-	printf("  zephyr xy <x> <y>\n");
 	printf("  zephyr spi [text]\n");
 	printf("  r5f0_1|r5f1_0|r5f1_1 say <text>\n");
-	printf("  rtu0 xy <x> <y>\n");
-	printf("  rtu0 arm <period> <count>\n");
+	printf("  rtu0 pwm <period_ns> <duty_ns>      the software PWM on P8.11/P8.12\n");
+	printf("  rtu0 dead <ns> | sweep <ms> | status\n");
 	printf("  rtu0 <text>\n");
-	printf("  g1rtu0 status\n");
-	printf("  g1rtu0 window <laps>\n");
-	printf("  g1rtu0 <text>\n");
+	printf("  (ICSSG0 slice 1's PWM on P9.12/P9.15 has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
 	printf("  help\n");
 	printf("  quit\n");
 	fflush(stdout);
@@ -113,17 +109,16 @@ static void print_usage(const char *prog)
 	printf("usage: %s <subcommand>\n", prog);
 	printf("  linux <fifo-dir>          the linux window (ai64-demo starts it)\n");
 	printf("  erpc [core] <rpmsg-dev> <fifo>  a zephyr window (core: r5f0_1 ...)\n");
-	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 and g1rtu0 windows\n");
-	printf("  watch pru0|txpru0         the pru0 and txpru0 windows\n");
-	printf("  shm                       print the shared-RAM records once\n");
+	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 window\n");
+	printf("  pwm [seconds|once]        the three PWM generators (the pwm window)\n");
+	printf("  sched [seconds|once]      ICSSG1's multicore scheduler (the sched window)\n");
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
-	printf("  ring [seconds|once]       the three ICSSG rings, as their RTUs report them (the rings window)\n");
 	printf("  bench <rpmsg-dev> [count] time eRPC round trips to one Zephyr core\n");
 	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("  dsp <remoteproc-name> [count] [taps] [runs] offload FIR jobs to a DSP\n");
 	printf("  fabric [lines|once]       every core talking to every other (the fabric window)\n");
-	printf("  fabric route <node>... [arm <period> <count> | xy <x> <y> | window <laps>]\n");
+	printf("  fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n");
 	printf("                            send one message along those cores and back\n");
 	printf("  fabric reset              free the tally's spinlock and zero the tally\n");
 	printf("\n");
@@ -289,123 +284,18 @@ static void *map_phys(off_t addr, size_t len)
 	return p;
 }
 
-/* Both records sit in the first page of ICSSG0 shared RAM. */
-static int map_records(volatile struct ai64_arm **arm, volatile struct ai64_xy **xy)
-{
-	volatile uint8_t *base = map_phys(AI64_ARM_CPU, 4096);
-
-	if (!base) {
-		return -1;
-	}
-	*arm = (volatile struct ai64_arm *)base;
-	*xy = (volatile struct ai64_xy *)(base + (AI64_XY_CPU - AI64_ARM_CPU));
-	return 0;
-}
-
-/* The pru0 window: one line per new X/Y record, one when PRU0 sent it. */
-static void watch_pru0(volatile struct ai64_xy *xy)
-{
-	uint32_t last_seq = xy->seq;
-	uint32_t last_consumed = xy->consumed;
-
-	printf("pru0 window ready, X/Y record at 0x%x, SLIP TX on P8.11\n", AI64_XY_CPU);
-	fflush(stdout);
-	for (;;) {
-		uint32_t seq = xy->seq;
-		uint32_t consumed = xy->consumed;
-
-		if (seq != last_seq) {
-			printf("RTU0 published X/Y seq %u x %u y %u for PRU0\n",
-			       seq, xy->x, xy->y);
-			last_seq = seq;
-		}
-		if (consumed != last_consumed) {
-			printf("PRU0 sent the SLIP frame for seq %u on P8.11\n", consumed);
-			last_consumed = consumed;
-		}
-		fflush(stdout);
-		usleep(20000);
-	}
-}
-
-/* The txpru0 window: one line per new arm block, one when a train ends. */
-static void watch_txpru0(volatile struct ai64_arm *arm)
-{
-	uint32_t last_seq = arm->seq;
-	uint32_t last_applied = arm->applied_seq;
-	uint32_t last_done = arm->done_seq;
-
-	printf("txpru0 window ready, arm block at 0x%x, pulses on P9.25\n", AI64_ARM_CPU);
-	fflush(stdout);
-	for (;;) {
-		uint32_t seq = arm->seq;
-		uint32_t applied = arm->applied_seq;
-		uint32_t done = arm->done_seq;
-
-		if (seq != last_seq) {
-			printf("RTU0 armed Tx_PRU0, seq %u period %u count %u\n",
-			       seq, arm->period_cycles, arm->periods);
-			last_seq = seq;
-		}
-		if (applied != last_applied) {
-			printf("Tx_PRU0 started seq %u, period %u cycles\n",
-			       applied, arm->applied_period);
-			last_applied = applied;
-		}
-		if (done != last_done) {
-			printf("Tx_PRU0 finished seq %u after %u pulses on P9.25\n",
-			       done, arm->sent);
-			last_done = done;
-		}
-		fflush(stdout);
-		usleep(20000);
-	}
-}
-
-static int watch_main(int argc, char **argv)
-{
-	volatile struct ai64_arm *arm;
-	volatile struct ai64_xy *xy;
-
-	if (argc != 3 || (strcmp(argv[2], "pru0") && strcmp(argv[2], "txpru0"))) {
-		fprintf(stderr, "usage: %s watch pru0|txpru0\n", argv[0]);
-		return 2;
-	}
-	if (map_records(&arm, &xy)) {
-		return 1;
-	}
-	if (!strcmp(argv[2], "pru0")) {
-		watch_pru0(xy);
-	} else {
-		watch_txpru0(arm);
-	}
-	return 0;
-}
-
-static int shm_main(void)
-{
-	volatile struct ai64_arm *arm;
-	volatile struct ai64_xy *xy;
-
-	if (map_records(&arm, &xy)) {
-		return 1;
-	}
-	printf("arm 0x%x magic=%08x seq=%u period=%u count=%u sent=%u applied=%u done=%u\n",
-	       AI64_ARM_CPU, arm->magic, arm->seq, arm->period_cycles, arm->periods,
-	       arm->sent, arm->applied_seq, arm->done_seq);
-	printf("xy  0x%x magic=%08x seq=%u x=%u y=%u consumed=%u\n",
-	       AI64_XY_CPU, xy->magic, xy->seq, xy->x, xy->y, xy->consumed);
-	return 0;
-}
-
 /* PINMUX.md has the same table. */
 static const struct {
 	uint32_t pad;
 	uint32_t want;
 	const char *pin;
 } pads[] = {
-	{ 0x0f4, 0x10000, "P8.11 AB24 PRU0 SLIP TX" },
-	{ 0x1a4, 0x10007, "P9.25 W26 Tx_PRU0 GPIO0_104" },
+	{ 0x0f4, 0x10000, "P8.11 AB24 ICSSG0 PRU0 GPO17" },
+	{ 0x0f0, 0x10000, "P8.12 AH28 ICSSG0 PRU0 GPO16" },
+	{ 0x0b8, 0x10003, "P9.12 AE27 PRG0_PWM2_A0" },
+	{ 0x0c0, 0x10003, "P9.15 AD25 PRG0_PWM2_B0" },
+	{ 0x00c, 0x10003, "P8.17 AF22 PRG1_PWM2_A0" },
+	{ 0x1a4, 0x10006, "P9.25 W26 Zephyr EHRPWM4_B" },
 	{ 0x200, 0x200007, "P9.25 AC4 held off" },
 	{ 0x230, 0x10006, "P9.28 U2 Zephyr SPI7_CS0" },
 	{ 0x0b0, 0x200007, "P9.28 AF28 held off" },
@@ -415,9 +305,6 @@ static const struct {
 	{ 0x0d4, 0x200007, "P9.31 AB26 held off" },
 	{ 0x01c, 0x1000e, "P8.34 AD22 Zephyr UART2_TXD" },
 	{ 0x014, 0x5000e, "P8.22 AH23 Zephyr UART2_RXD" },
-	{ 0x10c, 0x10000, "P8.44 AC25 ICSSG0 ring PRU1" },
-	{ 0x010, 0x10000, "P8.18 AJ23 ICSSG1 ring PRU0" },
-	{ 0x07c, 0x10000, "P8.21 AF21 ICSSG1 ring PRU1" },
 };
 
 static int pads_main(void)
@@ -689,100 +576,211 @@ static int trace_main(int argc, char **argv)
 	}
 }
 
+#define FABRIC_DT "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
+
+static double now_us(void);
+
+/* "once" or a number of seconds, for the pwm and sched windows. */
+static int every_arg(int argc, char **argv, int *once)
+{
+	*once = argc > 2 && !strcmp(argv[2], "once");
+	if (argc > 3) {
+		return -1;
+	}
+	return argc > 2 && !*once ? atoi(argv[2]) : 10;
+}
+
 /*
- * The three rings: the remoteproc name of each slice's RTU, its fabric
- * node, and the header pin its PRU toggles.
+ * The three PWM generators: the fabric node whose page holds its status
+ * (struct ai64_pwm_status), the core that writes it, and its pins.
  */
 static const struct {
 	const char *label;
-	const char *rtu;
 	uint32_t node;
-	const char *pin;
-} rings[] = {
-	{ "icssg0 slice 1", "b006000.rtu", AI64_FAB_G0RTU1, "P8.44" },
-	{ "icssg1 slice 0", "b104000.rtu", AI64_FAB_G1RTU0, "P8.18" },
-	{ "icssg1 slice 1", "b106000.rtu", AI64_FAB_G1RTU1, "P8.21" },
+	const char *core;
+	const char *pins;
+} pwm_gens[] = {
+	{ "software PWM, ICSSG0 slice 0", AI64_FAB_G0RTU0, "b004000.rtu", "P8.11 A, P8.12 B" },
+	{ "ICSSG PWM, ICSSG0 slice 1", AI64_FAB_G0RTU1, "b006000.rtu", "P9.12 A, P9.15 B" },
+	{ "EHRPWM4, Zephyr on R5F0_0", AI64_FAB_R5F0_0, "5c00000.r5f", "P9.25" },
 };
 
-#define NRINGS (sizeof(rings) / sizeof(rings[0]))
-#define FABRIC_DT "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
+#define NPWM (sizeof(pwm_gens) / sizeof(pwm_gens[0]))
 
 /*
- * ai64 ring [seconds|once]: every few seconds, one line per ring, from the
- * status its RTU publishes in the app block of its fabric page (struct
- * ai64_slice_status). Linux never reads the ICSSG itself: the RTU is the
- * slice's link to everything else. once prints one sample and exits.
+ * ai64 pwm [seconds|once]: a line per generator every few seconds, from what
+ * its talking core publishes. Linux reads no ICSSG0 or EHRPWM register.
  */
-static int ring_main(int argc, char **argv)
+static int pwm_main(int argc, char **argv)
 {
-	volatile struct ai64_slice_status *st[NRINGS] = { 0 };
-	uint32_t at[NRINGS] = { 0 };
-	int once = argc > 2 && !strcmp(argv[2], "once");
-	int every = argc > 2 && !once ? atoi(argv[2]) : 10;
+	volatile struct ai64_pwm_status *st[NPWM] = { 0 };
+	uint32_t at[NPWM] = { 0 }, periods[NPWM] = { 0 };
+	int once, every = every_arg(argc, argv, &once);
+	double t0 = now_us();
 	char state[32];
-	size_t r;
+	size_t g;
 
-	if (argc > 3 || every <= 0) {
-		fprintf(stderr, "usage: %s ring [seconds|once]\n", argv[0]);
+	if (every <= 0) {
+		fprintf(stderr, "usage: %s pwm [seconds|once]\n", argv[0]);
 		return 2;
 	}
 	if (access(FABRIC_DT, F_OK)) {
 		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", FABRIC_DT);
 		return 1;
 	}
-	for (r = 0; r < NRINGS; r++) {
-		volatile uint8_t *page = map_phys(AI64_FAB_ADDR + rings[r].node * AI64_FAB_PAGE,
+	for (g = 0; g < NPWM; g++) {
+		volatile uint8_t *page = map_phys(AI64_FAB_ADDR + pwm_gens[g].node * AI64_FAB_PAGE,
 						  AI64_FAB_PAGE);
 
 		if (!page) {
 			return 1;
 		}
-		st[r] = (volatile struct ai64_slice_status *)
-			((volatile struct ai64_fab_page *)page)->app;
-		at[r] = st[r]->at;
+		st[g] = (volatile struct ai64_pwm_status *)((volatile struct ai64_fab_page *)page)->app;
+		at[g] = st[g]->at;
+		periods[g] = st[g]->periods;
 	}
 	if (!once) {
-		printf("ring window ready, a line per ring every %d s\n", every);
+		printf("pwm window ready, a line per PWM generator every %d s\n", every);
 	}
 	fflush(stdout);
 	for (;;) {
-		sleep(once ? 1 : (unsigned int)every);
-		for (r = 0; r < NRINGS; r++) {
-			volatile struct ai64_slice_status *s = st[r];
-			double rate, pin;
+		double t1, dt;
 
-			if (rproc_attr(rings[r].rtu, "state", state, sizeof(state)) ||
+		sleep(once ? 1 : (unsigned int)every);
+		t1 = now_us();
+		dt = (t1 - t0) / 1e6;
+		t0 = t1;
+		for (g = 0; g < NPWM; g++) {
+			volatile struct ai64_pwm_status *s = st[g];
+			uint32_t period, duty, n;
+
+			if (rproc_attr(pwm_gens[g].core, "state", state, sizeof(state)) ||
 			    strcmp(state, "running")) {
-				printf("%s: its RTU, %s, is not running\n", rings[r].label, rings[r].rtu);
+				printf("%s: its talking core, %s, is not running\n", pwm_gens[g].label,
+				       pwm_gens[g].core);
 				continue;
 			}
-			if (s->magic != AI64_SLICE_MAGIC) {
-				printf("%s: no status from its RTU yet\n", rings[r].label);
+			if (s->magic != AI64_PWM_MAGIC) {
+				printf("%s: no status yet\n", pwm_gens[g].label);
 				continue;
 			}
-			if (s->at == at[r]) {
-				printf("%s: its RTU has stopped publishing\n", rings[r].label);
+			if (s->at == at[g]) {
+				printf("%s: its status has stopped\n", pwm_gens[g].label);
 				continue;
 			}
-			at[r] = s->at;
-			rate = s->rate;
-			pin = s->window ? rate / (2.0 * s->window) : 0;
-			/*
-			 * The PRU times the token's trip, the Tx_PRU's hop
-			 * included. The lap rate also counts the PRU's own
-			 * bookkeeping.
-			 */
-			printf("%s (RTU%u%s): run %u, %.2f M laps/s, round trip %u cycles (%u to %u), "
-			       "window %u, %s %.2f Hz, hops PRU %u Tx_PRU %u, errors %u%s\n",
-			       rings[r].label, s->slice, s->rpmsg ? ", RPMsg" : "", s->run,
-			       rate / 1e6, s->lap_last, s->lap_min, s->lap_max, s->window,
-			       rings[r].pin, pin, s->laps, s->txpru_hops, s->errors,
-			       s->rate == 0 ? ", STOPPED" : "");
+			at[g] = s->at;
+			period = s->run_period_ns;
+			duty = s->run_duty_ns;
+			n = s->periods - periods[g];
+			periods[g] = s->periods;
+			printf("%s, %s: period %u ns (%.3f kHz), duty %u ns (%.1f%%)", pwm_gens[g].label,
+			       pwm_gens[g].pins, period, period ? 1e6 / period : 0.0, duty,
+			       period ? 100.0 * duty / period : 0.0);
+			if (s->engine != AI64_PWM_EHRPWM) {
+				printf(", dead %u ns", s->run_dead_ns);
+				if (s->sweep_ms) {
+					printf(", duty sweeping every %u ms", s->sweep_ms);
+				}
+				printf(", %.0f periods/s, %u late edges", n / dt, s->late);
+				if (s->engine == AI64_PWM_SOFT) {
+					printf(" (the latest %u ns late)", s->late_max_ns);
+				}
+			}
+			printf(", request %u%s\n", s->ctl_seq,
+			       s->ctl_ack == s->ctl_seq ? "" : " (not followed yet)");
 		}
 		fflush(stdout);
 		if (once) {
 			return 0;
 		}
+	}
+}
+
+/*
+ * ICSSG1's multicore scheduler (pru/multicore_scheduler): which IEP0
+ * compare starts each core's task, and what the task writes to PWM2_0's
+ * initial state, which P8.17 shows. In the order the tasks run.
+ */
+static const struct {
+	const char *core;
+	uint32_t tm;     /* the core's task manager, from TM_CFG */
+	int high;        /* 1 sets P8.17 high, 0 low */
+} mcs_tasks[] = {
+	{ "PRU0", 0x000, 1 },
+	{ "PRU1", 0x200, 0 },
+	{ "RTU1", 0x300, 1 },
+	{ "RTU0", 0x100, 0 },
+	{ "Tx_PRU1", 0x500, 0 },
+	{ "Tx_PRU0", 0x400, 1 },
+};
+
+#define ICSSG1_IEP0  0x0b12e000
+#define ICSSG1_CFG   0x0b126000
+#define ICSSG1_TM    0x0b12a000
+
+static uint32_t iep_cmp(volatile uint32_t *iep, uint32_t n)
+{
+	return iep[(n < 8 ? 0x78 + 8 * n : 0xc0 + 8 * (n - 8)) / 4];
+}
+
+static int sched_main(int argc, char **argv)
+{
+	volatile uint32_t *iep = map_phys(ICSSG1_IEP0, 4096);
+	volatile uint32_t *cfg = map_phys(ICSSG1_CFG, 4096);
+	volatile uint32_t *tm = map_phys(ICSSG1_TM, 4096);
+	int once, every = every_arg(argc, argv, &once);
+	char state[32];
+	size_t i;
+
+	if (every <= 0) {
+		fprintf(stderr, "usage: %s sched [seconds|once]\n", argv[0]);
+		return 2;
+	}
+	if (!iep || !cfg || !tm) {
+		return 1;
+	}
+	if (!once) {
+		printf("sched window ready, ICSSG1's schedule every %d s\n", every);
+	}
+	for (;;) {
+		uint32_t high = 0, samples = 0, changes = 0, last = 0, gcfg, period;
+
+		if (rproc_attr("b134000.pru", "state", state, sizeof(state)) ||
+		    strcmp(state, "running")) {
+			printf("ICSSG1 PRU0, which sets the scheduler up, is not running\n");
+		} else if (!((gcfg = iep[0]) & 1)) {
+			printf("ICSSG1 IEP0 is stopped: the scheduler is not set up\n");
+		} else {
+			period = iep_cmp(iep, 0) + ((gcfg >> 4) & 0xf);
+			printf("ICSSG1 multicore scheduler: IEP0 period %u ns, +%u ns a tick (%s)\n",
+			       period, (gcfg >> 4) & 0xf,
+			       cfg[0x30 / 4] & 1 ? "the 250 MHz core clock" : "the IEP clock");
+			for (i = 0; i < sizeof(mcs_tasks) / sizeof(mcs_tasks[0]); i++) {
+				uint32_t t = mcs_tasks[i].tm / 4;
+				uint32_t ev = tm[t + 0x40 / 4], on = tm[t] == 0x82;
+
+				printf("  %-8s IEP0 CMP%-2u at %5u ns  sets P8.17 %-4s  task manager %s\n",
+				       mcs_tasks[i].core, ev >= 16 && ev < 32 ? ev - 16 : 99,
+				       ev >= 16 && ev < 32 ? iep_cmp(iep, ev - 16) : 0,
+				       mcs_tasks[i].high ? "high" : "low",
+				       on ? "on" : "OFF");
+			}
+			/* A bus read takes far longer than a task; sample many. */
+			for (samples = 0; samples < 100000; samples++) {
+				uint32_t v = cfg[0x158 / 4] & 0xf;
+
+				high += v == 0xa;
+				changes += samples && v != last;
+				last = v;
+			}
+			printf("  P8.17 (PWM2_0's initial state) read high %.0f%% of %u samples, "
+			       "%u changes seen\n", 100.0 * high / samples, samples, changes);
+		}
+		fflush(stdout);
+		if (once) {
+			return 0;
+		}
+		sleep((unsigned int)every);
 	}
 }
 
@@ -845,8 +843,6 @@ static int shutdown_main(int argc, char **argv)
 	fprintf(stderr, "%s did not take the shutdown message\n", argv[2]);
 	return 1;
 }
-
-static double now_us(void);
 
 static const struct {
 	const char *name;
@@ -1098,44 +1094,27 @@ static int erpc_line(const char *line)
 		note_line(shown);
 		return 0;
 	}
-	if (!strncmp(line, "arm ", 4)) {
-		unsigned period = 0, count = 0;
+	if (!strncmp(line, "pwm ", 4)) {
+		unsigned period = 0, duty = 0;
 
-		if (sscanf(line + 4, "%u %u", &period, &count) != 2) {
-			printf("zephyr arm wants <period> <count>\n");
+		if (sscanf(line + 4, "%u %u", &period, &duty) != 2) {
+			printf("zephyr pwm wants <period_ns> <duty_ns>\n");
 			fflush(stdout);
 			return -1;
 		}
-		if (ai64_erpc_arm(period, count)) {
-			printf("Linux asked %s to arm Tx_PRU0, and it failed (only R5F0_0 has the mailbox)\n", g_who);
+		if (ai64_erpc_pwm(period, duty)) {
+			printf("Linux asked %s to set P9.25 to %u ns, %u ns high, and it failed "
+			       "(only R5F0_0 has EHRPWM4)\n", g_who, period, duty);
 			fflush(stdout);
 			return -1;
 		}
-		printf("Linux asked %s to arm Tx_PRU0, and it published period %u count %u for RTU0\n",
-		       g_who, period, count);
+		printf("Linux asked %s to set P9.25 (EHRPWM4_B) to a %u ns period, %u ns high, and it did\n",
+		       g_who, period, duty);
 		fflush(stdout);
 		return 0;
 	}
 	if (!strncmp(line, "chunk ", 6)) {
 		return do_chunk(line + 6);
-	}
-	if (!strncmp(line, "xy ", 3)) {
-		unsigned x = 0, y = 0;
-
-		if (sscanf(line + 3, "%u %u", &x, &y) != 2) {
-			printf("zephyr xy wants <x> <y>\n");
-			fflush(stdout);
-			return -1;
-		}
-		if (ai64_erpc_xy(x, y)) {
-			printf("Linux asked %s to publish X/Y, and it failed (only R5F0_0 has the mailbox)\n", g_who);
-			fflush(stdout);
-			return -1;
-		}
-		printf("Linux asked %s to publish X/Y %u %u, and it sent that pair to RTU0\n",
-		       g_who, x, y);
-		fflush(stdout);
-		return 0;
 	}
 	if (!strcmp(line, "spi") || !strncmp(line, "spi ", 4)) {
 		char text[512];
@@ -1161,7 +1140,7 @@ static int erpc_line(const char *line)
 		note_line(shown);
 		return 0;
 	}
-	printf("zephyr commands: say <text> | arm <period> <count> | chunk <text> | xy <x> <y> | spi [text]\n");
+	printf("zephyr commands: say <text> | pwm <period_ns> <duty_ns> | chunk <text> | spi [text]\n");
 	fflush(stdout);
 	return -1;
 }
@@ -1260,7 +1239,7 @@ static int open_out(const char *dir, const char *name)
 
 /*
  * The Zephyr cores the linux window talks to. cmd is what you type, and the
- * FIFO names. Only R5F0_0 has the mailbox, the bulk buffer, and SPI7.
+ * FIFO names. Only R5F0_0 has EHRPWM4, the bulk buffer, and SPI7.
  */
 static struct zephyr_target {
 	const char *cmd;
@@ -1336,34 +1315,21 @@ static int write_line(int fd, const char *what, const char *msg)
 	return 0;
 }
 
-/* ICSSG1 RTU0, the ring RTU with RPMsg. */
-static int send_g1rtu0(int fd, const char *msg)
-{
-	if (write_line(fd, "g1rtu0", msg)) {
-		return -1;
-	}
-	if (!strncmp(msg, "window ", 7)) {
-		printf("Linux asked ICSSG1 RTU0 for a %s-lap ring window\n", msg + 7);
-	} else if (!strcmp(msg, "status")) {
-		printf("Linux asked ICSSG1 RTU0 for its ring's status\n");
-	} else {
-		printf("Linux sent \"%s\" to ICSSG1 RTU0\n", msg);
-	}
-	fflush(stdout);
-	return 0;
-}
-
 static int send_rtu0(int fd, const char *msg)
 {
 	if (write_line(fd, "rtu0", msg)) {
 		return -1;
 	}
-	if (!strncmp(msg, "xy ", 3)) {
-		printf("Linux asked RTU0 to publish X/Y %s\n", msg + 3);
-	} else if (!strncmp(msg, "arm ", 4)) {
-		printf("Linux asked RTU0 to arm Tx_PRU0 %s\n", msg + 4);
+	if (!strncmp(msg, "pwm ", 4)) {
+		printf("Linux asked ICSSG0 RTU0 for software PWM %s (period, duty in ns)\n", msg + 4);
+	} else if (!strncmp(msg, "dead ", 5)) {
+		printf("Linux asked ICSSG0 RTU0 for a %s ns dead band\n", msg + 5);
+	} else if (!strncmp(msg, "sweep ", 6)) {
+		printf("Linux asked ICSSG0 RTU0 to sweep the duty every %s ms\n", msg + 6);
+	} else if (!strcmp(msg, "status")) {
+		printf("Linux asked ICSSG0 RTU0 what its PWM runs\n");
 	} else {
-		printf("Linux sent \"%s\" to RTU0\n", msg);
+		printf("Linux sent \"%s\" to ICSSG0 RTU0\n", msg);
 	}
 	fflush(stdout);
 	return 0;
@@ -1374,10 +1340,8 @@ static int send_zephyr(struct zephyr_target *z, const char *msg)
 	if (write_line(z->in, z->cmd, msg)) {
 		return -1;
 	}
-	if (!strncmp(msg, "xy ", 3)) {
-		printf("Linux asked %s to publish X/Y %s\n", z->who, msg + 3);
-	} else if (!strncmp(msg, "arm ", 4)) {
-		printf("Linux asked %s to arm Tx_PRU0 %s\n", z->who, msg + 4);
+	if (!strncmp(msg, "pwm ", 4)) {
+		printf("Linux asked %s to set P9.25 to %s (period, duty in ns)\n", z->who, msg + 4);
 	} else if (!strncmp(msg, "chunk ", 6)) {
 		printf("Linux asked %s to check chunk %s\n", z->who, msg + 6);
 	} else if (!strncmp(msg, "say ", 4)) {
@@ -1407,31 +1371,27 @@ static const struct {
 	/* RTU0 learns Linux's endpoint from the first RPMsg it receives. */
 	{ "rtu0", "ping" },
 	{ "zephyr", "say hello from linux" },
-	{ "zephyr", "arm 250000 20" },
 	{ "zephyr", "chunk bulk-hello" },
-	{ "zephyr", "xy 41 83" },
 	{ "zephyr", "spi" },
-	{ "rtu0", "arm 125000 10" },
+	/* The defaults again: 1 kHz, 25% on P9.25; 20 kHz, 25% on ICSSG0. */
+	{ "zephyr", "pwm 1000000 250000" },
+	{ "rtu0", "status" },
 	{ "r5f0_1", "say hello from linux" },
 	{ "r5f1_0", "say hello from linux" },
 	{ "r5f1_1", "say hello from linux" },
-	/* ICSSG1 RTU0 learns Linux's endpoint the same way. 65536 laps is
-	 * the default window, so the pin keeps its frequency. */
-	{ "g1rtu0", "status" },
-	{ "g1rtu0", "window 65536" },
 };
 
 static void usage_hint(void)
 {
-	printf("use zephyr say|arm|chunk|xy|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, rtu0 xy|arm|<text>, "
-	       "g1rtu0 status|window|<text>, or help\n");
+	printf("use zephyr say|pwm|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
+	       "rtu0 pwm|dead|sweep|status|<text>, or help\n");
 	fflush(stdout);
 }
 
 static int linux_main(int argc, char **argv)
 {
 	const char *dir;
-	int rtu0, g1rtu0;
+	int rtu0;
 	char input[512];
 	size_t i;
 
@@ -1457,8 +1417,7 @@ static int linux_main(int argc, char **argv)
 		}
 	}
 	rtu0 = open_out(dir, "rtu0");
-	g1rtu0 = open_out(dir, "g1rtu0");
-	if (rtu0 < 0 || g1rtu0 < 0) {
+	if (rtu0 < 0) {
 		return 1;
 	}
 
@@ -1470,8 +1429,6 @@ static int linux_main(int argc, char **argv)
 		}
 		if (!strcmp(startup[i].who, "rtu0")) {
 			ret = send_rtu0(rtu0, startup[i].msg);
-		} else if (!strcmp(startup[i].who, "g1rtu0")) {
-			ret = send_g1rtu0(g1rtu0, startup[i].msg);
 		} else {
 			ret = send_zephyr(find_zt(startup[i].who), startup[i].msg);
 		}
@@ -1480,8 +1437,8 @@ static int linux_main(int argc, char **argv)
 		}
 	}
 
-	printf("linux window ready. commands: zephyr say|arm|chunk|xy|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
-	       "rtu0 xy|arm|<text> | g1rtu0 status|window <laps>|<text> | help\n");
+	printf("linux window ready. commands: zephyr say|pwm|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
+	       "rtu0 pwm|dead|sweep|status|<text> | help\n");
 	fflush(stdout);
 
 	while (fgets(input, sizeof(input), stdin)) {
@@ -1516,8 +1473,6 @@ static int linux_main(int argc, char **argv)
 			send_zephyr(z, msg);
 		} else if (!strcmp(input, "rtu0")) {
 			send_rtu0(rtu0, msg);
-		} else if (!strcmp(input, "g1rtu0")) {
-			send_g1rtu0(g1rtu0, msg);
 		} else {
 			usage_hint();
 		}
@@ -1528,7 +1483,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|watch|shm|pads|trace|ring|bench|dsp|shutdown|fabric|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|pwm|sched|pads|trace|bench|dsp|shutdown|fabric|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1541,11 +1496,11 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "erpc")) {
 		return erpc_main(argc, argv);
 	}
-	if (!strcmp(argv[1], "watch")) {
-		return watch_main(argc, argv);
+	if (!strcmp(argv[1], "pwm")) {
+		return pwm_main(argc, argv);
 	}
-	if (!strcmp(argv[1], "shm")) {
-		return shm_main();
+	if (!strcmp(argv[1], "sched")) {
+		return sched_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "pads")) {
 		return pads_main();
@@ -1561,9 +1516,6 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "shutdown")) {
 		return shutdown_main(argc, argv);
-	}
-	if (!strcmp(argv[1], "ring")) {
-		return ring_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "fabric")) {
 		return fabric_main(argc, argv);

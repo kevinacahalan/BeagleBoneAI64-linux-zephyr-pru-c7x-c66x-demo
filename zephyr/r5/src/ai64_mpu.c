@@ -18,8 +18,8 @@
  *      trace as it is written
  *   5  its first 2 MiB, non-cacheable: the vrings and the resource table,
  *      which Linux writes
- *   6  on R5F0_0, the 128 KiB holding the bulk buffer and the RTU0 mailbox,
- *      non-cacheable: Linux and RTU0 read and write them
+ *   6  on R5F0_0, the 128 KiB holding the bulk buffer, non-cacheable:
+ *      Linux writes it
  *   7  the fabric, normal non-cacheable: every demo core's inbox
  *      (ai64_fabric.h)
  *
@@ -72,9 +72,9 @@ static int ai64_mpu_init(void)
 	mpu_set(3, DT_REG_ADDR(DT_NODELABEL(btcm)), 15, ATTR_NORMAL_NC);
 	mpu_set(4, CARVEOUT_BASE, 24, ATTR_NORMAL_WT);
 	mpu_set(5, CARVEOUT_BASE, 21, ATTR_NORMAL_NC);
-#if AI64_HAS_SHM
-	BUILD_ASSERT((AI64_BULK_ADDR & ~0x1ffffu) == (AI64_SHM_ADDR & ~0x1ffffu),
-		     "the bulk buffer and the mailbox share one 128 KiB region");
+#if AI64_HAS_BULK
+	BUILD_ASSERT((AI64_BULK_ADDR & ~0x1ffffu) == ((AI64_BULK_ADDR + AI64_BULK_SIZE - 1u) & ~0x1ffffu),
+		     "the bulk buffer is inside one 128 KiB region");
 	mpu_set(6, AI64_BULK_ADDR & ~0x1ffffu, 17, ATTR_NORMAL_NC);
 #endif
 	BUILD_ASSERT((AI64_FAB_ADDR & (AI64_FAB_SIZE - 1u)) == 0u &&

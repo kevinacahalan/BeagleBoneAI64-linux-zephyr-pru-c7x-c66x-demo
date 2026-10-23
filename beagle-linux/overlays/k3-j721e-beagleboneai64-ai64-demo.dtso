@@ -1,29 +1,28 @@
 // SPDX-License-Identifier: MIT
-// BeagleBone AI-64 demo: the ICSSG pins, the vring IRQs of the two RTUs
-// with RPMsg (ICSSG0 RTU0 and ICSSG1 RTU0), and the DDR the cores use to
-// talk to each other.
+// BeagleBone AI-64 demo: the ICSSG pins, the vring IRQ of ICSSG0 RTU0 (the
+// RTU with RPMsg), and the DDR the cores use to talk to each other.
 //
-//   PRU0     P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, the SLIP UART
-//   Tx_PRU0  P9.25  W26   pad 0x1a4  mode 7  GPIO0_104, the pulse train
-//            P9.25  AC4   pad 0x200  held off, shorted to W26
-//   The three ring PRUs, one square wave each (a toggle every 65536 laps):
-//   ICSSG0 PRU1  P8.44  AC25  pad 0x10c  mode 0  PRG0_PRU1_GPO3
-//   ICSSG1 PRU0  P8.18  AJ23  pad 0x010  mode 0  PRG1_PRU0_GPO3
-//   ICSSG1 PRU1  P8.21  AF21  pad 0x07c  mode 0  PRG1_PRU1_GPO9
-//   Each of these three header pins has one ball, so nothing is held off.
+//   ICSSG0 slice 0, PWM in software (pru/pwm):
+//     PRU0  P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, output A
+//     PRU0  P8.12  AH28  pad 0x0f0  mode 0  PRG0_PRU0_GPO16, output B
+//   ICSSG0 slice 1, the ICSSG's PWM module (pru/pwm):
+//     PRU1  P9.12  AE27  pad 0x0b8  mode 3  PRG0_PWM2_A0, output A
+//     PRU1  P9.15  AD25  pad 0x0c0  mode 3  PRG0_PWM2_B0, output B
+//   ICSSG1, the multicore scheduler (pru/multicore_scheduler):
+//     all six cores  P8.17  AF22  pad 0x00c  mode 3  PRG1_PWM2_A0
+//   Each of these header pins has one ball, so nothing is held off.
 //
 // Zephyr muxes its own pins (UART2 on P8.34/P8.22, SPI7 on P9.28/P9.30/
-// P9.31) from its devicetree. They are not in this overlay. PINMUX.md lists
-// every pin the demo uses.
+// P9.31, EHRPWM4_B on P9.25) from its devicetree. They are not in this
+// overlay. PINMUX.md lists every pin the demo uses.
 //
 // This overlay replaces k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo, which
-// muxes the same W26 ball for EHRPWM4. install-beagle.sh drops that one from
-// the boot entry.
+// gives EHRPWM4 and the W26 ball to Linux; in this demo Zephyr owns both.
+// install-beagle.sh drops that one from the boot entry.
 
 /dts-v1/;
 /plugin/;
 
-#include <dt-bindings/gpio/gpio.h>
 #include "ti/k3-pinctrl.h"
 
 &{/chosen} {
@@ -45,58 +44,45 @@
 };
 
 &main_pmx0 {
-	ai64_pru0_pins: ai64-pru0-pins {
+	ai64_pwm_soft_pins: ai64-pwm-soft-pins {
 		pinctrl-single,pins = <
 			J721E_IOPAD(0x0f4, PIN_OUTPUT, 0) /* (AB24) P8.11 PRG0_PRU0_GPO17 */
+			J721E_IOPAD(0x0f0, PIN_OUTPUT, 0) /* (AH28) P8.12 PRG0_PRU0_GPO16 */
 		>;
 	};
 
-	ai64_txpru0_pins: ai64-txpru0-pins {
+	ai64_pwm_icssg_pins: ai64-pwm-icssg-pins {
 		pinctrl-single,pins = <
-			J721E_IOPAD(0x1a4, PIN_OUTPUT, 7) /* (W26) P9.25b RGMII6_RXC.GPIO0_104 */
-			J721E_IOPAD(0x200, PIN_DISABLE, 7) /* (AC4) P9.25a UART1_CTSn.GPIO0_127, held off */
+			J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
+			J721E_IOPAD(0x0c0, PIN_OUTPUT, 3) /* (AD25) P9.15 PRG0_PWM2_B0 */
 		>;
 	};
 
-	ai64_ring0_1_pins: ai64-ring0-1-pins {
+	ai64_mcs_pins: ai64-mcs-pins {
 		pinctrl-single,pins = <
-			J721E_IOPAD(0x10c, PIN_OUTPUT, 0) /* (AC25) P8.44 PRG0_PRU1_GPO3 */
-		>;
-	};
-
-	ai64_ring1_0_pins: ai64-ring1-0-pins {
-		pinctrl-single,pins = <
-			J721E_IOPAD(0x010, PIN_OUTPUT, 0) /* (AJ23) P8.18 PRG1_PRU0_GPO3 */
-		>;
-	};
-
-	ai64_ring1_1_pins: ai64-ring1-1-pins {
-		pinctrl-single,pins = <
-			J721E_IOPAD(0x07c, PIN_OUTPUT, 0) /* (AF21) P8.21 PRG1_PRU1_GPO9 */
+			J721E_IOPAD(0x00c, PIN_OUTPUT, 3) /* (AF22) P8.17 PRG1_PWM2_A0 */
 		>;
 	};
 };
 
-/* The pad belongs to PRU0. pru_rproc applies it when the core probes. */
+/*
+ * Each pad goes with the core that drives it, or that runs the ICSSG PWM
+ * module behind it, and pru_rproc applies it when the core probes.
+ */
 &pru0_0 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_pru0_pins>;
+	pinctrl-0 = <&ai64_pwm_soft_pins>;
 };
 
-/* Each ring's PRU drives its pad, the same way. */
 &pru0_1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_ring0_1_pins>;
+	pinctrl-0 = <&ai64_pwm_icssg_pins>;
 };
 
+/* PRU0 sets up the scheduler; all six ICSSG1 cores write the pin's state. */
 &pru1_0 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_ring1_0_pins>;
-};
-
-&pru1_1 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_ring1_1_pins>;
+	pinctrl-0 = <&ai64_mcs_pins>;
 };
 
 /*
@@ -108,30 +94,4 @@
 	interrupt-parent = <&icssg0_intc>;
 	interrupts = <20 4 4>;
 	interrupt-names = "vring";
-};
-
-/* ICSSG1 RTU0's RPMsg, the same way through ICSSG1's own INTC. */
-&rtu1_0 {
-	interrupt-parent = <&icssg1_intc>;
-	interrupts = <20 4 4>;
-	interrupt-names = "vring";
-};
-
-/*
- * Tx_PRU0 writes GPIO0_104 through the GPIO0 module, so the pad is a plain
- * GPIO. The pinctrl sits on the Tx_PRU0 node because that core is the user.
- */
-&tx_pru0_0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_txpru0_pins>;
-};
-
-/* Linux sets the direction once. Tx_PRU0 only writes SET_DATA and CLR_DATA. */
-&main_gpio0 {
-	ai64-txpru0-pulse-hog {
-		gpio-hog;
-		gpios = <104 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "ai64-txpru0-pulse";
-	};
 };

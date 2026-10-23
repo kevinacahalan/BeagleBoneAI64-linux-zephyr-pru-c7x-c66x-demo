@@ -2,16 +2,15 @@
 # SPDX-License-Identifier: MIT
 # Run the BeagleBone AI-64 demo on the board. This does not start at boot.
 #
-#   ai64-demo                 (re)start the four main-domain R5F cores, RTU0,
-#                             PRU0, Tx_PRU0, the nine ring-slice cores, and the
-#                             DSPs with their firmware, then one merged console
-#   ai64-demo --tmux          same start, in tmux session ai64 (fourteen windows)
+#   ai64-demo                 (re)start the four main-domain R5F cores, the
+#                             twelve ICSSG cores, and the DSPs with their
+#                             firmware, then one merged console
+#   ai64-demo --tmux          same start, in tmux session ai64 (twelve windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
-# [RTU0], [PRU0], [TxPRU0], [G1RTU0], [Rings], [C66x0], [C66x1], [C7x], or
-# [Fabric].
+# [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], or [Fabric].
 
 set -euo pipefail
 
@@ -37,35 +36,39 @@ DSP_CORES=(
 DSP_NAMES=" ${DSP_CORES[*]%%:*} "
 C7X_NAME=64800000.dsp
 RTU0_NAME=b004000.rtu
-PRU0_NAME=b034000.pru
-TXPRU0_NAME=b00a000.txpru
-# The other three ICSSG slices, as ICSSG:slice:PRU:RTU:Tx_PRU. The PRU and
-# Tx_PRU pass a token back and forth; the RTU is the slice's link to the
-# rest of the SoC. Their firmware is ai64-icssg<ICSSG>-<core><slice>.elf.
-RING_SLICES=(
-	0:1:b038000.pru:b006000.rtu:b00c000.txpru
-	1:0:b134000.pru:b104000.rtu:b10a000.txpru
-	1:1:b138000.pru:b106000.rtu:b10c000.txpru
+# ICSSG0, the PWM project (pru/pwm), as slice:PRU:RTU:Tx_PRU. In each slice
+# the RTU talks, the Tx_PRU modulates, and the PRU makes the edges. Their
+# firmware is ai64-icssg0-<core><slice>.elf.
+PWM_SLICES=(
+	0:b034000.pru:b004000.rtu:b00a000.txpru
+	1:b038000.pru:b006000.rtu:b00c000.txpru
 )
-RING_NAMES=" b038000.pru b006000.rtu b00c000.txpru b134000.pru b104000.rtu b10a000.txpru b138000.pru b106000.rtu b10c000.txpru "
+# ICSSG1, the multicore scheduler (pru/multicore_scheduler), as
+# remoteproc name:core. Firmware ai64-icssg1-<core>.elf.
+MCS_CORES=(
+	b104000.rtu:rtu0
+	b106000.rtu:rtu1
+	b10a000.txpru:txpru0
+	b10c000.txpru:txpru1
+	b138000.pru:pru1
+	b134000.pru:pru0
+)
+ICSSG_NAMES=" b034000.pru b004000.rtu b00a000.txpru b038000.pru b006000.rtu b00c000.txpru ${MCS_CORES[*]%%:*} "
 FABRIC_DT=/proc/device-tree/reserved-memory/ai64-fabric@a9000000
 # The MCU R5F cluster runs the board's device manager. Never touch it.
 MCU_R5_NAMES="41000000.r5f 41400000.r5f"
-# ICSSG1 RTU0 is the ring RTU with RPMsg; the other two have none.
-G1RTU0_NAME=b104000.rtu
 
 usage() {
 	cat <<'EOF'
 usage: ai64-demo [--tmux] [--attach]
 
-  (default)  Restart the four R5F cores, RTU0, PRU0, Tx_PRU0, the nine
-             ring-slice cores, and the DSPs with their firmware. Then print
-             one console. Each line is prefixed [Linux], [R5F0_0], [R5F0_1],
-             [R5F1_0], [R5F1_1], [RTU0], [PRU0], [TxPRU0], [G1RTU0], [Rings],
-             [C66x0], [C66x1], [C7x], or [Fabric].
+  (default)  Restart the four R5F cores, the twelve ICSSG cores, and the
+             DSPs with their firmware. Then print one console. Each line is
+             prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
+             [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], or [Fabric].
   --tmux     Same start, in tmux session ai64. Windows: linux, zephyr,
-             rtu0, pru0, txpru0, r5f0_1, r5f1_0, r5f1_1, g1rtu0, rings,
-             c66x0, c66x1, c7x, fabric.
+             rtu0, r5f0_1, r5f1_0, r5f1_1, pwm, sched, c66x0, c66x1, c7x,
+             fabric.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
 EOF
@@ -115,10 +118,7 @@ write_sysfs() {
 }
 
 is_demo_core() {
-	case $1 in
-	"$RTU0_NAME"|"$PRU0_NAME"|"$TXPRU0_NAME") return 0 ;;
-	esac
-	[[ $R5_NAMES == *" $1 "* || $DSP_NAMES == *" $1 "* || $RING_NAMES == *" $1 "* ]]
+	[[ $R5_NAMES == *" $1 "* || $DSP_NAMES == *" $1 "* || $ICSSG_NAMES == *" $1 "* ]]
 }
 
 is_r5() {
@@ -194,10 +194,8 @@ load_fw() {
 		exit 1
 	fi
 	case $fwname in
-	ai64_r5f[01]_[01].elf|ai64-icssg0-rtu0.elf|ai64-icssg0-pru0.elf|ai64-icssg0-txpru0.elf) ;;
-	ai64-c66x.elf|ai64-c7x.elf) ;;
-	ai64-icssg0-pru1.elf|ai64-icssg0-rtu1.elf|ai64-icssg0-txpru1.elf) ;;
-	ai64-icssg1-pru[01].elf|ai64-icssg1-rtu[01].elf|ai64-icssg1-txpru[01].elf) ;;
+	ai64_r5f[01]_[01].elf|ai64-c66x.elf|ai64-c7x.elf) ;;
+	ai64-icssg[01]-pru[01].elf|ai64-icssg[01]-rtu[01].elf|ai64-icssg[01]-txpru[01].elf) ;;
 	*)
 		echo "refusing to install $fwname" >&2
 		exit 1
@@ -283,38 +281,59 @@ restart_r5_cores() {
 	done
 }
 
-# Each ring's PRU takes the token when it starts, which is only safe while
-# the Tx_PRU is waiting for it, and applies the window in the control record
-# the RTU writes when it starts. So stop the PRU first, and start the RTU
-# first and the PRU last. A ring whose cores this kernel's device tree does
+# A PWM slice's Tx_PRU waits for the control record its RTU writes when it
+# starts, and its PRU for the Tx_PRU's first record; RTU0 writes its record
+# once its RPMsg channel is up. So stop the PRU first, and start the RTU
+# first and the PRU last. A slice whose cores this kernel's device tree does
 # not have is skipped; the rest of the demo does not need it.
-restart_rings() {
-	local entry g sl pru rtu txpru core name fw src missing
-	for entry in "${RING_SLICES[@]}"; do
-		IFS=: read -r g sl pru rtu txpru <<<"$entry"
+restart_pwm() {
+	local entry sl pru rtu txpru core name fw src missing
+	for entry in "${PWM_SLICES[@]}"; do
+		IFS=: read -r sl pru rtu txpru <<<"$entry"
 		missing=
 		for name in "$pru" "$rtu" "$txpru"; do
 			rproc_by_name "$name" >/dev/null 2>&1 || missing=$name
 		done
 		if [[ -n $missing ]]; then
-			echo "Skipping the ICSSG$g slice $sl ring: there is no remoteproc $missing." >&2
+			echo "Skipping ICSSG0 slice $sl: there is no remoteproc $missing." >&2
 			continue
 		fi
 		stop_core "$pru"
-		stop_core "$rtu"
 		stop_core "$txpru"
+		stop_core "$rtu"
 		for core in rtu:"$rtu" txpru:"$txpru" pru:"$pru"; do
 			name=${core#*:}
-			fw=ai64-icssg$g-${core%%:*}$sl.elf
+			fw=ai64-icssg0-${core%%:*}$sl.elf
 			src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
 			load_fw "$name" "$fw" "$src"
-			# The RTU with RPMsg only writes the control record
-			# once its channel is up.
-			if [[ $name == "$G1RTU0_NAME" ]] && ! wait_rpmsg "$name" 30 >/dev/null; then
-				echo "ICSSG1 RTU0's RPMsg channel did not show up. Is the overlay current? Look at dmesg | grep -i -E 'rtu|vring|kick'." >&2
+			if [[ $name == "$RTU0_NAME" ]] && ! wait_rpmsg "$name" 30 >/dev/null; then
+				echo "RTU0's RPMsg channel did not show up. Is the overlay current? Look at dmesg | grep -i -E 'rtu|vring|kick'." >&2
 				exit 1
 			fi
 		done
+	done
+}
+
+# Each ICSSG1 core arms its own task manager and clears its own compare, so
+# the six can start in any order; PRU0, which sets up IEP0, goes last.
+restart_mcs() {
+	local entry name core fw src
+	for entry in "${MCS_CORES[@]}"; do
+		name=${entry%%:*}
+		if ! rproc_by_name "$name" >/dev/null 2>&1; then
+			echo "Skipping the ICSSG1 scheduler: there is no remoteproc $name." >&2
+			return 0
+		fi
+	done
+	for entry in "${MCS_CORES[@]}"; do
+		stop_core "${entry%%:*}"
+	done
+	for entry in "${MCS_CORES[@]}"; do
+		name=${entry%%:*}
+		core=${entry#*:}
+		fw=ai64-icssg1-$core.elf
+		src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
+		load_fw "$name" "$fw" "$src"
 	done
 }
 
@@ -406,8 +425,8 @@ fi
 
 # Viewers left from an earlier run: processes whose program is ai64 and
 # whose first argument is a viewer command. Only the program and its first
-# argument count, so a shell whose own command line mentions "ai64 ring"
-# (ssh board 'ai64-demo; ai64 ring once') is left alone.
+# argument count, so a shell whose own command line mentions "ai64 pwm"
+# (ssh board 'ai64-demo; ai64 pwm once') is left alone.
 viewer_pids() {
 	local pid argv
 	for pid in /proc/[0-9]*; do
@@ -417,7 +436,7 @@ viewer_pids() {
 		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
 		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
 		case ${argv[1]} in
-		peer|erpc|watch|trace|ring|fabric|linux)
+		peer|erpc|pwm|sched|trace|fabric|linux)
 			echo "$pid"
 			;;
 		esac
@@ -446,25 +465,11 @@ if [[ $ATTACH -eq 0 ]]; then
 		echo "Run install-beagle.sh and reboot. Starting the cores without it would corrupt Linux's memory." >&2
 		exit 1
 	fi
-	RTU0_FW=$(firmware_path ai64-icssg0-rtu0.elf /lib/firmware/ai64-icssg0-rtu0.elf pru/build/ai64-icssg0-rtu0.elf)
-	PRU0_FW=$(firmware_path ai64-icssg0-pru0.elf /lib/firmware/ai64-icssg0-pru0.elf pru/build/ai64-icssg0-pru0.elf)
-	TXPRU0_FW=$(firmware_path ai64-icssg0-txpru0.elf /lib/firmware/ai64-icssg0-txpru0.elf pru/build/ai64-icssg0-txpru0.elf)
-	# PRU0 and Tx_PRU0 adopt the record seq they find when they start, and
-	# RTU0 clears both records when its channel comes up. So stop the two
-	# workers, bring RTU0 up first, and start the workers after.
-	stop_core "$PRU0_NAME"
-	stop_core "$TXPRU0_NAME"
-	load_fw "$RTU0_NAME" ai64-icssg0-rtu0.elf "$RTU0_FW"
-	if ! wait_rpmsg "$RTU0_NAME" 30 >/dev/null; then
-		echo "RTU0's RPMsg channel did not show up. Look at dmesg | grep -i -E 'rtu|vring|kick'." >&2
-		exit 1
-	fi
-	load_fw "$PRU0_NAME" ai64-icssg0-pru0.elf "$PRU0_FW"
-	load_fw "$TXPRU0_NAME" ai64-icssg0-txpru0.elf "$TXPRU0_FW"
 	# Not the kernels' default names (j7-main-r5f0_0-fw and so on), so
 	# nothing boots the R5F cores until this script does.
 	restart_r5_cores
-	restart_rings
+	restart_pwm
+	restart_mcs
 	restart_dsps
 	# A core stopped while it held the tally's spinlock leaves it taken.
 	as_root "$BIN" fabric reset >/dev/null
@@ -491,19 +496,14 @@ if [[ -z $RTU0_DEV ]]; then
 	echo "RTU0's RPMsg channel did not show up" >&2
 	missing=1
 fi
-G1RTU0_DEV=$(wait_rpmsg "$G1RTU0_NAME" 30 || true)
-if [[ -z $G1RTU0_DEV ]]; then
-	echo "ICSSG1 RTU0's RPMsg channel did not show up" >&2
-	missing=1
-fi
 if [[ $missing -eq 1 ]]; then
 	echo "RPMsg devices did not show up" >&2
 	exit 1
 fi
 ZEPHYR_DEV=${R5_DEV[r5f0_0]}
 
-as_root chmod a+rw "${R5_DEV[@]}" "$RTU0_DEV" "$G1RTU0_DEV"
-# ai64 watch and ai64 chunk read /dev/mem. Root can already; other users get
+as_root chmod a+rw "${R5_DEV[@]}" "$RTU0_DEV"
+# ai64 pwm, sched, fabric, and chunk use /dev/mem. Root can already; other users get
 # CAP_SYS_RAWIO on the binary.
 if [[ $(id -u) -ne 0 ]]; then
 	SETCAP=$(command -v setcap || true)
@@ -520,23 +520,21 @@ as_root chmod 0660 /dev/mem
 
 mkdir -p "$RUN"
 rm -f "$RUN"/*.in
-mkfifo "$RUN/zephyr.in" "$RUN/rtu0.in" "$RUN/g1rtu0.in" "$RUN/r5f0_1.in" "$RUN/r5f1_0.in" "$RUN/r5f1_1.in"
+mkfifo "$RUN/zephyr.in" "$RUN/rtu0.in" "$RUN/r5f0_1.in" "$RUN/r5f1_0.in" "$RUN/r5f1_1.in"
 
 if [[ $USE_TMUX -eq 1 ]]; then
 	tmux kill-session -t "$SESSION" 2>/dev/null || true
 	tmux new-session -d -s "$SESSION" -n linux
 	tmux new-window -d -t "$SESSION" -n zephyr
 	tmux new-window -d -t "$SESSION" -n rtu0
-	tmux new-window -d -t "$SESSION" -n pru0
-	tmux new-window -d -t "$SESSION" -n txpru0
 	for label in r5f0_1 r5f1_0 r5f1_1; do
 		tmux new-window -d -t "$SESSION" -n "$label"
 		tmux send-keys -t "$SESSION:$label" "$BIN erpc $label ${R5_DEV[$label]} $RUN/$label.in" C-m
 	done
-	tmux new-window -d -t "$SESSION" -n g1rtu0
-	tmux send-keys -t "$SESSION:g1rtu0" "$BIN peer g1rtu0 $G1RTU0_DEV $RUN/g1rtu0.in" C-m
-	tmux new-window -d -t "$SESSION" -n rings
-	tmux send-keys -t "$SESSION:rings" "$BIN ring" C-m
+	tmux new-window -d -t "$SESSION" -n pwm
+	tmux send-keys -t "$SESSION:pwm" "$BIN pwm" C-m
+	tmux new-window -d -t "$SESSION" -n sched
+	tmux send-keys -t "$SESSION:sched" "$BIN sched" C-m
 	for entry in "${DSP_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
 		tmux new-window -d -t "$SESSION" -n "$label"
@@ -546,8 +544,6 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	tmux send-keys -t "$SESSION:fabric" "$BIN fabric" C-m
 	tmux send-keys -t "$SESSION:zephyr" "$BIN erpc $ZEPHYR_DEV $RUN/zephyr.in" C-m
 	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
-	tmux send-keys -t "$SESSION:pru0" "$BIN watch pru0" C-m
-	tmux send-keys -t "$SESSION:txpru0" "$BIN watch txpru0" C-m
 	tmux send-keys -t "$SESSION:linux" "$BIN linux $RUN" C-m
 	tmux select-window -t "$SESSION:linux"
 	echo "tmux session '$SESSION' is up"
@@ -555,10 +551,8 @@ if [[ $USE_TMUX -eq 1 ]]; then
 		echo "  $label ${R5_DEV[$label]}"
 	done
 	echo "  rtu0   $RTU0_DEV"
-	echo "  pru0   shared ram"
-	echo "  txpru0 shared ram"
-	echo "  g1rtu0 $G1RTU0_DEV"
-	echo "  rings  the ring RTUs' fabric pages"
+	echo "  pwm    the PWM generators' fabric pages"
+	echo "  sched  ICSSG1's registers, read only"
 	echo "  fabric ddr"
 	if [[ -t 0 && -t 1 ]]; then
 		exec tmux attach -t "$SESSION"
@@ -601,10 +595,8 @@ for label in r5f0_1 r5f1_0 r5f1_1; do
 	spawn_prefixed "[${label^^}]" "$RUN/$label.out" "$BIN" erpc "$label" "${R5_DEV[$label]}" "$RUN/$label.in"
 done
 spawn_prefixed '[RTU0]' "$RUN/rtu0.out" "$BIN" peer rtu0 "$RTU0_DEV" "$RUN/rtu0.in"
-spawn_prefixed '[PRU0]' "$RUN/pru0.out" "$BIN" watch pru0
-spawn_prefixed '[TxPRU0]' "$RUN/txpru0.out" "$BIN" watch txpru0
-spawn_prefixed '[G1RTU0]' "$RUN/g1rtu0.out" "$BIN" peer g1rtu0 "$G1RTU0_DEV" "$RUN/g1rtu0.in"
-spawn_prefixed '[Rings]' "$RUN/rings.out" "$BIN" ring
+spawn_prefixed '[PWM]' "$RUN/pwm.out" "$BIN" pwm
+spawn_prefixed '[Sched]' "$RUN/sched.out" "$BIN" sched
 for entry in "${DSP_CORES[@]}"; do
 	IFS=: read -r name fw label <<<"$entry"
 	tag=${label/c66x/C66x}

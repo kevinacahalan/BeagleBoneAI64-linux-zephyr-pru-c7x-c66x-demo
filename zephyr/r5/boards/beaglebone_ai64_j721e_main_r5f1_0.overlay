@@ -2,20 +2,40 @@
 #include <zephyr/dt-bindings/interrupt-controller/ti-vim.h>
 
 /*
- * The mailbox interrupt route this core asks the device manager for at boot
- * (src/ai64_tisci.c). NAVSS0_MAILBOX_2 user 1 arrives on NAVSS0_INTR_ROUTER_0
- * (device 213) input 429. Output 260 is the first of this host's range
- * (k3conf dump rm 213) and lands on this core's VIM input 228. Host 40's
- * threads on main_sec_proxy0 are 83 (low_priority, write) and 81 (response,
- * read; k3conf show threads).
+ * TI-SCI, the device manager's API. Zephyr's TI-SCI driver talks to it over
+ * this host's (40) threads on main_sec_proxy0: 83 (low_priority,
+ * write) and 81 (response, read; k3conf show threads). The polled mailbox
+ * driver in src/ai64_sproxy.c carries it, since no secure proxy interrupt
+ * reaches an R5F here. reg is the device manager's debug window, which the
+ * binding asks for and nothing reads.
  */
 / {
-	ai64_tisci: tisci-route@32c00000 {
-		compatible = "ai64,tisci-irq-route";
+	ai64_sproxy: mailbox@32c00000 {
+		compatible = "ai64,secure-proxy-poll";
 		reg = <0x32c00000 0x100000>, <0x32400000 0x100000>;
-		host-id = <40>;
-		tx-thread = <83>;
-		rx-thread = <81>;
+		reg-names = "target_data", "rt";
+		#mbox-cells = <1>;
+	};
+
+	dmsc: system-controller@44083000 {
+		compatible = "ti,k2g-sci";
+		reg = <0x44083000 0x1000>;
+		ti,host-id = <40>;
+		mboxes = <&ai64_sproxy 81>, <&ai64_sproxy 83>;
+		mbox-names = "rx", "tx";
+	};
+};
+
+/*
+ * The mailbox interrupt route this core asks the device manager for at boot
+ * (src/ai64_tisci.c), through Zephyr's TI-SCI driver.
+ * NAVSS0_MAILBOX_2 user 1 arrives on NAVSS0_INTR_ROUTER_0
+ * (device 213) input 429. Output 260 is the first of this host's range
+ * (k3conf dump rm 213) and lands on this core's VIM input 228.
+ */
+/ {
+	ai64_tisci: tisci-route {
+		compatible = "ai64,tisci-irq-route";
 		ir-id = <213>;
 		ir-input = <429>;
 		ir-output = <260>;

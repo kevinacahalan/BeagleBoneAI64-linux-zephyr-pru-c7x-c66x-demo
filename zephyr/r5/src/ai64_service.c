@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * Functions Linux calls through Zephyr eRPC.
- * armPulses and sendXy hand a command to RTU0 through the small mailbox.
+ * setPwm sets P9.25, EHRPWM4 output B (ai64_pwm.c).
  * takeChunk checks a bulk buffer Linux already wrote.
- * Only R5F0_0 has the mailbox, the bulk buffer, and SPI7. On the other cores
+ * Only R5F0_0 has the PWM, the bulk buffer, and SPI7. On the other cores
  * those calls fail, and say still answers.
  */
 
@@ -20,7 +20,7 @@
 
 LOG_MODULE_DECLARE(ai64_r5, LOG_LEVEL_INF);
 
-#if AI64_HAS_SHM
+#if AI64_HAS_BULK
 static volatile struct ai64_bulk *const bulk =
 	(volatile struct ai64_bulk *)AI64_BULK_ADDR;
 #endif
@@ -83,37 +83,18 @@ char *spiWrite(const char *text)
 	return out;
 }
 
-int32_t armPulses(uint32_t period_cycles, uint32_t periods)
+int32_t setPwm(uint32_t period_ns, uint32_t duty_ns)
 {
-	char cmd[56];
-
-	if (!AI64_HAS_SHM) {
-		LOG_INF("erpc arm pulses: no mailbox on " AI64_CORE);
+	if (!AI64_HAS_PWM) {
+		LOG_INF("erpc pwm: no PWM on " AI64_CORE);
 		return -1;
 	}
-	snprintf(cmd, sizeof(cmd), "arm %u %u", period_cycles, periods);
-	ai64_shm_publish(cmd);
-	LOG_INF("erpc arm pulses period %u count %u", period_cycles, periods);
-	return 0;
-}
-
-int32_t sendXy(uint32_t x, uint32_t y)
-{
-	char cmd[56];
-
-	if (!AI64_HAS_SHM) {
-		LOG_INF("erpc xy: no mailbox on " AI64_CORE);
-		return -1;
-	}
-	snprintf(cmd, sizeof(cmd), "xy %u %u", x, y);
-	ai64_shm_publish(cmd);
-	LOG_INF("erpc xy x %u y %u", x, y);
-	return 0;
+	return ai64_pwm_set("Linux", period_ns, duty_ns) ? -1 : 0;
 }
 
 uint32_t takeChunk(uint32_t seq, uint32_t length, uint32_t crc)
 {
-#if !AI64_HAS_SHM
+#if !AI64_HAS_BULK
 	ARG_UNUSED(seq);
 	ARG_UNUSED(length);
 	ARG_UNUSED(crc);

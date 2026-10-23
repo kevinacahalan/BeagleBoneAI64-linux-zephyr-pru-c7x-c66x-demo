@@ -3,10 +3,9 @@
  * Zephyr on a BeagleBone AI-64 main-domain R5F core.
  *
  * Linux calls Zephyr functions over eRPC on RPMsg (channel "rpmsg-raw",
- * address 1024). On R5F0_0, armPulses and sendXy publish a command in the
- * DDR mailbox at AI64_SHM_ADDR; RTU0 polls that mailbox and hands the command
- * on to Tx_PRU0 or PRU0. spiWrite writes SPI7 on header P9. The other cores
- * answer say and report that they have no mailbox or SPI.
+ * address 1024). On R5F0_0, setPwm sets EHRPWM4 on P9.25 (ai64_pwm.c) and
+ * spiWrite writes SPI7 on header P9. The other cores answer say and report
+ * that they have neither.
  */
 
 #include <zephyr/kernel.h>
@@ -120,34 +119,6 @@ static uint32_t mbox_rx_drain(void)
 		n++;
 	}
 	return n;
-}
-
-static uint32_t shm_seq;
-
-#if AI64_HAS_SHM
-static volatile struct ai64_shm *const pru_shm =
-	(volatile struct ai64_shm *)AI64_SHM_ADDR;
-#endif
-
-void ai64_shm_publish(const char *cmd)
-{
-#if !AI64_HAS_SHM
-	ARG_UNUSED(cmd);
-#else
-	size_t n = strlen(cmd);
-
-	if (n > sizeof(pru_shm->cmd) - 1) {
-		n = sizeof(pru_shm->cmd) - 1;
-	}
-	memcpy((void *)pru_shm->cmd, cmd, n);
-	((volatile char *)pru_shm->cmd)[n] = '\0';
-	pru_shm->magic = AI64_SHM_MAGIC;
-	barrier_dmem_fence_full();
-	pru_shm->seq = ++shm_seq;
-	barrier_dmem_fence_full();
-	sys_cache_data_flush_range((void *)pru_shm, sizeof(*pru_shm));
-	LOG_INF("shm seq %u cmd %s", shm_seq, cmd);
-#endif
 }
 
 static void platform_ipm_callback(const struct device *dev, void *context,
@@ -352,28 +323,17 @@ static void ai64_spi_hello(void)
 {
 	static const uint8_t hello[] = {'h', 'e', 'l', 'l', 'o'};
 	int ret = ai64_spi7_write(hello, sizeof(hello));
-	char msg[56];
 
-	if (ret == -ENODEV) {
-		ai64_shm_publish("spi hello not ready");
-		return;
-	}
 	if (ret) {
 		LOG_ERR("spi7 hello failed: %d", ret);
-		snprintk(msg, sizeof(msg), "spi hello fail %d", ret);
-		ai64_shm_publish(msg);
 		return;
 	}
 	LOG_INF("spi7 hello wrote %u bytes", (unsigned int)sizeof(hello));
-	ai64_shm_publish("spi hello ok");
 }
 
 int main(void)
 {
-	if (AI64_HAS_SHM) {
-		ai64_shm_publish("hello from zephyr");
-	}
-	LOG_INF("ai64 " AI64_CORE " hello, shm seq %u", shm_seq);
+	LOG_INF("ai64 " AI64_CORE " hello");
 	if (AI64_HAS_SPI7) {
 		ai64_spi_hello();
 	}

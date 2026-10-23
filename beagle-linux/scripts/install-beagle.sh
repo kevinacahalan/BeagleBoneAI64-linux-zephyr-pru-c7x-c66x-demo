@@ -6,14 +6,14 @@
 #   sudo ./beagle-linux/scripts/install-beagle.sh [dir]     from a repo checkout
 #
 # Installs the demo and makes the parts that were lost at every reboot stick:
-#   - ai64 and ai64-demo on PATH, the ICSSG0, R5F, and DSP firmwares in
+#   - ai64 and ai64-demo on PATH, the ICSSG, R5F, and DSP firmwares in
 #     /lib/firmware
 #   - the patched pru_rproc and ti_k3_r5_remoteproc, so the kernel loads them
 #     instead of the stock modules
 #   - the demo overlay on the default extlinux label, in place of the stock
 #     P9.25 PWM overlay (both mux ball W26)
 #   - a udev rule that makes /dev/rpmsg* usable by the dialout group
-#   - ai64-icssg0.service, which starts RTU0, PRU0, and Tx_PRU0 at boot
+#   - ai64-icssg.service, which starts the twelve ICSSG cores at boot
 #   - tmux, for ai64-demo --tmux, from apt when it is missing
 # The R5F images are installed as /lib/firmware/ai64_r5f0_0.elf and so on,
 # not under the kernel's default names (j7-main-r5f0_0-fw), so the R5F cores
@@ -63,13 +63,10 @@ find_artifact() {
 KREL=$(uname -r)
 AI64=$(find_artifact ai64 linux-app/ai64)
 DEMO=$(find_artifact ai64-demo beagle-linux/scripts/ai64-demo)
-RTU0=$(find_artifact ai64-icssg0-rtu0.elf pru/build/ai64-icssg0-rtu0.elf)
-PRU0=$(find_artifact ai64-icssg0-pru0.elf pru/build/ai64-icssg0-pru0.elf)
-TXPRU0=$(find_artifact ai64-icssg0-txpru0.elf pru/build/ai64-icssg0-txpru0.elf)
-# The ring images for ICSSG0 slice 1 and both ICSSG1 slices.
-declare -A RING
-for f in ai64-icssg0-{pru,rtu,txpru}1.elf ai64-icssg1-{pru,rtu,txpru}{0,1}.elf; do
-	RING[$f]=$(find_artifact "$f" "pru/build/$f")
+# The ICSSG images: ICSSG0 the PWM project, ICSSG1 the multicore scheduler.
+declare -A ICSSG
+for f in ai64-icssg{0,1}-{pru,rtu,txpru}{0,1}.elf; do
+	ICSSG[$f]=$(find_artifact "$f" "pru/build/$f")
 done
 declare -A R5
 for core in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
@@ -105,11 +102,8 @@ fi
 echo "userspace and firmware"
 install -m 0755 "$AI64" /usr/bin/ai64
 install -m 0755 "$DEMO" /usr/bin/ai64-demo
-install -m 0644 "$RTU0" /lib/firmware/ai64-icssg0-rtu0.elf
-install -m 0644 "$PRU0" /lib/firmware/ai64-icssg0-pru0.elf
-install -m 0644 "$TXPRU0" /lib/firmware/ai64-icssg0-txpru0.elf
-for f in "${!RING[@]}"; do
-	install -m 0644 "${RING[$f]}" "/lib/firmware/$f"
+for f in "${!ICSSG[@]}"; do
+	install -m 0644 "${ICSSG[$f]}" "/lib/firmware/$f"
 done
 for core in "${!R5[@]}"; do
 	install -m 0644 "${R5[$core]}" "/lib/firmware/ai64_$core.elf"
@@ -164,20 +158,26 @@ else:
 open(path, "w").write("\n".join(lines))
 EOF
 
-echo "rpmsg permissions and ICSSG0 start"
+echo "rpmsg permissions and ICSSG start"
 cat > /etc/udev/rules.d/99-ai64-rpmsg.rules <<'EOF'
 KERNEL=="rpmsg[0-9]*", GROUP="dialout", MODE="0660"
 EOF
 
-cat > /usr/libexec/ai64-icssg0-start <<'EOF'
+cat > /usr/libexec/ai64-icssg-start <<'EOF'
 #!/bin/bash
-# Start RTU0, then PRU0 and Tx_PRU0, from /lib/firmware. Leaves a running
-# core alone. RTU0 goes first: it clears the shared-RAM records that the other
-# two read, and they adopt whatever seq they find when they start.
+# Start the twelve ICSSG cores from /lib/firmware, the way ai64-demo does.
+# Leaves a running core alone. In each ICSSG0 slice the RTU goes first, then
+# the Tx_PRU, then the PRU: each waits for the record the one before writes,
+# and RTU0 writes its own once its RPMsg channel is up. ICSSG1's cores can
+# start in any order; PRU0, which sets up the schedule, goes last.
 set -eu
 checked=0
-for name in b004000.rtu:ai64-icssg0-rtu0.elf b034000.pru:ai64-icssg0-pru0.elf \
-	b00a000.txpru:ai64-icssg0-txpru0.elf; do
+for name in b004000.rtu:ai64-icssg0-rtu0.elf b00a000.txpru:ai64-icssg0-txpru0.elf \
+	b034000.pru:ai64-icssg0-pru0.elf b006000.rtu:ai64-icssg0-rtu1.elf \
+	b00c000.txpru:ai64-icssg0-txpru1.elf b038000.pru:ai64-icssg0-pru1.elf \
+	b104000.rtu:ai64-icssg1-rtu0.elf b106000.rtu:ai64-icssg1-rtu1.elf \
+	b10a000.txpru:ai64-icssg1-txpru0.elf b10c000.txpru:ai64-icssg1-txpru1.elf \
+	b138000.pru:ai64-icssg1-pru1.elf b134000.pru:ai64-icssg1-pru0.elf; do
 	want=${name%%:*}
 	fw=${name##*:}
 	for _ in $(seq 1 50); do
@@ -205,23 +205,29 @@ for name in b004000.rtu:ai64-icssg0-rtu0.elf b034000.pru:ai64-icssg0-pru0.elf \
 	fi
 done
 EOF
-chmod 0755 /usr/libexec/ai64-icssg0-start
+chmod 0755 /usr/libexec/ai64-icssg-start
 
-cat > /etc/systemd/system/ai64-icssg0.service <<'EOF'
+# Earlier versions had a service that only started ICSSG0 slice 0.
+if [[ -e /etc/systemd/system/ai64-icssg0.service ]]; then
+	systemctl disable ai64-icssg0.service >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/ai64-icssg0.service /usr/libexec/ai64-icssg0-start
+fi
+
+cat > /etc/systemd/system/ai64-icssg.service <<'EOF'
 [Unit]
-Description=Start the BeagleBone AI-64 demo ICSSG0 cores
+Description=Start the BeagleBone AI-64 demo ICSSG cores
 After=systemd-modules-load.service local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/libexec/ai64-icssg0-start
+ExecStart=/usr/libexec/ai64-icssg-start
 
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable ai64-icssg0.service
+systemctl enable ai64-icssg.service
 udevadm control --reload
 
 echo

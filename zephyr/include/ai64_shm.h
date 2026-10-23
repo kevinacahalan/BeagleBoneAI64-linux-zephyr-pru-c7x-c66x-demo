@@ -1,17 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Shared layout for the BeagleBone AI-64 demo. Linux, Zephyr, and every
- * ICSSG core include this file.
+ * Shared layout for the BeagleBone AI-64 demo. Linux, Zephyr, and the ICSSG
+ * cores include this file.
  *
- * Mailbox: Zephyr writes, RTU0 polls. In DDR, inside R5F0_0's carveout.
- * Bulk region: Linux writes chunks, Zephyr reads them. Next to the mailbox.
- * Arm block: RTU0 writes it in ICSSG0 shared RAM. Tx_PRU0 reads it and
- *   sends that many pulses on P9.25.
- * X/Y record: RTU0 writes it in ICSSG0 shared RAM. PRU0 reads it and sends
- *   one SLIP frame on P8.11.
- * Ring records: the PRU and Tx_PRU of each other ICSSG slice pass a token
- *   back and forth through one, in their ICSSG's shared RAM. The slice's
- *   RTU reads it, and writes the ring control record next to it.
+ * Bulk region: Linux writes chunks, Zephyr on R5F0_0 reads them. In DDR,
+ * inside R5F0_0's carveout.
+ * The PWM generators: the limits every one of them accepts, and the status
+ * record each publishes in the app block of its fabric page
+ * (ai64_fabric.h), for any core to read. Three of them: ICSSG0 slice 0
+ * makes PWM in software, ICSSG0 slice 1 with the ICSSG's PWM module
+ * (pru/pwm/), and Zephyr on R5F0_0 with the SoC's EHRPWM4 on P9.25.
  *
  * Do not put a loadable ELF section on the DDR addresses. The Zephyr overlay
  * and these macros must stay on the same addresses.
@@ -24,79 +22,12 @@
 /*
  * R5F0_0 owns 0xa2000000-0xa2ffffff (Linux reserved-memory, no-map).
  * Zephyr's board file splits it into vrings (1 MiB), resource table (1 MiB),
- * and DRAM (14 MiB at 0xa2200000). zephyr/r5/boards/ shrinks DRAM so the last
- * 68 KiB hold the bulk buffer and the mailbox.
+ * and DRAM (14 MiB at 0xa2200000). zephyr/r5/boards/ shrinks DRAM so the
+ * last 68 KiB hold the bulk buffer and a spare 4 KiB page.
  */
-#define AI64_SHM_ADDR   0xA2FFF000u
-#define AI64_SHM_MAGIC  0x41493653u /* 'AI6S' */
-
 #define AI64_BULK_ADDR  0xA2FEF000u
 #define AI64_BULK_SIZE  0x00010000u
 #define AI64_BULK_MAGIC 0x41493642u /* 'AI6B' */
-
-/*
- * ICSSG0 shared RAM. 64 KiB at local 0x00010000 for every core in ICSSG0.
- * The SoC address of local 0x00010000 is 0x0B010000 (ICSSG0 at 0x0B000000).
- */
-#define AI64_ARM_LOCAL  0x00010000u
-#define AI64_ARM_CPU    0x0B010000u
-#define AI64_ARM_MAGIC  0x41493641u /* 'AI6A' */
-
-#define AI64_XY_LOCAL   0x00010040u
-#define AI64_XY_CPU     0x0B010040u
-#define AI64_XY_MAGIC   0x41493658u /* 'AI6X' */
-
-/*
- * The ring records, one per slice, in its ICSSG's shared RAM: ICSSG0 slice
- * 1, ICSSG1 slice 0, and ICSSG1 slice 1 (ICSSG1 is at 0x0B100000). ICSSG0
- * slice 0 runs the demo above instead. Each ring's control record, which
- * its RTU writes, follows at 0x200.
- */
-#define AI64_RING_LOCAL(slice)      (0x00010100u + 0x40u * (slice))
-#define AI64_RING_CPU(icssg, slice) (0x0B010100u + 0x100000u * (icssg) + 0x40u * (slice))
-#define AI64_RING_MAGIC             0x41493652u /* 'AI6R' */
-#define AI64_RING_CTL_LOCAL(slice)  (0x00010200u + 0x20u * (slice))
-#define AI64_RING_CTL_MAGIC         0x41493643u /* 'AI6C' */
-
-/* SLIP (RFC 1055) framing of the X/Y payload. */
-#define AI64_SLIP_END      0xC0u
-#define AI64_SLIP_ESC      0xDBu
-#define AI64_SLIP_ESC_END  0xDCu
-#define AI64_SLIP_ESC_ESC  0xDDu
-
-/*
- * PRU0 shifts each SLIP byte out as UART 8N1 on R30 bit 17.
- * Header P8.11, ball AB24, pad offset 0x0f4, mux mode 0 (PRG0_PRU0_GPO17).
- * The ICSSG core clock on the BeagleBoard Debian image is 250 MHz.
- * 250000000 / 115200 is 2170 cycles per bit. slip_tx.asm delays that long
- * per bit, plus a few cycles of loop overhead (about 0.3% slow).
- */
-#define AI64_XY_TX_BIT        17u
-#define AI64_PRU_HZ           250000000u
-#define AI64_UART_BAUD        115200u
-#define AI64_UART_BIT_CYCLES  2170u
-
-/*
- * Tx_PRU0 has no pins of its own: its R30 does not reach the pads. It drives
- * P9.25 through the main GPIO0 module instead, with stores to the bank-3
- * set/clear registers. P9.25 is ball W26, GPIO0_104 (pad 0x1a4, mode 7).
- * The overlay muxes the pad and hogs the line as an output, so Linux sets
- * the direction once and Tx_PRU0 never writes DIR.
- */
-#define AI64_PULSE_GPIO_SET   0x00600090u /* GPIO0 SET_DATA for lines 96-127 */
-#define AI64_PULSE_GPIO_CLR   0x00600094u /* GPIO0 CLR_DATA for lines 96-127 */
-#define AI64_PULSE_GPIO_MASK  (1u << (104u - 96u))
-
-/* Pulse period in ICSSG cycles. 2500 cycles is 10 us; 250000000 is 1 s. */
-#define AI64_ARM_PERIOD_MIN 2500u
-#define AI64_ARM_PERIOD_MAX 250000000u
-#define AI64_ARM_COUNT_MAX  100000u
-
-struct ai64_shm {
-	uint32_t magic;
-	uint32_t seq;
-	char cmd[56];
-};
 
 struct ai64_bulk {
 	uint32_t magic;
@@ -107,105 +38,59 @@ struct ai64_bulk {
 };
 
 /*
- * RTU0 fills period_cycles, periods, magic, then seq. Tx_PRU0 writes the
- * last four fields: pulses sent so far, applied_seq when it starts a train,
- * and done_seq when the train ends.
+ * One PWM period, in nanoseconds: output A is high for duty_ns, and output
+ * B, where there is one, is A's complement with dead_ns of dead band on
+ * each side. The ICSSG generators keep every edge AI64_PWM_EDGE_MIN_NS from
+ * the next on the same pin, so 0% and 100% duty are out of range; they
+ * clamp what they are asked for and report what they run.
  */
-struct ai64_arm {
-	uint32_t magic;
-	uint32_t seq;
-	uint32_t period_cycles;
-	uint32_t periods;
-	uint32_t sent;
-	uint32_t applied_seq;
-	uint32_t applied_period;
-	uint32_t done_seq;
-};
+#define AI64_PWM_PERIOD_MIN_NS 2000u
+#define AI64_PWM_PERIOD_MAX_NS 1000000000u
+#define AI64_PWM_EDGE_MIN_NS   400u
+#define AI64_PWM_DEAD_MIN_NS   8u
+#define AI64_PWM_SWEEP_MAX_MS  60000u
 
-/* RTU0 fills x, y, magic, then seq. PRU0 writes consumed after the frame. */
-struct ai64_xy {
-	uint32_t magic;
-	uint32_t seq;
-	uint32_t x;
-	uint32_t y;
-	uint32_t consumed;
-};
+/* What the ICSSG generators start with: 20 kHz, 25%, 1 us dead band. */
+#define AI64_PWM_DEFAULT_PERIOD_NS 50000u
+#define AI64_PWM_DEFAULT_DUTY_NS   12500u
+#define AI64_PWM_DEFAULT_DEAD_NS   1000u
+
+/* What makes the edges */
+#define AI64_PWM_SOFT   0u /* a PRU writing R30, timed by IEP0 */
+#define AI64_PWM_ICSSG  1u /* the ICSSG's PWM module, on IEP1 compares */
+#define AI64_PWM_EHRPWM 2u /* a SoC EHRPWM, through Zephyr's driver */
+
+#define AI64_PWM_MAGIC 0x41493650u /* 'AI6P' */
 
 /*
- * A token goes from the PRU to the Tx_PRU and back. stage says whose turn
- * it is, and only that core writes the record. The PRU sets value to the
- * lap number, the Tx_PRU adds AI64_RING_TXPRU_ADD, and the PRU checks what
- * comes back and counts a mismatch in errors. The slice's RTU only reads
- * the record.
- *
- * The PRU starts each run: it bumps run, zeroes the counts, and only then
- * sets magic. Lap times are in ICSSG cycles, the minimum and maximum over
- * the last window. A window is `window` laps, AI64_RING_WINDOW unless the
- * RTU asked for another, and the PRU toggles its header pin once a window.
+ * The generator's status, rewritten about every 10 ms by its talking core:
+ * the slice's RTU, or R5F0_0. magic is cleared while it writes. The ask_
+ * fields are the last request, the run_ fields what the outputs do now.
+ * late counts edges the real-time core was late for: a software edge more
+ * than AI64_PWM_LATE_NS late, or a compare it rearmed after the time had
+ * passed. late_max_ns is the latest software edge since start.
  */
-#define AI64_RING_PRU        0u
-#define AI64_RING_TXPRU      1u
-#define AI64_RING_TXPRU_ADD  0x9E3779B9u
-#define AI64_RING_WINDOW     65536u
-#define AI64_RING_WINDOW_MIN 256u
-#define AI64_RING_WINDOW_MAX 16777216u
+#define AI64_PWM_LATE_NS 100u
 
-struct ai64_ring {
+struct ai64_pwm_status {
 	uint32_t magic;
-	uint32_t run;
-	uint32_t stage;
-	uint32_t value;
-	uint32_t laps;
-	uint32_t txpru_hops;
-	uint32_t errors;
-	uint32_t lap_last;
-	uint32_t lap_min;
-	uint32_t lap_max;
-	uint32_t window;
-	uint32_t ctl_ack;  /* the control seq the PRU applied last */
-};
-
-/*
- * The RTU writes window, then seq. The PRU looks once a window, at the
- * window's end, and adopts the seq it finds when it starts.
- */
-struct ai64_ring_ctl {
-	uint32_t magic;
-	uint32_t seq;
-	uint32_t window;
-};
-
-static inline uint32_t ai64_ring_txpru(uint32_t v)
-{
-	return v + AI64_RING_TXPRU_ADD;
-}
-
-/*
- * What each ring slice's RTU publishes in its fabric page (the app block,
- * ai64_fabric.h), about every 10 ms, for any core to read. rate is laps a
- * second, over the last second. errors_seen goes up once for each time the
- * RTU found the ring's error count had grown.
- */
-#define AI64_SLICE_MAGIC 0x41493649u /* 'AI6I' */
-
-struct ai64_slice_status {
-	uint32_t magic;
-	uint32_t icssg;
-	uint32_t slice;
-	uint32_t rpmsg;      /* 1 when Linux can also reach this RTU over RPMsg */
-	uint32_t run;
-	uint32_t laps;
-	uint32_t txpru_hops;
-	uint32_t errors;
-	uint32_t lap_last;
-	uint32_t lap_min;
-	uint32_t lap_max;
-	uint32_t window;
-	uint32_t ctl_seq;
-	uint32_t ctl_ack;
-	uint32_t rate;
-	uint32_t errors_seen;
-	uint32_t at;         /* GTC when the RTU wrote it */
+	uint32_t engine;     /* AI64_PWM_SOFT, AI64_PWM_ICSSG, AI64_PWM_EHRPWM */
+	uint32_t unit;       /* the ICSSG, or the EHRPWM instance */
+	uint32_t channel;    /* the slice, or the EHRPWM output (0 A, 1 B) */
+	uint32_t rpmsg;      /* 1 when Linux can also reach it over RPMsg */
+	uint32_t ask_period_ns;
+	uint32_t ask_duty_ns;
+	uint32_t ask_dead_ns;
+	uint32_t sweep_ms;   /* 0, or the duty sweeps min-max-min this often */
+	uint32_t run_period_ns;
+	uint32_t run_duty_ns;
+	uint32_t run_dead_ns;
+	uint32_t periods;    /* since the real-time core started */
+	uint32_t late;
+	uint32_t late_max_ns;
+	uint32_t ctl_seq;    /* requests taken */
+	uint32_t ctl_ack;    /* requests the outputs follow */
+	uint32_t at;         /* GTC when it was written */
 };
 
 #ifndef PRU_CORE
