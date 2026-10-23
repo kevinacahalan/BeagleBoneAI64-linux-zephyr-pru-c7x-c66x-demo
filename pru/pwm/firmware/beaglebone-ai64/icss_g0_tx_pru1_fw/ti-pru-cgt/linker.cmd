@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * linker.cmd: ICSSG0 Tx_PRU1, slice 1's modulator (pwm_modulator.c).
  * Its part of the slice's data RAM comes from the project's memory map.
  */

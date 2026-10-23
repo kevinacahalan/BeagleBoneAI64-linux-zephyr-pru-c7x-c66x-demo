@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * linker.cmd: ICSSG0 RTU1, slice 1's talking core (pwm_rtu.c).
  * Its part of the slice's data RAM comes from the project's memory map.
  */

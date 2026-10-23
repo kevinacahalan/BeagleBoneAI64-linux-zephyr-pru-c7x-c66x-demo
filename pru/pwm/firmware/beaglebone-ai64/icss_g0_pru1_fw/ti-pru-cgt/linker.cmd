@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * linker.cmd: ICSSG0 PRU1, the ICSSG PWM (main.c).
  * Its part of the slice's data RAM comes from the project's memory map.
  */

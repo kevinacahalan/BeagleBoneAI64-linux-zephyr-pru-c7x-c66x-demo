@@ -228,6 +228,15 @@ static void publish(uint32_t now)
 }
 
 #ifdef AI64_RPMSG
+static int same(const char *a, const char *b)
+{
+	while (*a && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
 static void run_cmd(void)
 {
 	static const char who[] = "Linux";
@@ -243,8 +252,7 @@ static void run_cmd(void)
 		tell(set_dead(who, a));
 	} else if (parse_one(cmd, "sweep", &a)) {
 		tell(set_sweep(who, a));
-	} else if (cmd[0] == 's' && cmd[1] == 't' && cmd[2] == 'a' && cmd[3] == 't' &&
-		   cmd[4] == 'u' && cmd[5] == 's' && cmd[6] == 0) {
+	} else if (same(cmd, "status")) {
 		rtu_rpmsg_send(tx, reply_status());
 	} else {
 		n = append_str(tx, 0, sizeof(tx), "Linux sent \"");
