@@ -13,11 +13,11 @@
 #   - the demo overlay on the default extlinux label, in place of the stock
 #     P9.25 PWM overlay (both mux ball W26)
 #   - a udev rule that makes /dev/rpmsg* usable by the dialout group
-#   - ai64-icssg.service, which starts the twelve ICSSG cores at boot
 #   - tmux, for ai64-demo --tmux, from apt when it is missing
-# The R5F images are installed as /lib/firmware/ai64_r5f0_0.elf and so on,
-# not under the kernel's default names (j7-main-r5f0_0-fw), so the R5F cores
-# stay off until ai64-demo starts them.
+# Every core stays off until ai64-demo starts it: the R5F images are
+# installed as /lib/firmware/ai64_r5f0_0.elf and so on, not under the
+# kernel's default names (j7-main-r5f0_0-fw), and nothing starts the ICSSG
+# or DSP cores at boot.
 #
 # Artifacts come from dir when it is given (flat, by file name), else from
 # the directory this script is in when it is a bundle, else from the build
@@ -158,76 +158,20 @@ else:
 open(path, "w").write("\n".join(lines))
 EOF
 
-echo "rpmsg permissions and ICSSG start"
+echo "rpmsg permissions"
 cat > /etc/udev/rules.d/99-ai64-rpmsg.rules <<'EOF'
 KERNEL=="rpmsg[0-9]*", GROUP="dialout", MODE="0660"
 EOF
 
-cat > /usr/libexec/ai64-icssg-start <<'EOF'
-#!/bin/bash
-# Start the twelve ICSSG cores from /lib/firmware, the way ai64-demo does.
-# Leaves a running core alone. In each ICSSG0 slice the RTU goes first, then
-# the Tx_PRU, then the PRU: each waits for the record the one before writes,
-# and RTU0 writes its own once its RPMsg channel is up. ICSSG1's cores can
-# start in any order; PRU0, which sets up the schedule, goes last.
-set -eu
-checked=0
-for name in b004000.rtu:ai64-icssg0-rtu0.elf b00a000.txpru:ai64-icssg0-txpru0.elf \
-	b034000.pru:ai64-icssg0-pru0.elf b006000.rtu:ai64-icssg0-rtu1.elf \
-	b00c000.txpru:ai64-icssg0-txpru1.elf b038000.pru:ai64-icssg0-pru1.elf \
-	b104000.rtu:ai64-icssg1-rtu0.elf b106000.rtu:ai64-icssg1-rtu1.elf \
-	b10a000.txpru:ai64-icssg1-txpru0.elf b10c000.txpru:ai64-icssg1-txpru1.elf \
-	b138000.pru:ai64-icssg1-pru1.elf b134000.pru:ai64-icssg1-pru0.elf; do
-	want=${name%%:*}
-	fw=${name##*:}
-	for _ in $(seq 1 50); do
-		for d in /sys/class/remoteproc/remoteproc*; do
-			[[ -e $d/name && $(cat "$d/name") == "$want" ]] || continue
-			# The PRU remoteproc exists, so pru_rproc is loaded by now.
-			if [[ $checked -eq 0 ]] && ! grep -q pru_rproc_kick /proc/kallsyms; then
-				echo "pru_rproc has no virtio kick. Was the kernel upgraded? Rebuild the" >&2
-				echo "module for $(uname -r) and run install-beagle.sh again. RTU0 RPMsg will fail." >&2
-			fi
-			checked=1
-			if [[ $(cat "$d/state") == offline ]]; then
-				printf "%s\n" "$fw" > "$d/firmware"
-				printf "start\n" > "$d/state"
-			fi
-			break 2
-		done
-		sleep 0.2
-	done
-	if [[ $want == b004000.rtu ]]; then
-		for _ in $(seq 1 25); do
-			ls /sys/bus/rpmsg/devices/ 2>/dev/null | grep -q 'rpmsg-raw.-1.30$' && break
-			sleep 0.2
-		done
+# Nothing starts at boot: ai64-demo starts every core, so the demo is in one
+# place. Earlier versions started ICSSG cores from a service; take it out.
+for svc in ai64-icssg ai64-icssg0; do
+	if [[ -e /etc/systemd/system/$svc.service ]]; then
+		systemctl disable "$svc.service" >/dev/null 2>&1 || true
+		rm -f "/etc/systemd/system/$svc.service" "/usr/libexec/$svc-start"
 	fi
 done
-EOF
-chmod 0755 /usr/libexec/ai64-icssg-start
-
-# Earlier versions had a service that only started ICSSG0 slice 0.
-if [[ -e /etc/systemd/system/ai64-icssg0.service ]]; then
-	systemctl disable ai64-icssg0.service >/dev/null 2>&1 || true
-	rm -f /etc/systemd/system/ai64-icssg0.service /usr/libexec/ai64-icssg0-start
-fi
-
-cat > /etc/systemd/system/ai64-icssg.service <<'EOF'
-[Unit]
-Description=Start the BeagleBone AI-64 demo ICSSG cores
-After=systemd-modules-load.service local-fs.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/libexec/ai64-icssg-start
-
-[Install]
-WantedBy=multi-user.target
-EOF
 systemctl daemon-reload
-systemctl enable ai64-icssg.service
 udevadm control --reload
 
 echo

@@ -7,6 +7,7 @@ program ai64
 interface Ai64Service {
     say(in string msg) -> string
     setPwm(in uint32 periodNs, in uint32 dutyNs) -> int32
+    setPwmSteps(in uint32 stepMs) -> int32
     takeChunk(in uint32 seq, in uint32 length, in uint32 crc) -> uint32
     spiWrite(in string text) -> string
 }

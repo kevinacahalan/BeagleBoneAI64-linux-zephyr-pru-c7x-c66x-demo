@@ -8,12 +8,12 @@
  *   tally. It redraws every second; lines prints one line every 10 s
  *   instead, for the merged console, and once draws one screen and exits.
  *
- * ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]
+ * ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]
  *   Sends one message along the nodes given, and back to Linux. Each node
  *   stamps it as it passes. With an action, the first PWM generator on the
  *   route runs it when the message reaches it, so any core can change a
  *   PWM: g0rtu0 (ICSSG0 slice 0, software), g0rtu1 (slice 1, the ICSSG
- *   PWM module), or, for pwm only, r5f0_0 (EHRPWM4 on P9.25). Prints the
+ *   PWM module), or, for pwm and steps, r5f0_0 (EHRPWM4 on P9.25). Prints the
  *   time each hop took. It works with the viewer running.
  *
  * ai64 fabric reset
@@ -69,7 +69,8 @@ static int acts(uint32_t node, uint32_t action)
 	if (node == AI64_FAB_G0RTU0 || node == AI64_FAB_G0RTU1) {
 		return 1;
 	}
-	return node == AI64_FAB_R5F0_0 && action == AI64_FAB_ACT_PWM;
+	return node == AI64_FAB_R5F0_0 &&
+	       (action == AI64_FAB_ACT_PWM || action == AI64_FAB_ACT_STEPS);
 }
 
 static void *map(off_t addr, size_t len)
@@ -423,11 +424,12 @@ static int route_main(int argc, char **argv)
 			i = argc;
 			break;
 		}
-		if (!strcmp(argv[i], "dead") || !strcmp(argv[i], "sweep")) {
+		if (!strcmp(argv[i], "dead") || !strcmp(argv[i], "sweep") || !strcmp(argv[i], "steps")) {
 			if (i + 2 != argc) {
 				break;
 			}
-			action = !strcmp(argv[i], "dead") ? AI64_FAB_ACT_DEAD : AI64_FAB_ACT_SWEEP;
+			action = !strcmp(argv[i], "dead") ? AI64_FAB_ACT_DEAD :
+				 !strcmp(argv[i], "sweep") ? AI64_FAB_ACT_SWEEP : AI64_FAB_ACT_STEPS;
 			a0 = strtoul(argv[i + 1], NULL, 0);
 			i = argc;
 			break;
@@ -441,7 +443,7 @@ static int route_main(int argc, char **argv)
 	}
 	if (n == 0 || i != argc) {
 		fprintf(stderr, "usage: ai64 fabric route <node>... "
-			"[pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n"
+			"[pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]\n"
 			"nodes:");
 		for (h = 1; h < AI64_FAB_NODES; h++) {
 			fprintf(stderr, " %s", node_name[h]);
@@ -458,8 +460,9 @@ static int route_main(int argc, char **argv)
 		}
 		if (h == n) {
 			fprintf(stderr, "%s runs on a PWM generator: the route has to pass g0rtu0 or g0rtu1%s\n",
-				action == AI64_FAB_ACT_PWM ? "pwm" : action == AI64_FAB_ACT_DEAD ? "dead" : "sweep",
-				action == AI64_FAB_ACT_PWM ? ", or r5f0_0" : "");
+				action == AI64_FAB_ACT_PWM ? "pwm" : action == AI64_FAB_ACT_DEAD ? "dead" :
+				action == AI64_FAB_ACT_SWEEP ? "sweep" : "steps",
+				action == AI64_FAB_ACT_PWM || action == AI64_FAB_ACT_STEPS ? ", or r5f0_0" : "");
 			return 2;
 		}
 		act_node = route[h];
@@ -540,7 +543,7 @@ static int route_main(int argc, char **argv)
 			       m.status ? "did not run the action" :
 			       action == AI64_FAB_ACT_PWM ? "set its PWM" :
 			       action == AI64_FAB_ACT_DEAD ? "set its dead band" :
-			       "set its sweep");
+			       action == AI64_FAB_ACT_SWEEP ? "set its sweep" : "set its steps");
 		}
 		printf("\n");
 		prev = stamp[h];
@@ -591,7 +594,7 @@ int fabric_main(int argc, char **argv)
 	}
 	if (argc > 3 || (argc == 3 && strcmp(mode, "lines") && strcmp(mode, "once"))) {
 		fprintf(stderr, "usage: %s fabric [lines|once]\n"
-			"       %s fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n"
+			"       %s fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]\n"
 			"       %s fabric reset\n", argv[0], argv[0], argv[0]);
 		return 2;
 	}

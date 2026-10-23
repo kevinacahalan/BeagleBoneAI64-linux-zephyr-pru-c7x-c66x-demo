@@ -107,13 +107,14 @@
 
 /*
  * What a route does at action_node on its way. Each PWM generator's
- * talking core takes them: ICSSG0 RTU0 and RTU1 all three, R5F0_0 (its
- * EHRPWM) only pwm.
+ * talking core takes them: ICSSG0 RTU0 and RTU1 all four, R5F0_0 (its
+ * EHRPWM) pwm and steps.
  */
 #define AI64_FAB_ACT_NONE  0u
 #define AI64_FAB_ACT_PWM   1u /* arg0 period ns, arg1 duty ns, as "pwm" */
 #define AI64_FAB_ACT_DEAD  2u /* arg0 dead band ns, as "dead" */
 #define AI64_FAB_ACT_SWEEP 3u /* arg0 ms, 0 to stop, as "sweep" */
+#define AI64_FAB_ACT_STEPS 4u /* arg0 ms a step, 0 to stop, as "steps" */
 
 /*
  * One message, 64 bytes. A ping is its first AI64_FAB_PING_WORDS words;

@@ -15,6 +15,11 @@
  *
  * A period's parameters are taken at B's rise in the period before, from
  * the next record (pwm_ipc.h), and the counter's period at its reset.
+ *
+ * The first compare event of a PWM set only takes the set from its initial
+ * state to its active one; it toggles nothing. Only the events after it
+ * toggle. So an unused compare of the same set, CMP5, fires once at 8 ns,
+ * before A's first edge; without it A would run inverted.
  */
 
 #include <stdint.h>
@@ -31,6 +36,10 @@
 #define CMP_B     2u
 #define BIT_A     (1u << CMP_A)
 #define BIT_B     (1u << CMP_B)
+/* PWM2_2's positive compare. Its pin is not muxed; it fires once, to start the set. */
+#define CMP_START 5u
+#define BIT_START (1u << CMP_START)
+#define START_NS  8u
 
 #define COUNT()        ICSSG_REG(IEP_COUNT_LO(IEP))
 #define CMP_STATUS()   ICSSG_REG(IEP_CMP_STATUS(IEP))
@@ -119,12 +128,14 @@ void main(void)
 	ICSSG_REG(IEP_CMP_HI(IEP, 0)) = 0;
 	ICSSG_REG(IEP_CMP_HI(IEP, CMP_A)) = 0;
 	ICSSG_REG(IEP_CMP_HI(IEP, CMP_B)) = 0;
+	ICSSG_REG(IEP_CMP_HI(IEP, CMP_START)) = 0;
+	CMP(CMP_START) = START_NS;
 	CMP(0) = period - ICSSG_NS_PER_CYCLE;
 	CMP(CMP_A) = PWM_T0_NS;
 	CMP(CMP_B) = PWM_T0_NS + duty + dead;
 	CMP_STATUS() = 0xffffu;
 	ICSSG_REG(IEP_CMP_CFG(IEP)) = IEP_CMP0_RST_CNT_EN | IEP_CMP_EN(0) |
-				      IEP_CMP_EN(CMP_A) | IEP_CMP_EN(CMP_B);
+				      IEP_CMP_EN(CMP_A) | IEP_CMP_EN(CMP_B) | IEP_CMP_EN(CMP_START);
 	ICSSG_REG(IEP_GLOBAL_CFG(IEP)) |= IEP_CNT_ENABLE;
 
 	for (;;) {
@@ -141,6 +152,10 @@ void main(void)
 			out->duty_ns = duty;
 			out->dead_ns = dead;
 			out->late = late;
+		}
+		if (s & BIT_START) {
+			ICSSG_REG(IEP_CMP_CFG(IEP)) &= ~IEP_CMP_EN(CMP_START);
+			CMP_STATUS() = BIT_START;
 		}
 		if (s & BIT_A) {
 			a_high ^= 1u;

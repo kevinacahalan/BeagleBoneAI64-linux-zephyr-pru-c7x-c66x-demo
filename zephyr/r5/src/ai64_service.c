@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * Functions Linux calls through Zephyr eRPC.
- * setPwm sets P9.25, EHRPWM4 output B (ai64_pwm.c).
+ * setPwm and setPwmSteps set P9.25, EHRPWM4 output B (ai64_pwm.c).
  * takeChunk checks a bulk buffer Linux already wrote.
  * Only R5F0_0 has the PWM, the bulk buffer, and SPI7. On the other cores
  * those calls fail, and say still answers.
@@ -90,6 +90,15 @@ int32_t setPwm(uint32_t period_ns, uint32_t duty_ns)
 		return -1;
 	}
 	return ai64_pwm_set("Linux", period_ns, duty_ns) ? -1 : 0;
+}
+
+int32_t setPwmSteps(uint32_t step_ms)
+{
+	if (!AI64_HAS_PWM) {
+		LOG_INF("erpc pwm steps: no PWM on " AI64_CORE);
+		return -1;
+	}
+	return ai64_pwm_steps("Linux", step_ms) ? -1 : 0;
 }
 
 uint32_t takeChunk(uint32_t seq, uint32_t length, uint32_t crc)

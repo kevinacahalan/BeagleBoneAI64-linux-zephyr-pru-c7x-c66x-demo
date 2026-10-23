@@ -59,13 +59,13 @@
  *   Follows a core's remoteproc trace log, such as 4d80800000.dsp. It reads
  *   the buffer through /dev/mem, so it needs no root and no debugfs.
  *
- * ai64 fabric [lines|once] | route <node>... [pwm ...|dead ...|sweep ...] | reset
+ * ai64 fabric [lines|once] | route <node>... [pwm|steps|sweep|dead ...] | reset
  *   Joins the fabric, where every core talks to every other one, and shows
  *   it (ai64_fabric.c).
  *
  * ai64 linux <dir>
  *   Sends the startup script, then reads commands such as zephyr pwm and
- *   rtu0 sweep.
+ *   rtu0 steps.
  */
 
 int fabric_main(int argc, char **argv);
@@ -91,12 +91,13 @@ static void print_help(void)
 {
 	printf("commands:\n");
 	printf("  zephyr say <text>\n");
-	printf("  zephyr pwm <period_ns> <duty_ns>    EHRPWM4 on P9.25\n");
+	printf("  zephyr pwm <period_ns> <duty_ns>    EHRPWM4 on P9.25, a fixed duty\n");
+	printf("  zephyr steps <ms>                   step P9.25's duty, 0 stops\n");
 	printf("  zephyr chunk <text>\n");
 	printf("  zephyr spi [text]\n");
 	printf("  r5f0_1|r5f1_0|r5f1_1 say <text>\n");
-	printf("  rtu0 pwm <period_ns> <duty_ns>      the software PWM on P8.11/P8.12\n");
-	printf("  rtu0 dead <ns> | sweep <ms> | status\n");
+	printf("  rtu0 pwm <period_ns> <duty_ns>      the software PWM on P8.11/P8.12, a fixed duty\n");
+	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
 	printf("  rtu0 <text>\n");
 	printf("  (ICSSG0 slice 1's PWM on P9.12/P9.15 has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
 	printf("  help\n");
@@ -118,7 +119,7 @@ static void print_usage(const char *prog)
 	printf("  shutdown <remoteproc-name> ask a core to idle before Linux stops it\n");
 	printf("  dsp <remoteproc-name> [count] [taps] [runs] offload FIR jobs to a DSP\n");
 	printf("  fabric [lines|once]       every core talking to every other (the fabric window)\n");
-	printf("  fabric route <node>... [pwm <period_ns> <duty_ns> | dead <ns> | sweep <ms>]\n");
+	printf("  fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]\n");
 	printf("                            send one message along those cores and back\n");
 	printf("  fabric reset              free the tally's spinlock and zero the tally\n");
 	printf("\n");
@@ -676,6 +677,9 @@ static int pwm_main(int argc, char **argv)
 			printf("%s, %s: period %u ns (%.3f kHz), duty %u ns (%.1f%%)", pwm_gens[g].label,
 			       pwm_gens[g].pins, period, period ? 1e6 / period : 0.0, duty,
 			       period ? 100.0 * duty / period : 0.0);
+			if (s->steps_ms) {
+				printf(", duty stepping every %u ms", s->steps_ms);
+			}
 			if (s->engine != AI64_PWM_EHRPWM) {
 				printf(", dead %u ns", s->run_dead_ns);
 				if (s->sweep_ms) {
@@ -1113,6 +1117,24 @@ static int erpc_line(const char *line)
 		fflush(stdout);
 		return 0;
 	}
+	if (!strncmp(line, "steps ", 6)) {
+		unsigned ms = 0;
+
+		if (sscanf(line + 6, "%u", &ms) != 1) {
+			printf("zephyr steps wants <ms>, 0 to stop\n");
+			fflush(stdout);
+			return -1;
+		}
+		if (ai64_erpc_pwm_steps(ms)) {
+			printf("Linux asked %s to step P9.25's duty, and it failed (only R5F0_0 has EHRPWM4)\n",
+			       g_who);
+			fflush(stdout);
+			return -1;
+		}
+		printf("Linux asked %s to step P9.25's duty every %u ms, and it did\n", g_who, ms);
+		fflush(stdout);
+		return 0;
+	}
 	if (!strncmp(line, "chunk ", 6)) {
 		return do_chunk(line + 6);
 	}
@@ -1140,7 +1162,7 @@ static int erpc_line(const char *line)
 		note_line(shown);
 		return 0;
 	}
-	printf("zephyr commands: say <text> | pwm <period_ns> <duty_ns> | chunk <text> | spi [text]\n");
+	printf("zephyr commands: say <text> | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]\n");
 	fflush(stdout);
 	return -1;
 }
@@ -1326,6 +1348,8 @@ static int send_rtu0(int fd, const char *msg)
 		printf("Linux asked ICSSG0 RTU0 for a %s ns dead band\n", msg + 5);
 	} else if (!strncmp(msg, "sweep ", 6)) {
 		printf("Linux asked ICSSG0 RTU0 to sweep the duty every %s ms\n", msg + 6);
+	} else if (!strncmp(msg, "steps ", 6)) {
+		printf("Linux asked ICSSG0 RTU0 to step the duty every %s ms\n", msg + 6);
 	} else if (!strcmp(msg, "status")) {
 		printf("Linux asked ICSSG0 RTU0 what its PWM runs\n");
 	} else {
@@ -1342,6 +1366,8 @@ static int send_zephyr(struct zephyr_target *z, const char *msg)
 	}
 	if (!strncmp(msg, "pwm ", 4)) {
 		printf("Linux asked %s to set P9.25 to %s (period, duty in ns)\n", z->who, msg + 4);
+	} else if (!strncmp(msg, "steps ", 6)) {
+		printf("Linux asked %s to step P9.25's duty every %s ms\n", z->who, msg + 6);
 	} else if (!strncmp(msg, "chunk ", 6)) {
 		printf("Linux asked %s to check chunk %s\n", z->who, msg + 6);
 	} else if (!strncmp(msg, "say ", 4)) {
@@ -1373,8 +1399,9 @@ static const struct {
 	{ "zephyr", "say hello from linux" },
 	{ "zephyr", "chunk bulk-hello" },
 	{ "zephyr", "spi" },
-	/* The defaults again: 1 kHz, 25% on P9.25; 20 kHz, 25% on ICSSG0. */
+	/* The defaults again: P9.25 at 1 kHz, its duty stepping every 5 ms. */
 	{ "zephyr", "pwm 1000000 250000" },
+	{ "zephyr", "steps 5" },
 	{ "rtu0", "status" },
 	{ "r5f0_1", "say hello from linux" },
 	{ "r5f1_0", "say hello from linux" },
@@ -1383,8 +1410,8 @@ static const struct {
 
 static void usage_hint(void)
 {
-	printf("use zephyr say|pwm|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
-	       "rtu0 pwm|dead|sweep|status|<text>, or help\n");
+	printf("use zephyr say|pwm|steps|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
+	       "rtu0 pwm|steps|sweep|dead|status|<text>, or help\n");
 	fflush(stdout);
 }
 
@@ -1437,8 +1464,8 @@ static int linux_main(int argc, char **argv)
 		}
 	}
 
-	printf("linux window ready. commands: zephyr say|pwm|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
-	       "rtu0 pwm|dead|sweep|status|<text> | help\n");
+	printf("linux window ready. commands: zephyr say|pwm|steps|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
+	       "rtu0 pwm|steps|sweep|dead|status|<text> | help\n");
 	fflush(stdout);
 
 	while (fgets(input, sizeof(input), stdin)) {

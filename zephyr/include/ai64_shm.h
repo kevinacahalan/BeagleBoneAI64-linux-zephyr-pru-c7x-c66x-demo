@@ -55,6 +55,17 @@ struct ai64_bulk {
 #define AI64_PWM_DEFAULT_DUTY_NS   12500u
 #define AI64_PWM_DEFAULT_DEAD_NS   1000u
 
+/*
+ * Steps: every generator can hold each of these duties, in percent of its
+ * period, for steps_ms, in turn. All three start doing it every 5 ms, so a
+ * logic analyzer shows them change together; a request for a fixed duty
+ * stops it.
+ */
+#define AI64_PWM_STEPS             5u
+#define AI64_PWM_STEP_PCT          { 10u, 25u, 50u, 75u, 90u }
+#define AI64_PWM_DEFAULT_STEPS_MS  5u
+#define AI64_PWM_STEPS_MAX_MS      60000u
+
 /* What makes the edges */
 #define AI64_PWM_SOFT   0u /* a PRU writing R30, timed by IEP0 */
 #define AI64_PWM_ICSSG  1u /* the ICSSG's PWM module, on IEP1 compares */
@@ -82,6 +93,7 @@ struct ai64_pwm_status {
 	uint32_t ask_duty_ns;
 	uint32_t ask_dead_ns;
 	uint32_t sweep_ms;   /* 0, or the duty sweeps min-max-min this often */
+	uint32_t steps_ms;   /* 0, or the duty steps through AI64_PWM_STEP_PCT, this long each */
 	uint32_t run_period_ns;
 	uint32_t run_duty_ns;
 	uint32_t run_dead_ns;

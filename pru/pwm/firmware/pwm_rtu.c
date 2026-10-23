@@ -5,11 +5,14 @@
  * has AI64_RPMSG.
  *
  *   - It is the slice's fabric node (ai64_fabric.h), 8 or 9. A route can
- *     carry a pwm, dead, or sweep action for it, so any core can change
- *     the slice's PWM: `ai64 fabric route c7x g0rtu1 pwm 20000 5000`.
+ *     carry a pwm, dead, sweep, or steps action for it, so any core can
+ *     change the slice's PWM: `ai64 fabric route c7x g0rtu1 pwm 20000 5000`.
  *   - Slice 0's also has an RPMsg channel to Linux ("rpmsg-raw", port 30),
- *     which takes status, pwm <period_ns> <duty_ns>, dead <ns>, and
- *     sweep <ms> (0 stops it). Anything else is echoed.
+ *     which takes status, pwm <period_ns> <duty_ns> (a fixed duty),
+ *     dead <ns>, steps <ms>, and sweep <ms> (0 stops either). Anything
+ *     else is echoed.
+ *   - It starts the slice stepping through AI64_PWM_STEP_PCT every
+ *     AI64_PWM_DEFAULT_STEPS_MS.
  *   - It writes what it was asked, clamped, to the control record for the
  *     slice's Tx_PRU (pwm_ipc.h), and about every 10 ms publishes the
  *     slice's struct ai64_pwm_status (ai64_shm.h) in its fabric page.
@@ -73,7 +76,7 @@ static uint16_t say_ns(uint16_t n, const char *what, uint32_t v)
 }
 
 /* The control record, fields first, seq last. */
-static void ask(uint32_t period, uint32_t duty, uint32_t dead, uint32_t sweep)
+static void ask(uint32_t period, uint32_t duty, uint32_t dead, uint32_t sweep, uint32_t steps)
 {
 	volatile struct pwm_ctl *ctl = PWM_CTL;
 
@@ -81,10 +84,14 @@ static void ask(uint32_t period, uint32_t duty, uint32_t dead, uint32_t sweep)
 	if (sweep > AI64_PWM_SWEEP_MAX_MS) {
 		sweep = AI64_PWM_SWEEP_MAX_MS;
 	}
+	if (steps > AI64_PWM_STEPS_MAX_MS) {
+		steps = AI64_PWM_STEPS_MAX_MS;
+	}
 	ctl->period_ns = period;
 	ctl->duty_ns = duty;
 	ctl->dead_ns = dead;
 	ctl->sweep_ms = sweep;
+	ctl->steps_ms = steps;
 	ctl_seq++;
 	ctl->seq = ctl_seq;
 }
@@ -99,6 +106,11 @@ static uint16_t reply_ask(const char *who)
 	n = say_ns(n, " period ", ctl->period_ns);
 	n = say_ns(n, ", duty ", ctl->duty_ns);
 	n = say_ns(n, ", dead ", ctl->dead_ns);
+	if (ctl->steps_ms) {
+		n = append_str(tx, n, sizeof(tx), ", duty stepping every ");
+		n = append_u32(tx, n, sizeof(tx), ctl->steps_ms);
+		n = append_str(tx, n, sizeof(tx), " ms");
+	}
 	if (ctl->sweep_ms) {
 		n = append_str(tx, n, sizeof(tx), ", duty sweeping every ");
 		n = append_u32(tx, n, sizeof(tx), ctl->sweep_ms);
@@ -108,22 +120,28 @@ static uint16_t reply_ask(const char *who)
 	return append_u32(tx, n, sizeof(tx), ctl_seq);
 }
 
-/* Change one thing, keep the rest of the last request. */
+/* Change one thing, keep the rest of the last request. A duty is fixed. */
 static uint16_t set_pwm(const char *who, uint32_t period, uint32_t duty)
 {
-	ask(period, duty, PWM_CTL->dead_ns, PWM_CTL->sweep_ms);
+	ask(period, duty, PWM_CTL->dead_ns, 0, 0);
 	return reply_ask(who);
 }
 
 static uint16_t set_dead(const char *who, uint32_t dead)
 {
-	ask(PWM_CTL->period_ns, PWM_CTL->duty_ns, dead, PWM_CTL->sweep_ms);
+	ask(PWM_CTL->period_ns, PWM_CTL->duty_ns, dead, PWM_CTL->sweep_ms, PWM_CTL->steps_ms);
 	return reply_ask(who);
 }
 
 static uint16_t set_sweep(const char *who, uint32_t ms)
 {
-	ask(PWM_CTL->period_ns, PWM_CTL->duty_ns, PWM_CTL->dead_ns, ms);
+	ask(PWM_CTL->period_ns, PWM_CTL->duty_ns, PWM_CTL->dead_ns, ms, 0);
+	return reply_ask(who);
+}
+
+static uint16_t set_steps(const char *who, uint32_t ms)
+{
+	ask(PWM_CTL->period_ns, PWM_CTL->duty_ns, PWM_CTL->dead_ns, 0, ms);
 	return reply_ask(who);
 }
 
@@ -147,6 +165,8 @@ static uint32_t fab_action(struct ai64_fab_msg *m)
 		tell(set_dead(who, m->arg0));
 	} else if (m->action == AI64_FAB_ACT_SWEEP) {
 		tell(set_sweep(who, m->arg0));
+	} else if (m->action == AI64_FAB_ACT_STEPS) {
+		tell(set_steps(who, m->arg0));
 	} else {
 		return 1;
 	}
@@ -215,6 +235,7 @@ static void publish(uint32_t now)
 	s->ask_duty_ns = ctl->duty_ns;
 	s->ask_dead_ns = ctl->dead_ns;
 	s->sweep_ms = ctl->sweep_ms;
+	s->steps_ms = ctl->steps_ms;
 	s->run_period_ns = out->period_ns;
 	s->run_duty_ns = out->duty_ns;
 	s->run_dead_ns = out->dead_ns;
@@ -252,6 +273,8 @@ static void run_cmd(void)
 		tell(set_dead(who, a));
 	} else if (parse_one(cmd, "sweep", &a)) {
 		tell(set_sweep(who, a));
+	} else if (parse_one(cmd, "steps", &a)) {
+		tell(set_steps(who, a));
 	} else if (same(cmd, "status")) {
 		rtu_rpmsg_send(tx, reply_status());
 	} else {
@@ -277,12 +300,13 @@ void main(void)
 #endif
 
 	/*
-	 * A fresh control record with the defaults. Start this core first:
+	 * A fresh control record with the defaults, stepping. Start this core first:
 	 * the Tx_PRU waits for it, and the PRU for the Tx_PRU.
 	 */
 	ctl_seq = ctl->magic == PWM_CTL_MAGIC ? ctl->seq : 0;
 	ctl->magic = 0;
-	ask(AI64_PWM_DEFAULT_PERIOD_NS, AI64_PWM_DEFAULT_DUTY_NS, AI64_PWM_DEFAULT_DEAD_NS, 0);
+	ask(AI64_PWM_DEFAULT_PERIOD_NS, AI64_PWM_DEFAULT_DUTY_NS, AI64_PWM_DEFAULT_DEAD_NS, 0,
+	    AI64_PWM_DEFAULT_STEPS_MS);
 	ctl->magic = PWM_CTL_MAGIC;
 	late_told = 0;
 	late_at = AI64_FAB_NOW();

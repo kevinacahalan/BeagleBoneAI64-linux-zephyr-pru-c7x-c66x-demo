@@ -21,6 +21,8 @@
 int ai64_spi7_write(const void *buf, size_t len);
 /* P9.25, src/ai64_pwm.c. who names the asker in the log. */
 int ai64_pwm_set(const char *who, uint32_t period_ns, uint32_t duty_ns);
+/* ms 0 stops the steps and leaves the duty where it is. */
+int ai64_pwm_steps(const char *who, uint32_t ms);
 void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now);
 int ai64_rpmsg_tx(const void *data, size_t len);
 void ai64_erpc_push(const void *data, size_t len);

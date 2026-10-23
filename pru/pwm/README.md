@@ -39,7 +39,7 @@ A period of `P` ns, with duty `D` and dead band `d`:
 
 B is A's complement, with `d` of dead band on each side; at least as much after B, before the next A. `T0` is 40 ns: an IEP compare at count 0 never fires, so the hardware slice's period starts there, and the software slice does the same.
 
-Both slices start at 20 kHz (`P` 50000 ns), 25% (`D` 12500 ns), and 1 µs of dead band. Every edge stays 400 ns (`AI64_PWM_EDGE_MIN_NS`) from the next on the same pin, which is the time PRU1 needs to rearm a compare, so 0% and 100% duty are out of range. The RTU clamps what it is asked for and reports what it runs.
+Both slices start at 20 kHz (`P` 50000 ns) and 1 µs of dead band, the duty stepping through 10, 25, 50, 75, and 90% of the period, 100 periods (5 ms) each; `pwm <period_ns> <duty_ns>` fixes it, `steps <ms>` and `sweep <ms>` set it moving again. Every edge stays 400 ns (`AI64_PWM_EDGE_MIN_NS`) from the next on the same pin, which is the time PRU1 needs to rearm a compare, so 0% and 100% duty are out of range. The RTU clamps what it is asked for and reports what it runs.
 
 | Slice | Pins | Core that drives them |
 | --- | --- | --- |

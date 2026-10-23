@@ -8,10 +8,11 @@
  *
  * The RTU takes requests from the rest of the SoC and writes them to
  * pwm_ctl. The Tx_PRU, the modulator, turns them into the parameters of
- * each coming period: the requested ones, or a duty that sweeps. The PRU
- * makes the edges and reads pwm_next once a period. A writer fills in a
- * record before the field that says it changed (seq), so a reader that sees
- * the new seq sees the new fields too. pwm_next is read in the middle of a
+ * each coming period: the requested ones, a duty that steps through
+ * AI64_PWM_STEP_PCT, or one that sweeps. The PRU makes the edges and reads
+ * pwm_next once a period. A writer fills in a record before the field that
+ * says it changed (seq), so a reader that sees the new seq sees the new
+ * fields too. pwm_next is read in the middle of a
  * PWM period, so it is a seqlock: odd while the Tx_PRU writes it.
  *
  * Both slices make the same waveform, in nanoseconds from the start of a
@@ -44,6 +45,7 @@ struct pwm_ctl {
 	uint32_t duty_ns;
 	uint32_t dead_ns;
 	uint32_t sweep_ms;
+	uint32_t steps_ms; /* steps and sweep are never both set */
 };
 
 /* The coming periods' parameters. seq is odd while the Tx_PRU writes. */

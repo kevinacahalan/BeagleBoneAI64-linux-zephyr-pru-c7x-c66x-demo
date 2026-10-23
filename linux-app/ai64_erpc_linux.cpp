@@ -121,6 +121,13 @@ extern "C" int ai64_erpc_pwm(uint32_t period_ns, uint32_t duty_ns)
 	return rc == 0 ? 0 : -1;
 }
 
+extern "C" int ai64_erpc_pwm_steps(uint32_t step_ms)
+{
+	int32_t rc = setPwmSteps(step_ms);
+
+	return rc == 0 ? 0 : -1;
+}
+
 extern "C" int ai64_erpc_take(uint32_t seq, uint32_t length, uint32_t crc, uint32_t *got)
 {
 	uint32_t rc = takeChunk(seq, length, crc);
