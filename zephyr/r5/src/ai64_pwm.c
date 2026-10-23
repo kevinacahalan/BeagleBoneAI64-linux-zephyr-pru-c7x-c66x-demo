@@ -6,8 +6,9 @@
  *
  * Linux sets it over eRPC (setPwm for a fixed duty, setPwmSteps), and any
  * core with a fabric route's pwm or steps action for r5f0_0. Like the
- * ICSSG0 slices it starts stepping through AI64_PWM_STEP_PCT, a step every
- * AI64_PWM_DEFAULT_STEPS_MS, from a delayable work item: each step asks the
+ * ICSSG0 slices it starts stepping through AI64_PWM_STEP_HZ and
+ * AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS, from a
+ * delayable work item: each step asks the
  * device manager for the clock rate over TI-SCI, which an interrupt
  * handler must not. About every 10 ms the fabric thread publishes its
  * struct ai64_pwm_status (ai64_shm.h) in this node's fabric page, as the
@@ -27,6 +28,7 @@ LOG_MODULE_DECLARE(ai64_r5, LOG_LEVEL_INF);
 #if AI64_HAS_PWM
 
 static const struct pwm_dt_spec out = PWM_DT_SPEC_GET(DT_PATH(zephyr_user));
+static const uint32_t step_hz[AI64_PWM_STEP_FREQS] = AI64_PWM_STEP_HZ;
 static const uint32_t step_pct[AI64_PWM_STEPS] = AI64_PWM_STEP_PCT;
 static K_MUTEX_DEFINE(lock);
 static uint32_t ask_period, ask_duty, run_period, run_duty, ctl_seq, ctl_ack;
@@ -50,14 +52,23 @@ static int apply(uint32_t period_ns, uint32_t duty_ns)
 	return ret;
 }
 
+/* Step n of the 15: the frequency is n / 5, the duty n % 5. */
+static int apply_step(uint32_t n)
+{
+	uint32_t period = 1000000000u / step_hz[n / AI64_PWM_STEPS];
+
+	ask_period = period;
+	return apply(period, (uint32_t)((uint64_t)period * step_pct[n % AI64_PWM_STEPS] / 100u));
+}
+
 static void step_work(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
 	k_mutex_lock(&lock, K_FOREVER);
 	if (steps_ms != 0u) {
-		step_at = step_at + 1u == AI64_PWM_STEPS ? 0u : step_at + 1u;
-		(void)apply(ask_period, ask_period / 100u * step_pct[step_at]);
+		step_at = step_at + 1u == AI64_PWM_STEP_FREQS * AI64_PWM_STEPS ? 0u : step_at + 1u;
+		(void)apply_step(step_at);
 		step_due += k_ms_to_ticks_ceil64(steps_ms);
 		k_work_reschedule(&step, K_TIMEOUT_ABS_TICKS(step_due));
 	}
@@ -115,10 +126,10 @@ int ai64_pwm_steps(const char *who, uint32_t ms)
 	steps_ms = ms;
 	ctl_seq++;
 	if (ms != 0u) {
-		/* The first step is the first duty; the work moves on from it. */
+		/* The first step now; the work moves on from it. */
 		step_at = 0;
 		ask_duty = 0;
-		(void)apply(ask_period, ask_period / 100u * step_pct[0]);
+		(void)apply_step(0);
 		step_due = k_uptime_ticks() + k_ms_to_ticks_ceil64(ms);
 		k_work_reschedule(&step, K_TIMEOUT_ABS_TICKS(step_due));
 	} else {
@@ -126,7 +137,8 @@ int ai64_pwm_steps(const char *who, uint32_t ms)
 		ctl_ack = ctl_seq;
 	}
 	k_mutex_unlock(&lock);
-	LOG_INF("pwm: %s set P9.25 (EHRPWM4_B) stepping every %u ms", who, ms);
+	LOG_INF("pwm: %s set P9.25 (EHRPWM4_B) stepping 10, 15, 20 kHz x 10-90%% duty, every %u ms",
+		who, ms);
 	return 0;
 }
 
@@ -156,12 +168,10 @@ void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now)
 	k_mutex_unlock(&lock);
 }
 
-/* 1 kHz, then stepping, from the start. */
+/* Stepping, from the start. */
 static int ai64_pwm_init(void)
 {
-	int ret = ai64_pwm_set("Zephyr", out.period, out.period / 4u);
-
-	return ret ? ret : ai64_pwm_steps("Zephyr", AI64_PWM_DEFAULT_STEPS_MS);
+	return ai64_pwm_steps("Zephyr", AI64_PWM_DEFAULT_STEPS_MS);
 }
 
 SYS_INIT(ai64_pwm_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

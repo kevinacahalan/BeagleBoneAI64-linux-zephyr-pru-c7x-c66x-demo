@@ -23,8 +23,8 @@
  *   Owns one RPMsg device. Used for ICSSG0 RTU0.
  *
  * ai64 erpc [core] <rpmsg-dev> <fifo>
- *   Calls Zephyr functions over eRPC on the existing RPMsg fd. core names
- *   one of the other R5F cores (r5f0_1, ...); leave it out for R5F0_0.
+ *   Calls Zephyr functions over eRPC on the existing RPMsg fd. core is the
+ *   R5F core it talks to, r5f0_0 (the default), r5f0_1, r5f1_0, or r5f1_1.
  *
  * ai64 pwm [seconds|once]
  *   Prints what the three PWM generators run: ICSSG0 slice 0 (software),
@@ -64,16 +64,16 @@
  *   it (ai64_fabric.c).
  *
  * ai64 linux <dir>
- *   Sends the startup script, then reads commands such as zephyr pwm and
+ *   Sends the startup script, then reads commands such as r5f0_0 pwm and
  *   rtu0 steps.
  */
 
 int fabric_main(int argc, char **argv);
 
-/* The zephyr window writes them to this path. */
+/* An erpc or peer window writes its result lines to this path too. */
 static char g_reply_path[512];
 /* How the erpc window names its core in what it prints. */
-static const char *g_who = "Zephyr";
+static const char *g_who = "R5F0_0";
 
 static void unquote(char *s)
 {
@@ -89,17 +89,17 @@ static void unquote(char *s)
 
 static void print_help(void)
 {
-	printf("commands:\n");
-	printf("  zephyr say <text>\n");
-	printf("  zephyr pwm <period_ns> <duty_ns>    EHRPWM4 on P9.25, a fixed duty\n");
-	printf("  zephyr steps <ms>                   step P9.25's duty, 0 stops\n");
-	printf("  zephyr chunk <text>\n");
-	printf("  zephyr spi [text]\n");
+	printf("commands (each R5F core runs its own Zephyr; R5F0_0 also has P9.25, SPI7, and the bulk buffer):\n");
+	printf("  r5f0_0 say <text>                   R5F0_0 echoes it back (eRPC)\n");
+	printf("  r5f0_0 pwm <period_ns> <duty_ns>    P9.25 hardware PWM (EHRPWM4), fixed\n");
+	printf("  r5f0_0 steps <ms>                   P9.25 steps 10/15/20 kHz x 10-90%%, 0 stops\n");
+	printf("  r5f0_0 chunk <text>                 Linux writes the DDR bulk buffer, R5F0_0 checks it\n");
+	printf("  r5f0_0 spi [text]                   R5F0_0 writes SPI7\n");
 	printf("  r5f0_1|r5f1_0|r5f1_1 say <text>\n");
-	printf("  rtu0 pwm <period_ns> <duty_ns>      the software PWM on P8.11/P8.12, a fixed duty\n");
+	printf("  rtu0 pwm <period_ns> <duty_ns>      P8.11/P8.12 software PWM (ICSSG0 slice 0), fixed\n");
 	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
-	printf("  rtu0 <text>\n");
-	printf("  (ICSSG0 slice 1's PWM on P9.12/P9.15 has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
+	printf("  rtu0 <text>                         RTU0 echoes it back (RPMsg)\n");
+	printf("  (P9.12/P9.15, ICSSG0 slice 1's hardware PWM, has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
 	printf("  help\n");
 	printf("  quit\n");
 	fflush(stdout);
@@ -109,7 +109,7 @@ static void print_usage(const char *prog)
 {
 	printf("usage: %s <subcommand>\n", prog);
 	printf("  linux <fifo-dir>          the linux window (ai64-demo starts it)\n");
-	printf("  erpc [core] <rpmsg-dev> <fifo>  a zephyr window (core: r5f0_1 ...)\n");
+	printf("  erpc [core] <rpmsg-dev> <fifo>  an R5F core's window (core: r5f0_0 ...)\n");
 	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 window\n");
 	printf("  pwm [seconds|once]        the three PWM generators (the pwm window)\n");
 	printf("  sched [seconds|once]      ICSSG1's multicore scheduler (the sched window)\n");
@@ -206,7 +206,16 @@ static int peer_main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("%s window ready on %s\n", label, devpath);
+	{
+		size_t n = strlen(fifopath);
+
+		if (n >= 3 && !strcmp(fifopath + n - 3, ".in") &&
+		    snprintf(g_reply_path, sizeof(g_reply_path), "%.*s.reply",
+			     (int)(n - 3), fifopath) >= (int)sizeof(g_reply_path)) {
+			g_reply_path[0] = '\0';
+		}
+	}
+	printf("%s window: Linux and ICSSG0 RTU0 over RPMsg, on %s\n", label, devpath);
 	fflush(stdout);
 
 	for (;;) {
@@ -232,13 +241,12 @@ static int peer_main(int argc, char **argv)
 			if (n > 0) {
 				/* The firmware sentence already names who asked
 				 * and what this core did. Do not prefix it with
-				 * the core name again.
+				 * the core name again. The linux window gets it too.
 				 */
-				printf("%.*s", (int)n, rx);
-				if (rx[n - 1] != '\n') {
-					printf("\n");
-				}
-				fflush(stdout);
+				char text[520];
+
+				snprintf(text, sizeof(text), "%.*s", (int)(rx[n - 1] == '\n' ? n - 1 : n), rx);
+				note_line(text);
 			}
 		}
 
@@ -255,7 +263,7 @@ static int peer_main(int argc, char **argv)
 						return 1;
 					}
 					if (fill) {
-						printf("sent to %s: %s\n", label, line);
+						printf("Linux -> %s: %s\n", label, line);
 						fflush(stdout);
 					}
 					fill = 0;
@@ -593,24 +601,54 @@ static int every_arg(int argc, char **argv, int *once)
 
 /*
  * The three PWM generators: the fabric node whose page holds its status
- * (struct ai64_pwm_status), the core that writes it, and its pins.
+ * (struct ai64_pwm_status), the core that writes it, its pins, and what
+ * makes the edges.
  */
 static const struct {
-	const char *label;
+	const char *pins;
+	const char *a, *b;
 	uint32_t node;
 	const char *core;
-	const char *pins;
+	const char *how;
 } pwm_gens[] = {
-	{ "software PWM, ICSSG0 slice 0", AI64_FAB_G0RTU0, "b004000.rtu", "P8.11 A, P8.12 B" },
-	{ "ICSSG PWM, ICSSG0 slice 1", AI64_FAB_G0RTU1, "b006000.rtu", "P9.12 A, P9.15 B" },
-	{ "EHRPWM4, Zephyr on R5F0_0", AI64_FAB_R5F0_0, "5c00000.r5f", "P9.25" },
+	{ "P8.11 + P8.12", "P8.11", "P8.12", AI64_FAB_G0RTU0, "b004000.rtu",
+	  "software PWM: ICSSG0 slice 0, PRU0 sets the pins at the times it reads from IEP0" },
+	{ "P9.12 + P9.15", "P9.12", "P9.15", AI64_FAB_G0RTU1, "b006000.rtu",
+	  "hardware PWM: ICSSG0 slice 1, the ICSSG's PWM module toggles the pins on IEP1 compares" },
+	{ "P9.25", "P9.25", NULL, AI64_FAB_R5F0_0, "5c00000.r5f",
+	  "hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_0 (Zephyr's PWM driver)" },
 };
 
 #define NPWM (sizeof(pwm_gens) / sizeof(pwm_gens[0]))
 
+static void pwm_program(const volatile struct ai64_pwm_status *s)
+{
+	static const uint32_t hz[AI64_PWM_STEP_FREQS] = AI64_PWM_STEP_HZ;
+	static const uint32_t pct[AI64_PWM_STEPS] = AI64_PWM_STEP_PCT;
+	size_t i;
+
+	if (s->steps_ms) {
+		printf("  stepping: ");
+		for (i = 0; i < AI64_PWM_STEP_FREQS; i++) {
+			printf("%s%u", i ? ", " : "", hz[i] / 1000u);
+		}
+		printf(" kHz, at each ");
+		for (i = 0; i < AI64_PWM_STEPS; i++) {
+			printf("%s%u", i ? ", " : "", pct[i]);
+		}
+		printf("%% duty, %u ms a step\n", s->steps_ms);
+	} else if (s->sweep_ms) {
+		printf("  sweeping: the duty from its least to its most and back every %u ms\n",
+		       s->sweep_ms);
+	} else {
+		printf("  fixed: period %u ns, high %u ns, as asked\n", s->ask_period_ns, s->ask_duty_ns);
+	}
+}
+
 /*
- * ai64 pwm [seconds|once]: a line per generator every few seconds, from what
- * its talking core publishes. Linux reads no ICSSG0 or EHRPWM register.
+ * ai64 pwm [seconds|once]: a few lines per generator every few seconds,
+ * from what its talking core publishes in shared memory. Linux reads no
+ * ICSSG0 or EHRPWM register, and nothing here is measured on the pins.
  */
 static int pwm_main(int argc, char **argv)
 {
@@ -641,7 +679,8 @@ static int pwm_main(int argc, char **argv)
 		periods[g] = st[g]->periods;
 	}
 	if (!once) {
-		printf("pwm window ready, a line per PWM generator every %d s\n", every);
+		printf("pwm window ready: every %d s, what each PWM generator's core reports it runs\n"
+		       "(read from shared memory; \"now\" is whichever step it was on)\n", every);
 	}
 	fflush(stdout);
 	for (;;) {
@@ -653,45 +692,48 @@ static int pwm_main(int argc, char **argv)
 		t0 = t1;
 		for (g = 0; g < NPWM; g++) {
 			volatile struct ai64_pwm_status *s = st[g];
-			uint32_t period, duty, n;
+			uint32_t period, duty, dead, n;
 
+			printf("%-14s %s\n", pwm_gens[g].pins, pwm_gens[g].how);
 			if (rproc_attr(pwm_gens[g].core, "state", state, sizeof(state)) ||
 			    strcmp(state, "running")) {
-				printf("%s: its talking core, %s, is not running\n", pwm_gens[g].label,
-				       pwm_gens[g].core);
+				printf("  its talking core, %s, is not running\n", pwm_gens[g].core);
 				continue;
 			}
 			if (s->magic != AI64_PWM_MAGIC) {
-				printf("%s: no status yet\n", pwm_gens[g].label);
+				printf("  no status yet\n");
 				continue;
 			}
 			if (s->at == at[g]) {
-				printf("%s: its status has stopped\n", pwm_gens[g].label);
+				printf("  its status has stopped\n");
 				continue;
 			}
 			at[g] = s->at;
 			period = s->run_period_ns;
 			duty = s->run_duty_ns;
+			dead = s->run_dead_ns;
 			n = s->periods - periods[g];
 			periods[g] = s->periods;
-			printf("%s, %s: period %u ns (%.3f kHz), duty %u ns (%.1f%%)", pwm_gens[g].label,
-			       pwm_gens[g].pins, period, period ? 1e6 / period : 0.0, duty,
+			pwm_program(s);
+			printf("  now: %.3f kHz, %.1f%% duty\n", period ? 1e6 / period : 0.0,
 			       period ? 100.0 * duty / period : 0.0);
-			if (s->steps_ms) {
-				printf(", duty stepping every %u ms", s->steps_ms);
-			}
-			if (s->engine != AI64_PWM_EHRPWM) {
-				printf(", dead %u ns", s->run_dead_ns);
-				if (s->sweep_ms) {
-					printf(", duty sweeping every %u ms", s->sweep_ms);
-				}
-				printf(", %.0f periods/s, %u late edges", n / dt, s->late);
+			if (pwm_gens[g].b) {
+				printf("  %s (A) high %u ns of each %u ns period, from %u ns in\n",
+				       pwm_gens[g].a, duty, period, AI64_PWM_T0_NS);
+				printf("  %s (B) high %u ns: A inverted, but low for %u ns of dead band "
+				       "either side of A's pulse\n", pwm_gens[g].b,
+				       period - AI64_PWM_T0_NS - duty - 2u * dead, dead);
+				printf("  %.0f periods/s, %u late edges", n / dt, s->late);
 				if (s->engine == AI64_PWM_SOFT) {
-					printf(" (the latest %u ns late)", s->late_max_ns);
+					printf(" (the latest edge %u ns late)", s->late_max_ns);
 				}
+				printf("\n");
+			} else {
+				printf("  %s high %u ns of each %u ns period\n", pwm_gens[g].a, duty, period);
 			}
-			printf(", request %u%s\n", s->ctl_seq,
-			       s->ctl_ack == s->ctl_seq ? "" : " (not followed yet)");
+			if (s->ctl_ack != s->ctl_seq) {
+				printf("  its last request is not running yet\n");
+			}
 		}
 		fflush(stdout);
 		if (once) {
@@ -1039,6 +1081,7 @@ static int do_chunk(const char *text)
 	uint32_t got = 0;
 	uint32_t seq;
 	uint32_t i;
+	char line[200];
 
 	if (!bulk) {
 		bulk = map_phys(AI64_BULK_ADDR, AI64_BULK_SIZE);
@@ -1064,14 +1107,15 @@ static int do_chunk(const char *text)
 	seq = chunk_seq++;
 	bulk->seq = seq;
 	if (ai64_erpc_take(seq, n, crc, &got)) {
-		printf("Linux asked %s to check the chunk, and it saw a mismatch seq %u len %u crc %08x got %08x\n",
-		       g_who, seq, n, crc, got);
-		fflush(stdout);
+		snprintf(line, sizeof(line),
+			 "%s: chunk: the bulk buffer did not match (seq %u, %u bytes, crc %08x, it saw %08x)",
+			 g_who, seq, n, crc, got);
+		note_line(line);
 		return -1;
 	}
-	printf("Linux asked %s to check the chunk, and it matched seq %u len %u crc %08x\n",
-	       g_who, seq, n, crc);
-	fflush(stdout);
+	snprintf(line, sizeof(line), "%s: chunk: the bulk buffer matched (seq %u, %u bytes, crc %08x)",
+		 g_who, seq, n, crc);
+	note_line(line);
 	return 0;
 }
 
@@ -1086,54 +1130,56 @@ static int erpc_line(const char *line)
 		snprintf(text, sizeof(text), "%s", line + 4);
 		unquote(text);
 		if (ai64_erpc_say(text, reply, sizeof(reply))) {
-			snprintf(shown, sizeof(shown),
-				 "Linux asked %s to say \"%s\", and it failed",
-				 g_who, text);
+			snprintf(shown, sizeof(shown), "%s: say \"%s\": the call failed", g_who, text);
 			note_line(shown);
 			return -1;
 		}
-		snprintf(shown, sizeof(shown),
-			 "Linux asked %s to say \"%s\", and it replied \"%s\"",
-			 g_who, text, reply);
+		snprintf(shown, sizeof(shown), "%s: say \"%s\": it replied \"%s\"", g_who, text, reply);
 		note_line(shown);
 		return 0;
 	}
 	if (!strncmp(line, "pwm ", 4)) {
 		unsigned period = 0, duty = 0;
+		char shown[200];
 
 		if (sscanf(line + 4, "%u %u", &period, &duty) != 2) {
-			printf("zephyr pwm wants <period_ns> <duty_ns>\n");
-			fflush(stdout);
-			return -1;
+			snprintf(shown, sizeof(shown), "%s: pwm wants <period_ns> <duty_ns>", g_who);
+		} else if (ai64_erpc_pwm(period, duty)) {
+			snprintf(shown, sizeof(shown), "%s: pwm: the call failed (only R5F0_0 has P9.25)",
+				 g_who);
+		} else {
+			snprintf(shown, sizeof(shown),
+				 "%s: pwm: P9.25 (EHRPWM4 output B) now fixed at %u ns a period, %u ns high",
+				 g_who, period, duty);
+			note_line(shown);
+			return 0;
 		}
-		if (ai64_erpc_pwm(period, duty)) {
-			printf("Linux asked %s to set P9.25 to %u ns, %u ns high, and it failed "
-			       "(only R5F0_0 has EHRPWM4)\n", g_who, period, duty);
-			fflush(stdout);
-			return -1;
-		}
-		printf("Linux asked %s to set P9.25 (EHRPWM4_B) to a %u ns period, %u ns high, and it did\n",
-		       g_who, period, duty);
-		fflush(stdout);
-		return 0;
+		note_line(shown);
+		return -1;
 	}
 	if (!strncmp(line, "steps ", 6)) {
 		unsigned ms = 0;
+		char shown[200];
 
 		if (sscanf(line + 6, "%u", &ms) != 1) {
-			printf("zephyr steps wants <ms>, 0 to stop\n");
-			fflush(stdout);
-			return -1;
+			snprintf(shown, sizeof(shown), "%s: steps wants <ms>, 0 to stop", g_who);
+		} else if (ai64_erpc_pwm_steps(ms)) {
+			snprintf(shown, sizeof(shown), "%s: steps: the call failed (only R5F0_0 has P9.25)",
+				 g_who);
+		} else {
+			if (ms) {
+				snprintf(shown, sizeof(shown),
+					 "%s: steps: P9.25 (EHRPWM4 output B) steps 10, 15, 20 kHz x 10-90%% duty, "
+					 "%u ms a step", g_who, ms);
+			} else {
+				snprintf(shown, sizeof(shown), "%s: steps: P9.25 stays on the step it was on",
+					 g_who);
+			}
+			note_line(shown);
+			return 0;
 		}
-		if (ai64_erpc_pwm_steps(ms)) {
-			printf("Linux asked %s to step P9.25's duty, and it failed (only R5F0_0 has EHRPWM4)\n",
-			       g_who);
-			fflush(stdout);
-			return -1;
-		}
-		printf("Linux asked %s to step P9.25's duty every %u ms, and it did\n", g_who, ms);
-		fflush(stdout);
-		return 0;
+		note_line(shown);
+		return -1;
 	}
 	if (!strncmp(line, "chunk ", 6)) {
 		return do_chunk(line + 6);
@@ -1150,20 +1196,22 @@ static int erpc_line(const char *line)
 		}
 		label = text[0] ? text : "hello";
 		if (ai64_erpc_spi(text, reply, sizeof(reply))) {
-			snprintf(shown, sizeof(shown),
-				 "Linux asked %s to write SPI7 \"%s\", and it failed",
-				 g_who, label);
+			snprintf(shown, sizeof(shown), "%s: spi \"%s\": the call failed", g_who, label);
 			note_line(shown);
 			return -1;
 		}
-		snprintf(shown, sizeof(shown),
-			 "Linux asked %s to write SPI7 \"%s\", and it replied \"%s\"",
-			 g_who, label, reply);
+		snprintf(shown, sizeof(shown), "%s: spi \"%s\": it replied \"%s\"", g_who, label, reply);
 		note_line(shown);
 		return 0;
 	}
-	printf("zephyr commands: say <text> | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]\n");
-	fflush(stdout);
+	{
+		char shown[200];
+
+		snprintf(shown, sizeof(shown),
+			 "%s: commands are say <text> | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]",
+			 g_who);
+		note_line(shown);
+	}
 	return -1;
 }
 
@@ -1176,11 +1224,11 @@ static int erpc_main(int argc, char **argv)
 	size_t fill = 0;
 
 	if (argc == 5) {
-		static char who[64];
+		static char who[16];
 
-		/* "r5f0_1" is printed as "Zephyr on R5F0_1". */
-		snprintf(who, sizeof(who), "Zephyr on %s", argv[2]);
-		for (char *c = who + 10; *c; c++) {
+		/* "r5f0_1" is printed as "R5F0_1". */
+		snprintf(who, sizeof(who), "%s", argv[2]);
+		for (char *c = who; *c; c++) {
 			if (*c >= 'a' && *c <= 'z') {
 				*c = (char)(*c - 'a' + 'A');
 			}
@@ -1219,7 +1267,7 @@ static int erpc_main(int argc, char **argv)
 			g_reply_path[0] = '\0';
 		}
 	}
-	printf("%s window ready on %s (eRPC)\n", g_who, devpath);
+	printf("%s window: Linux calls Zephyr on %s over eRPC, on %s\n", g_who, g_who, devpath);
 	fflush(stdout);
 
 	for (;;) {
@@ -1260,64 +1308,87 @@ static int open_out(const char *dir, const char *name)
 }
 
 /*
- * The Zephyr cores the linux window talks to. cmd is what you type, and the
- * FIFO names. Only R5F0_0 has EHRPWM4, the bulk buffer, and SPI7.
+ * The windows the linux window talks to: what you type, the FIFO names,
+ * and how lines name them. Each window writes its result lines back on a
+ * reply FIFO, which the linux window prints as they come. Only R5F0_0 has
+ * EHRPWM4, the bulk buffer, and SPI7.
  */
-static struct zephyr_target {
+static struct target {
 	const char *cmd;
 	const char *who;
 	int in;
 	int reply;
-} zt[] = {
-	{ "zephyr", "Zephyr", -1, -1 },
-	{ "r5f0_1", "Zephyr on R5F0_1", -1, -1 },
-	{ "r5f1_0", "Zephyr on R5F1_0", -1, -1 },
-	{ "r5f1_1", "Zephyr on R5F1_1", -1, -1 },
+	char buf[720];
+	size_t fill;
+} tg[] = {
+	{ "r5f0_0", "R5F0_0 (Zephyr)", -1, -1, "", 0 },
+	{ "r5f0_1", "R5F0_1 (Zephyr)", -1, -1, "", 0 },
+	{ "r5f1_0", "R5F1_0 (Zephyr)", -1, -1, "", 0 },
+	{ "r5f1_1", "R5F1_1 (Zephyr)", -1, -1, "", 0 },
+	{ "rtu0", "ICSSG0 RTU0", -1, -1, "", 0 },
 };
-#define NUM_ZT (sizeof(zt) / sizeof(zt[0]))
+#define NUM_TG (sizeof(tg) / sizeof(tg[0]))
+#define RTU0_TG (&tg[NUM_TG - 1])
 
-static struct zephyr_target *find_zt(const char *cmd)
+static struct target *find_tg(const char *cmd)
 {
 	size_t i;
 
-	for (i = 0; i < NUM_ZT; i++) {
-		if (!strcmp(zt[i].cmd, cmd)) {
-			return &zt[i];
+	for (i = 0; i < NUM_TG; i++) {
+		if (!strcmp(tg[i].cmd, cmd)) {
+			return &tg[i];
 		}
 	}
 	return NULL;
 }
 
-static void print_reply(int fd)
+/* Print the reply lines that have come in, a whole line at a time. */
+static void drain_reply(struct target *t)
 {
-	char reply[700];
-	struct pollfd pf;
-	size_t fill = 0;
+	char c;
 
-	fflush(stdout);
-	if (fd < 0) {
-		return;
-	}
-	pf.fd = fd;
-	pf.events = POLLIN;
-	while (fill + 1 < sizeof(reply)) {
-		ssize_t got;
-		char c;
-
-		if (poll(&pf, 1, 3000) <= 0) {
-			break;
-		}
-		got = read(fd, &c, 1);
-		if (got <= 0) {
-			break;
-		}
+	while (t->reply >= 0 && read(t->reply, &c, 1) == 1) {
 		if (c == '\n') {
-			reply[fill] = '\0';
-			printf("%s\n", reply);
-			fflush(stdout);
-			return;
+			t->buf[t->fill] = '\0';
+			printf("  %s\n", t->buf);
+			t->fill = 0;
+		} else if (t->fill + 1 < sizeof(t->buf)) {
+			t->buf[t->fill++] = c;
 		}
-		reply[fill++] = c;
+	}
+	fflush(stdout);
+}
+
+/* Wait up to ms for stdin, printing reply lines meanwhile. 1 when stdin has input. */
+static int pump(int ms, int want_stdin)
+{
+	struct pollfd pf[NUM_TG + 1];
+	double end = now_us() + ms * 1000.0;
+	size_t i;
+
+	for (;;) {
+		int left = (int)((end - now_us()) / 1000.0);
+
+		for (i = 0; i < NUM_TG; i++) {
+			pf[i].fd = tg[i].reply;
+			pf[i].events = POLLIN;
+		}
+		pf[NUM_TG].fd = want_stdin ? 0 : -1;
+		pf[NUM_TG].events = POLLIN;
+		if (ms >= 0 && left <= 0) {
+			return 0;
+		}
+		if (poll(pf, NUM_TG + 1, ms < 0 ? -1 : left) < 0 && errno != EINTR) {
+			return 0;
+		}
+		for (i = 0; i < NUM_TG; i++) {
+			if (pf[i].revents & POLLIN) {
+				drain_reply(&tg[i]);
+			}
+		}
+		if (pf[NUM_TG].revents & (POLLIN | POLLHUP)) {
+			return 1;
+		}
 	}
 }
 
@@ -1337,56 +1408,11 @@ static int write_line(int fd, const char *what, const char *msg)
 	return 0;
 }
 
-static int send_rtu0(int fd, const char *msg)
+static int send_to(struct target *t, const char *msg)
 {
-	if (write_line(fd, "rtu0", msg)) {
-		return -1;
-	}
-	if (!strncmp(msg, "pwm ", 4)) {
-		printf("Linux asked ICSSG0 RTU0 for software PWM %s (period, duty in ns)\n", msg + 4);
-	} else if (!strncmp(msg, "dead ", 5)) {
-		printf("Linux asked ICSSG0 RTU0 for a %s ns dead band\n", msg + 5);
-	} else if (!strncmp(msg, "sweep ", 6)) {
-		printf("Linux asked ICSSG0 RTU0 to sweep the duty every %s ms\n", msg + 6);
-	} else if (!strncmp(msg, "steps ", 6)) {
-		printf("Linux asked ICSSG0 RTU0 to step the duty every %s ms\n", msg + 6);
-	} else if (!strcmp(msg, "status")) {
-		printf("Linux asked ICSSG0 RTU0 what its PWM runs\n");
-	} else {
-		printf("Linux sent \"%s\" to ICSSG0 RTU0\n", msg);
-	}
+	printf("Linux -> %s: %s\n", t->who, msg);
 	fflush(stdout);
-	return 0;
-}
-
-static int send_zephyr(struct zephyr_target *z, const char *msg)
-{
-	if (write_line(z->in, z->cmd, msg)) {
-		return -1;
-	}
-	if (!strncmp(msg, "pwm ", 4)) {
-		printf("Linux asked %s to set P9.25 to %s (period, duty in ns)\n", z->who, msg + 4);
-	} else if (!strncmp(msg, "steps ", 6)) {
-		printf("Linux asked %s to step P9.25's duty every %s ms\n", z->who, msg + 6);
-	} else if (!strncmp(msg, "chunk ", 6)) {
-		printf("Linux asked %s to check chunk %s\n", z->who, msg + 6);
-	} else if (!strncmp(msg, "say ", 4)) {
-		printf("Linux asked %s to say %s\n", z->who, msg + 4);
-		print_reply(z->reply);
-		return 0;
-	} else if (!strcmp(msg, "spi") || !strncmp(msg, "spi ", 4)) {
-		if (!strcmp(msg, "spi") || msg[4] == '\0') {
-			printf("Linux asked %s to write SPI7 hello\n", z->who);
-		} else {
-			printf("Linux asked %s to write SPI7 %s\n", z->who, msg + 4);
-		}
-		print_reply(z->reply);
-		return 0;
-	} else {
-		printf("Linux sent %s %s\n", z->cmd, msg);
-	}
-	fflush(stdout);
-	return 0;
+	return write_line(t->in, t->cmd, msg);
 }
 
 /* The startup script. Each step waits long enough for the one before it. */
@@ -1396,12 +1422,11 @@ static const struct {
 } startup[] = {
 	/* RTU0 learns Linux's endpoint from the first RPMsg it receives. */
 	{ "rtu0", "ping" },
-	{ "zephyr", "say hello from linux" },
-	{ "zephyr", "chunk bulk-hello" },
-	{ "zephyr", "spi" },
-	/* The defaults again: P9.25 at 1 kHz, its duty stepping every 5 ms. */
-	{ "zephyr", "pwm 1000000 250000" },
-	{ "zephyr", "steps 5" },
+	{ "r5f0_0", "say hello from linux" },
+	{ "r5f0_0", "chunk bulk-hello" },
+	{ "r5f0_0", "spi" },
+	/* The PWM default again: P9.25 stepping, 5 ms a step. */
+	{ "r5f0_0", "steps 5" },
 	{ "rtu0", "status" },
 	{ "r5f0_1", "say hello from linux" },
 	{ "r5f1_0", "say hello from linux" },
@@ -1410,7 +1435,7 @@ static const struct {
 
 static void usage_hint(void)
 {
-	printf("use zephyr say|pwm|steps|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
+	printf("use r5f0_0 say|pwm|steps|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
 	       "rtu0 pwm|steps|sweep|dead|status|<text>, or help\n");
 	fflush(stdout);
 }
@@ -1418,8 +1443,8 @@ static void usage_hint(void)
 static int linux_main(int argc, char **argv)
 {
 	const char *dir;
-	int rtu0;
 	char input[512];
+	size_t fill = 0;
 	size_t i;
 
 	if (argc != 3) {
@@ -1428,55 +1453,56 @@ static int linux_main(int argc, char **argv)
 	}
 	dir = argv[2];
 
-	for (i = 0; i < NUM_ZT; i++) {
+	for (i = 0; i < NUM_TG; i++) {
 		char path[512];
 
-		/* Each erpc window writes Zephyr's reply lines back here. */
-		snprintf(path, sizeof(path), "%s/%s.reply", dir, zt[i].cmd);
+		/* Each window writes its result lines back here. */
+		snprintf(path, sizeof(path), "%s/%s.reply", dir, tg[i].cmd);
 		unlink(path);
 		if (mkfifo(path, 0666) && errno != EEXIST) {
 			perror(path);
 		}
-		zt[i].reply = open(path, O_RDWR | O_NONBLOCK);
-		zt[i].in = open_out(dir, zt[i].cmd);
-		if (zt[i].in < 0) {
+		tg[i].reply = open(path, O_RDWR | O_NONBLOCK);
+		tg[i].in = open_out(dir, tg[i].cmd);
+		if (tg[i].in < 0) {
 			return 1;
 		}
 	}
-	rtu0 = open_out(dir, "rtu0");
-	if (rtu0 < 0) {
-		return 1;
-	}
 
+	printf("Each line \"Linux -> X\" is a command Linux sent; the indented lines under it are\n"
+	       "the answers, which also show in that core's own window.\n");
 	for (i = 0; i < sizeof(startup) / sizeof(startup[0]); i++) {
-		int ret;
-
-		if (i) {
-			usleep(300000);
-		}
-		if (!strcmp(startup[i].who, "rtu0")) {
-			ret = send_rtu0(rtu0, startup[i].msg);
-		} else {
-			ret = send_zephyr(find_zt(startup[i].who), startup[i].msg);
-		}
-		if (ret) {
+		if (send_to(find_tg(startup[i].who), startup[i].msg)) {
 			return 1;
 		}
+		pump(400, 0);
 	}
 
-	printf("linux window ready. commands: zephyr say|pwm|steps|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
+	printf("linux window ready. commands: r5f0_0 say|pwm|steps|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
 	       "rtu0 pwm|steps|sweep|dead|status|<text> | help\n");
 	fflush(stdout);
 
-	while (fgets(input, sizeof(input), stdin)) {
-		struct zephyr_target *z;
-		char *msg;
-		size_t len = strlen(input);
+	for (;;) {
+		struct target *t;
+		char *msg, c;
+		ssize_t got;
 
-		while (len && (input[len - 1] == '\n' || input[len - 1] == '\r')) {
-			input[--len] = '\0';
+		if (!pump(-1, 1)) {
+			continue;
 		}
-		if (!len || input[0] == '#') {
+		got = read(0, &c, 1);
+		if (got <= 0) {
+			break;
+		}
+		if (c != '\n') {
+			if (c != '\r' && fill + 1 < sizeof(input)) {
+				input[fill++] = c;
+			}
+			continue;
+		}
+		input[fill] = '\0';
+		fill = 0;
+		if (!input[0] || input[0] == '#') {
 			continue;
 		}
 		if (!strcmp(input, "quit")) {
@@ -1492,17 +1518,15 @@ static int linux_main(int argc, char **argv)
 			continue;
 		}
 		*msg++ = '\0';
-		z = find_zt(input);
-		if (z) {
-			if (!strncmp(msg, "say ", 4) || !strncmp(msg, "spi ", 4)) {
-				unquote(msg + 4);
-			}
-			send_zephyr(z, msg);
-		} else if (!strcmp(input, "rtu0")) {
-			send_rtu0(rtu0, msg);
-		} else {
+		t = find_tg(input);
+		if (!t) {
 			usage_hint();
+			continue;
 		}
+		if (t != RTU0_TG && (!strncmp(msg, "say ", 4) || !strncmp(msg, "spi ", 4))) {
+			unquote(msg + 4);
+		}
+		send_to(t, msg);
 	}
 	return 0;
 }

@@ -8,8 +8,8 @@
  *
  * The RTU takes requests from the rest of the SoC and writes them to
  * pwm_ctl. The Tx_PRU, the modulator, turns them into the parameters of
- * each coming period: the requested ones, a duty that steps through
- * AI64_PWM_STEP_PCT, or one that sweeps. The PRU makes the edges and reads
+ * each coming period: the requested ones, steps through AI64_PWM_STEP_HZ
+ * and AI64_PWM_STEP_PCT, or a duty that sweeps. The PRU makes the edges and reads
  * pwm_next once a period. A writer fills in a record before the field that
  * says it changed (seq), so a reader that sees the new seq sees the new
  * fields too. pwm_next is read in the middle of a
@@ -31,7 +31,10 @@
 #include "ai64_shm.h"
 #include "pwm_map.h"
 
-#define PWM_T0_NS 40u
+#define PWM_T0_NS AI64_PWM_T0_NS
+/* The IEPs count 4 ns a step (ICSSG_NS_PER_CYCLE), so every time is a multiple. */
+#define PWM_TICK_NS 4u
+#define PWM_TICKS(ns) ((ns) & ~(PWM_TICK_NS - 1u))
 
 #define PWM_CTL_MAGIC 0x41493651u /* 'AI6Q' */
 #define PWM_OUT_MAGIC 0x41493652u /* 'AI6R' */
@@ -114,6 +117,9 @@ static inline void pwm_clamp(uint32_t *period, uint32_t *duty, uint32_t *dead)
 	if (*duty > pwm_duty_max(*period, *dead)) {
 		*duty = pwm_duty_max(*period, *dead);
 	}
+	*period = PWM_TICKS(*period);
+	*duty = PWM_TICKS(*duty);
+	*dead = PWM_TICKS(*dead);
 }
 
 #endif

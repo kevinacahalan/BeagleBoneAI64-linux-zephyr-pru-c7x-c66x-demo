@@ -66,8 +66,8 @@ usage: ai64-demo [--tmux] [--attach]
              DSPs with their firmware. Then print one console. Each line is
              prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
              [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], or [Fabric].
-  --tmux     Same start, in tmux session ai64. Windows: linux, zephyr,
-             rtu0, r5f0_1, r5f1_0, r5f1_1, pwm, sched, c66x0, c66x1, c7x,
+  --tmux     Same start, in tmux session ai64. Windows: linux, r5f0_0,
+             r5f0_1, r5f1_0, r5f1_1, rtu0, pwm, sched, c66x0, c66x1, c7x,
              fabric.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
@@ -500,7 +500,6 @@ if [[ $missing -eq 1 ]]; then
 	echo "RPMsg devices did not show up" >&2
 	exit 1
 fi
-ZEPHYR_DEV=${R5_DEV[r5f0_0]}
 
 as_root chmod a+rw "${R5_DEV[@]}" "$RTU0_DEV"
 # ai64 pwm, sched, fabric, and chunk use /dev/mem. Root can already; other users get
@@ -520,17 +519,16 @@ as_root chmod 0660 /dev/mem
 
 mkdir -p "$RUN"
 rm -f "$RUN"/*.in
-mkfifo "$RUN/zephyr.in" "$RUN/rtu0.in" "$RUN/r5f0_1.in" "$RUN/r5f1_0.in" "$RUN/r5f1_1.in"
+mkfifo "$RUN/rtu0.in" "$RUN/r5f0_0.in" "$RUN/r5f0_1.in" "$RUN/r5f1_0.in" "$RUN/r5f1_1.in"
 
 if [[ $USE_TMUX -eq 1 ]]; then
 	tmux kill-session -t "$SESSION" 2>/dev/null || true
 	tmux new-session -d -s "$SESSION" -n linux
-	tmux new-window -d -t "$SESSION" -n zephyr
-	tmux new-window -d -t "$SESSION" -n rtu0
-	for label in r5f0_1 r5f1_0 r5f1_1; do
+	for label in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
 		tmux new-window -d -t "$SESSION" -n "$label"
 		tmux send-keys -t "$SESSION:$label" "$BIN erpc $label ${R5_DEV[$label]} $RUN/$label.in" C-m
 	done
+	tmux new-window -d -t "$SESSION" -n rtu0
 	tmux new-window -d -t "$SESSION" -n pwm
 	tmux send-keys -t "$SESSION:pwm" "$BIN pwm" C-m
 	tmux new-window -d -t "$SESSION" -n sched
@@ -542,7 +540,6 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	done
 	tmux new-window -d -t "$SESSION" -n fabric
 	tmux send-keys -t "$SESSION:fabric" "$BIN fabric" C-m
-	tmux send-keys -t "$SESSION:zephyr" "$BIN erpc $ZEPHYR_DEV $RUN/zephyr.in" C-m
 	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
 	tmux send-keys -t "$SESSION:linux" "$BIN linux $RUN" C-m
 	tmux select-window -t "$SESSION:linux"
@@ -590,8 +587,7 @@ spawn_prefixed() {
 	pids+=("$!")
 }
 
-spawn_prefixed '[R5F0_0]' "$RUN/r5f0_0.out" "$BIN" erpc "$ZEPHYR_DEV" "$RUN/zephyr.in"
-for label in r5f0_1 r5f1_0 r5f1_1; do
+for label in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
 	spawn_prefixed "[${label^^}]" "$RUN/$label.out" "$BIN" erpc "$label" "${R5_DEV[$label]}" "$RUN/$label.in"
 done
 spawn_prefixed '[RTU0]' "$RUN/rtu0.out" "$BIN" peer rtu0 "$RTU0_DEV" "$RUN/rtu0.in"

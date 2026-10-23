@@ -13,12 +13,13 @@ project(ai64_r5 C CXX)
 set(ERPC ${CMAKE_CURRENT_LIST_DIR}/../../third_party/erpc/erpc_c)
 
 # "r5f0_0" for board beaglebone_ai64/j721e/main_r5f0_0. The code names its
-# core in replies and logs with it.
+# core in logs with it, and in replies with AI64_CORE_NAME, "R5F0_0".
 string(REGEX MATCH "r5f[0-9]_[0-9]" AI64_CORE "${BOARD_QUALIFIERS}")
 if(NOT AI64_CORE)
   message(FATAL_ERROR "zephyr/r5 builds for a main-domain R5F core, not ${BOARD}${BOARD_QUALIFIERS}")
 endif()
-target_compile_definitions(app PRIVATE AI64_CORE="${AI64_CORE}")
+string(TOUPPER "${AI64_CORE}" AI64_CORE_NAME)
+target_compile_definitions(app PRIVATE AI64_CORE="${AI64_CORE}" AI64_CORE_NAME="${AI64_CORE_NAME}")
 
 # Its node number on the fabric (zephyr/include/ai64_fabric.h).
 set(AI64_FAB_NODE_r5f0_0 1)

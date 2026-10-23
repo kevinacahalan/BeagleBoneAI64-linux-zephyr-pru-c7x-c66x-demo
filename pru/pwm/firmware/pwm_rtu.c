@@ -11,8 +11,8 @@
  *     which takes status, pwm <period_ns> <duty_ns> (a fixed duty),
  *     dead <ns>, steps <ms>, and sweep <ms> (0 stops either). Anything
  *     else is echoed.
- *   - It starts the slice stepping through AI64_PWM_STEP_PCT every
- *     AI64_PWM_DEFAULT_STEPS_MS.
+ *   - It starts the slice stepping through AI64_PWM_STEP_HZ and
+ *     AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS.
  *   - It writes what it was asked, clamped, to the control record for the
  *     slice's Tx_PRU (pwm_ipc.h), and about every 10 ms publishes the
  *     slice's struct ai64_pwm_status (ai64_shm.h) in its fabric page.
@@ -40,11 +40,11 @@
 #if AI64_SLICE == 0
 #define WHO     "ICSSG0 RTU0"
 #define ENGINE  AI64_PWM_SOFT
-#define OUTPUTS "PRU0's software PWM on P8.11 and P8.12"
+#define OUTPUTS "software PWM on P8.11 (A) and P8.12 (B)"
 #else
 #define WHO     "ICSSG0 RTU1"
 #define ENGINE  AI64_PWM_ICSSG
-#define OUTPUTS "PRU1's ICSSG PWM on P9.12 and P9.15"
+#define OUTPUTS "hardware PWM on P9.12 (A) and P9.15 (B)"
 #endif
 
 #define STATUS_TICKS AI64_FAB_US(10000)
@@ -102,22 +102,24 @@ static uint16_t reply_ask(const char *who)
 	uint16_t n = 0;
 
 	n = append_str(tx, n, sizeof(tx), who);
-	n = append_str(tx, n, sizeof(tx), " asked " WHO " for");
-	n = say_ns(n, " period ", ctl->period_ns);
-	n = say_ns(n, ", duty ", ctl->duty_ns);
-	n = say_ns(n, ", dead ", ctl->dead_ns);
+	n = append_str(tx, n, sizeof(tx), " asked " WHO " for " OUTPUTS ": ");
 	if (ctl->steps_ms) {
-		n = append_str(tx, n, sizeof(tx), ", duty stepping every ");
+		n = append_str(tx, n, sizeof(tx), "10, 15, 20 kHz x 10-90% duty, a step every ");
 		n = append_u32(tx, n, sizeof(tx), ctl->steps_ms);
 		n = append_str(tx, n, sizeof(tx), " ms");
+	} else {
+		n = say_ns(n, "period ", ctl->period_ns);
+		n = say_ns(n, ", A high ", ctl->duty_ns);
+		if (ctl->sweep_ms) {
+			n = append_str(tx, n, sizeof(tx), " sweeping every ");
+			n = append_u32(tx, n, sizeof(tx), ctl->sweep_ms);
+			n = append_str(tx, n, sizeof(tx), " ms");
+		}
 	}
-	if (ctl->sweep_ms) {
-		n = append_str(tx, n, sizeof(tx), ", duty sweeping every ");
-		n = append_u32(tx, n, sizeof(tx), ctl->sweep_ms);
-		n = append_str(tx, n, sizeof(tx), " ms");
-	}
-	n = append_str(tx, n, sizeof(tx), "; it wrote control seq ");
-	return append_u32(tx, n, sizeof(tx), ctl_seq);
+	n = say_ns(n, ", dead band ", ctl->dead_ns);
+	n = append_str(tx, n, sizeof(tx), " (request ");
+	n = append_u32(tx, n, sizeof(tx), ctl_seq);
+	return append_str(tx, n, sizeof(tx), ")");
 }
 
 /* Change one thing, keep the rest of the last request. A duty is fixed. */
@@ -179,10 +181,10 @@ static uint16_t reply_status(void)
 	volatile struct pwm_out *out = PWM_OUT;
 	uint16_t n = 0;
 
-	n = append_str(tx, n, sizeof(tx), OUTPUTS ":");
+	n = append_str(tx, n, sizeof(tx), OUTPUTS " now:");
 	n = say_ns(n, " period ", out->period_ns);
-	n = say_ns(n, ", duty ", out->duty_ns);
-	n = say_ns(n, ", dead ", out->dead_ns);
+	n = say_ns(n, ", A high ", out->duty_ns);
+	n = say_ns(n, ", dead band ", out->dead_ns);
 	n = append_str(tx, n, sizeof(tx), ", ");
 	n = append_u32(tx, n, sizeof(tx), out->periods);
 	n = append_str(tx, n, sizeof(tx), " periods, ");
@@ -206,10 +208,10 @@ static void publish(uint32_t now)
 	}
 	if (mod->ctl_seq == ctl_seq && ack_seq != ctl_seq && out->next_seq) {
 		ack_seq = ctl_seq;
-		n = append_str(tx, 0, sizeof(tx), OUTPUTS " follows control seq ");
+		n = append_str(tx, 0, sizeof(tx), OUTPUTS " runs request ");
 		n = append_u32(tx, n, sizeof(tx), ack_seq);
-		n = say_ns(n, ": period ", out->period_ns);
-		n = say_ns(n, ", duty ", out->duty_ns);
+		n = say_ns(n, ", now period ", out->period_ns);
+		n = say_ns(n, ", A high ", out->duty_ns);
 		tell(n);
 	}
 	/* At most a line a second about late edges. */

@@ -49,6 +49,8 @@ struct ai64_bulk {
 #define AI64_PWM_EDGE_MIN_NS   400u
 #define AI64_PWM_DEAD_MIN_NS   8u
 #define AI64_PWM_SWEEP_MAX_MS  60000u
+/* The ICSSG generators' A rises this far into each period (pwm_ipc.h). */
+#define AI64_PWM_T0_NS         40u
 
 /* What the ICSSG generators start with: 20 kHz, 25%, 1 us dead band. */
 #define AI64_PWM_DEFAULT_PERIOD_NS 50000u
@@ -56,11 +58,15 @@ struct ai64_bulk {
 #define AI64_PWM_DEFAULT_DEAD_NS   1000u
 
 /*
- * Steps: every generator can hold each of these duties, in percent of its
- * period, for steps_ms, in turn. All three start doing it every 5 ms, so a
- * logic analyzer shows them change together; a request for a fixed duty
- * stops it.
+ * Steps: every generator can run a short program, a step every steps_ms:
+ * at each frequency of AI64_PWM_STEP_HZ in turn, each duty of
+ * AI64_PWM_STEP_PCT (percent of the period) in turn, then over again. That
+ * is 15 steps, 75 ms at 5 ms a step. All three start doing it, so a logic
+ * analyzer shows them change together; a request for a fixed period and
+ * duty stops it.
  */
+#define AI64_PWM_STEP_FREQS        3u
+#define AI64_PWM_STEP_HZ           { 10000u, 15000u, 20000u }
 #define AI64_PWM_STEPS             5u
 #define AI64_PWM_STEP_PCT          { 10u, 25u, 50u, 75u, 90u }
 #define AI64_PWM_DEFAULT_STEPS_MS  5u
@@ -93,7 +99,7 @@ struct ai64_pwm_status {
 	uint32_t ask_duty_ns;
 	uint32_t ask_dead_ns;
 	uint32_t sweep_ms;   /* 0, or the duty sweeps min-max-min this often */
-	uint32_t steps_ms;   /* 0, or the duty steps through AI64_PWM_STEP_PCT, this long each */
+	uint32_t steps_ms;   /* 0, or it steps through AI64_PWM_STEP_HZ x AI64_PWM_STEP_PCT, this long each */
 	uint32_t run_period_ns;
 	uint32_t run_duty_ns;
 	uint32_t run_dead_ns;

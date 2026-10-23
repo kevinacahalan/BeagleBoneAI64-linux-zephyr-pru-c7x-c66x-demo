@@ -1,0 +1,16 @@
+diff --git a/drivers/timer/ti_dmtimer.c b/drivers/timer/ti_dmtimer.c
+index c3fb16cd478..b87fdd004b3 100644
+--- a/drivers/timer/ti_dmtimer.c
++++ b/drivers/timer/ti_dmtimer.c
+@@ -88,7 +88,10 @@ static void ti_dmtimer_isr(void *param)
+ 	uint32_t delta_cycles = curr_cycle - data->last_cycle;
+ 	uint32_t delta_ticks = delta_cycles / CYC_PER_TICK;
+ 
+-	data->last_cycle = curr_cycle;
++	/* advance by whole ticks only; the cycles past the last tick boundary
++	 * belong to the next announcement, or the clock would lose them
++	 */
++	data->last_cycle += delta_ticks * CYC_PER_TICK;
+ 
+ 	/* ACK match interrupt */
+ 	TI_DM_TIMER_WRITE(systick_timer_dev, 1, IRQSTATUS, MAT_IT_FLAG);

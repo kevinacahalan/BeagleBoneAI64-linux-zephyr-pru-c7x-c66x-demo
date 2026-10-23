@@ -25,7 +25,8 @@ static volatile struct ai64_bulk *const bulk =
 	(volatile struct ai64_bulk *)AI64_BULK_ADDR;
 #endif
 
-#define REPLY_PREFIX "zephyr " AI64_CORE ": "
+#define WHO_PREFIX   "Zephyr on " AI64_CORE_NAME ": "
+#define REPLY_PREFIX "Zephyr on " AI64_CORE_NAME " got: "
 
 char *say(const char *msg)
 {
@@ -74,11 +75,11 @@ char *spiWrite(const char *text)
 		return NULL;
 	}
 	if (ret) {
-		snprintf(out, 64, REPLY_PREFIX "spi write failed (%d)", ret);
+		snprintf(out, 64, WHO_PREFIX "spi write failed (%d)", ret);
 		LOG_ERR("erpc spi fail %d", ret);
 		return out;
 	}
-	snprintf(out, 64, REPLY_PREFIX "spi wrote %u bytes", (unsigned int)n);
+	snprintf(out, 64, WHO_PREFIX "spi wrote %u bytes", (unsigned int)n);
 	LOG_INF("%s", out);
 	return out;
 }
