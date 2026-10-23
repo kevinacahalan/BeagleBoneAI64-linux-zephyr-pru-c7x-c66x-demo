@@ -18,6 +18,8 @@
 ;     - FN_MCS_CFG maps every core's task manager event before it starts
 ;       IEP0, not after: with no auto-clear, a compare that fires before
 ;       its core's task manager listens would stall that task for good.
+;       Two periods after the start it clears the task flags once more,
+;       for a restart under running tasks.
 ;     - The schedule's step and period can be set from make: MCS_STEP_NS
 ;       (default 4, one core clock: TI's back-to-back schedule) and
 ;       MCS_PERIOD_NS (default 100).
@@ -185,6 +187,15 @@ TOGGLE_VAL	.set	0x050a8000
 	; set default increment to 3 for 333 MHz , 4 for 250 MHz
 	ldi 	r5, 0x441
 	sbbo 	&r5, r4, ICSS_IEP_GLOBAL_CFG_REG, 2
+	; (J721E: a restart stops the counter under tasks that are running,
+	; and a compare's flag can then be set without an event its task
+	; manager sees. Two periods in, clear the six task flags once more.)
+	ldi32 	r5, (MCS_PERIOD_NS/4)
+mcs_wait:
+	sub 	r5, r5, 1
+	qbne 	mcs_wait, r5, 0
+	ldi 	r5, 0xfc
+	sbbo 	&r5, r4, ICSS_IEP_CMP_STATUS_REG, 4
    	; pre-load for toggling, and PRU0's compare status bit (CMP7)
    	ldi32 r24, TOGGLE_VAL
    	ldi32 r25, (1 << 7)
