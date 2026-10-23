@@ -56,7 +56,7 @@ The Zephyr image muxes its own pins from its devicetree, the way the PocketBeagl
 - **SPI7**: the same overlay. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed. The board firmware leaves MCSPI7 powered (`k3conf dump device` shows `DEVICE_STATE_ON`).
 - **UART2**: the upstream Zephyr board file. Any 3.3 V USB-serial adapter reads the console there.
 
-A Saleae Logic Pro at 100 MS/s measured P9.25 at 1,000,051.8 ns a period and 250,008.3 ns high, and P8.11 at 50,001.8 ns a period, its edges within ±30 ns.
+A Saleae Logic Pro at 100 MS/s measured P9.25 at 1,000,051.8 ns a period and 250,008.3 ns high, P8.11 and P8.12 at 50,001.8 ns a period, 12,500.2 and 35,460.4 ns high, edges within ±30 ns, and P9.12 and P9.15 at 12,500.3 and 35,461.0 ns high, edges within one 10 ns sample; the dead band between each pair measured 1,000 ns after A and 1,040 ns before it. P8.17 repeats every 100 ns, its steps 4 to 8 ns apart, at 500 MS/s.
 
 ## Check on the board
 

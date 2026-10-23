@@ -314,6 +314,13 @@ All signals are 3.3 V. On a Saleae Logic, choose the 1.8 V threshold setting for
 
 On the bench, with a Saleae Logic Pro at 100 MS/s (10 ns steps), P9.25 measured a 1,000,051.8 ns period and 250,008.3 ns high, every edge within one 10 ns sample of the next, and 2 kHz after a fabric route asked for it (125,003.9 ns high). P8.11 measured a 50,001.8 ns period, and 5,000.1 ns high after `rtu0 pwm 50000 5000`; its edges move by up to ±30 ns, the polling of the software slice.
 
+| Pins | A high | B high | A falls to B rises | B falls to A rises | Edges |
+| --- | --- | --- | --- | --- | --- |
+| P8.11, P8.12 (software) | 12,500.2 ns | 35,460.4 ns | 1,000.5 ns | 1,040.6 ns | within ±30 ns |
+| P9.12, P9.15 (PWM module) | 12,500.3 ns | 35,461.0 ns | 1,000.3 ns | 1,040.2 ns | within one 10 ns sample |
+
+Both pairs ran a 50,001.8 ns period on the analyzer's clock: the SoC's and the analyzer's oscillators differ by 36 ppm. The dead band before A is 40 ns longer than after it, since a period starts 40 ns in. P8.17, captured alone at 500 MS/s, repeats every 100 ns (±2 ns, one sample) in 99% of periods, as low 4 ns, high 4 ns, low 4 to 8 ns, and high 84 to 88 ns: the steps of PRU1, RTU1, RTU0 and Tx_PRU1, then Tx_PRU0's high until PRU1's next low. A task starts within a core clock (4 ns) of its compare, so steps measure 4 to 6 ns; at 2 ns a sample the analyzer only just resolves them.
+
 `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
 ## How it works
@@ -460,7 +467,7 @@ Two things about the J721E's PWM module took finding out on the board. An IEP co
 
 The port keeps TI's files, names, and timing. What J721E needed: no clock or pin setup in PRU0, since Linux has done both; and, with no `PWM_EFC_EN`, the compare flags cleared in software. Each task clears its own, each core clears its own once its task manager is on, and PRU0 maps every task's event before it starts IEP0, and clears all six flags once more two periods later. Without those, a compare that fires before its core's task manager sees it leaves a flag nothing clears, and that core's task never runs again. `MCS_STEP_NS` and `MCS_PERIOD_NS`, on the make command line, change the schedule.
 
-`ai64 sched` reads PWM2_0's state over the bus, much slower than the tasks change it, and finds P8.17 high about 79% of the time, against 88% for the schedule; a logic analyzer sees the pattern itself only at a slower schedule, since 4 ns pulses are past most analyzers.
+`ai64 sched` reads PWM2_0's state over the bus, much slower than the tasks change it, and finds P8.17 high about 79% of the time, against 88% for the schedule. A Saleae Logic Pro at 500 MS/s sees the schedule itself: a 100 ns period, three 4 to 8 ns steps after PRU1's, and high the rest of the time ([Probe the pins](#probe-the-pins)). With `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000`, any analyzer does.
 
 ### Every core to every other: the fabric
 
