@@ -4,7 +4,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 
 - **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo.
 - **Zephyr** runs on all four main-domain Cortex-R5F cores, R5F0_0, R5F0_1, R5F1_0, and R5F1_1 (cluster 0 or 1, core 0 or 1), a copy on each. Each answers function calls from Linux (eRPC over RPMsg). R5F0_0 also writes SPI7, and drives a PWM on P9.25 with the SoC's EHRPWM4, through Zephyr's own EHRPWM driver. The driver gets its clock and power from the board's device manager over TI-SCI, which a small polled mailbox driver carries on these cores ([Zephyr and the device manager](#zephyr-and-the-device-manager-ti-sci)).
-- **ICSSG0 makes PWM two ways** ([PWM, two ways](#icssg0-pwm-two-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events. Each makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
+- **ICSSG0 makes PWM three ways** ([PWM, three ways](#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which slice 0's Tx_PRU only gives a period and duty, copying slice 0's A to P8.15. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
 - **ICSSG1 runs a port of TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler)** on all six of its cores: IEP0 compares start a task on each core in turn, 4 ns apart, and each task sets a header pin high or low ([The multicore scheduler](#icssg1-the-multicore-scheduler)).
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory.
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](#every-core-to-every-other-the-fabric)).
@@ -24,6 +24,7 @@ flowchart LR
     rtu0["RTU0"]
     tx0["Tx_PRU0<br/>modulator"]
     pru0["PRU0<br/>A, B on P8.11, P8.12"]
+    ecap["eCAP0<br/>A's copy on P8.15"]
   end
   subgraph s01["ICSSG0 slice 1, PWM module"]
     rtu1["RTU1"]
@@ -47,6 +48,7 @@ flowchart LR
   ai64 <-->|"RPMsg text"| rtu0
   rtu0 -->|"slice RAM"| tx0
   tx0 -->|"slice RAM"| pru0
+  tx0 -->|"period, duty"| ecap
   rtu1 -->|"slice RAM"| tx1
   tx1 -->|"slice RAM"| pru1
   mcs -->|"Linux reads its registers"| ai64
@@ -81,7 +83,7 @@ It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto
 - A Linux PC with `git`, `ssh`, `rsync`, `xz`, and either `podman` or `docker`. Every compiler runs in a container, so you don't install any toolchains.
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
 - Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
-- Optional: a logic analyzer, to watch SPI7, the three PWM generators, and the multicore scheduler on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
+- Optional: a logic analyzer, to watch SPI7, the four PWM generators, and the multicore scheduler on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
 
 Get the code:
 
@@ -198,7 +200,8 @@ Linux -> R5F0_0 (Zephyr): spi
 Linux -> R5F0_0 (Zephyr): steps 5
   R5F0_0: steps: P9.25 (EHRPWM4 output B) steps 10, 15, 20 kHz x 10-90% duty, 5 ms a step
 Linux -> ICSSG0 RTU0: status
-  software PWM on P8.11 (A) and P8.12 (B) now: period 50000 ns, A high 25000 ns, dead band 1000 ns, 91995 periods, 0 late edges
+  software PWM on P8.11 (A) and P8.12 (B) now: period 50000 ns, A high 5000 ns, dead band 1000 ns, 90899 periods, 0 late edges
+  hardware PWM on P8.15 (eCAP0, a copy of A) now: period 50000 ns, high 5000 ns, 96665 periods
 Linux -> R5F0_1 (Zephyr): say hello from linux
   R5F0_1: say "hello from linux": it replied "Zephyr on R5F0_1 got: hello from linux"
 Linux -> R5F1_0 (Zephyr): say hello from linux
@@ -216,31 +219,37 @@ R5F0_0: steps: P9.25 (EHRPWM4 output B) steps 10, 15, 20 kHz x 10-90% duty, 5 ms
 
 == rtu0
 rtu0 window: Linux and ICSSG0 RTU0 over RPMsg, on /dev/rpmsg5
-software PWM on P8.11 (A) and P8.12 (B) runs request 14, now period 100000 ns, A high 25000 ns
+software PWM on P8.11 (A) and P8.12 (B) runs request 3, now period 66664 ns, A high 6664 ns
 Linux -> rtu0: ping
 Linux sent "ping" to ICSSG0 RTU0, and it echoed it
 Linux -> rtu0: status
-software PWM on P8.11 (A) and P8.12 (B) now: period 50000 ns, A high 25000 ns, dead band 1000 ns, 91995 periods, 0 late edges
+software PWM on P8.11 (A) and P8.12 (B) now: period 50000 ns, A high 5000 ns, dead band 1000 ns, 90899 periods, 0 late edges
+hardware PWM on P8.15 (eCAP0, a copy of A) now: period 50000 ns, high 5000 ns, 96665 periods
 
 == pwm (every 10 s, what each PWM generator's core reports)
 pwm window ready: every 10 s, what each PWM generator's core reports it runs
 (read from shared memory; "now" is whichever step it was on)
 P8.11 + P8.12  software PWM: ICSSG0 slice 0, PRU0 sets the pins at the times it reads from IEP0
   stepping: 10, 15, 20 kHz, at each 10, 25, 50, 75, 90% duty, 5 ms a step
-  now: 10.000 kHz, 10.0% duty
-  P8.11 (A) high 10000 ns of each 100000 ns period, from 40 ns in
-  P8.12 (B) high 87960 ns: A inverted, but low for 1000 ns of dead band either side of A's pulse
-  15009 periods/s, 0 late edges (the latest edge 24 ns late)
+  now: 15.001 kHz, 75.0% duty
+  P8.11 (A) high 49996 ns of each 66664 ns period, from 40 ns in
+  P8.12 (B) high 14628 ns: A inverted, but low for 1000 ns of dead band either side of A's pulse
+  14996 periods/s, 0 late edges (the latest edge 24 ns late)
+P8.15          hardware PWM: ICSSG0's eCAP0 in APWM mode, a copy of P8.11 (A) that Tx_PRU0 sets
+  stepping: 10, 15, 20 kHz, at each 10, 25, 50, 75, 90% duty, 5 ms a step
+  now: 15.001 kHz, 75.0% duty
+  P8.15 high 49996 ns of each 66664 ns period
+  14996 periods/s, counted from the eCAP's period flag
 P9.12 + P9.15  hardware PWM: ICSSG0 slice 1, the ICSSG's PWM module toggles the pins on IEP1 compares
   stepping: 10, 15, 20 kHz, at each 10, 25, 50, 75, 90% duty, 5 ms a step
-  now: 15.001 kHz, 50.0% duty
-  P9.12 (A) high 33332 ns of each 66664 ns period, from 40 ns in
-  P9.15 (B) high 31292 ns: A inverted, but low for 1000 ns of dead band either side of A's pulse
-  14994 periods/s, 0 late edges
+  now: 15.001 kHz, 75.0% duty
+  P9.12 (A) high 49996 ns of each 66664 ns period, from 40 ns in
+  P9.15 (B) high 14628 ns: A inverted, but low for 1000 ns of dead band either side of A's pulse
+  14990 periods/s, 0 late edges
 P9.25          hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_0 (Zephyr's PWM driver)
   stepping: 10, 15, 20 kHz, at each 10, 25, 50, 75, 90% duty, 5 ms a step
-  now: 15.000 kHz, 25.0% duty
-  P9.25 high 16666 ns of each 66666 ns period
+  now: 15.000 kHz, 75.0% duty
+  P9.25 high 49999 ns of each 66666 ns period
 
 == sched (ICSSG1's schedule every 10 s)
 sched window ready, ICSSG1's schedule every 10 s
@@ -315,7 +324,7 @@ Type these in the linux window. The R5F commands start with the core's name: eac
 | `r5f0_0 spi [text]` | Zephyr writes `text`, or `hello`, on SPI7 (header P9) |
 | `r5f0_0 chunk <text>` | Linux writes the DDR bulk buffer, and Zephyr checks its CRC |
 | `r5f0_1 say <text>` | Zephyr on R5F0_1 replies `Zephyr on R5F0_1 got: <text>`. Same for `r5f1_0` and `r5f1_1`. Those three cores have no PWM, bulk buffer, or SPI, so `pwm`, `steps`, `chunk`, and `spi` fail there. |
-| `rtu0 pwm <period_ns> <duty_ns>` | RTU0 sets the software PWM on P8.11 (A) and P8.12 (B) to a fixed period and A high time, and stops the steps |
+| `rtu0 pwm <period_ns> <duty_ns>` | RTU0 sets the software PWM on P8.11 (A) and P8.12 (B), and its eCAP copy of A on P8.15, to a fixed period and A high time, and stops the steps |
 | `rtu0 steps <ms>` | the same steps as P9.25, counted in PWM periods by the slice's Tx_PRU; `steps 0` stops them |
 | `rtu0 sweep <ms>` | at the period of the last `pwm`, the Tx_PRU sweeps A's high time from its least to its most and back every `ms`; `sweep 0` stops it |
 | `rtu0 dead <ns>` | the dead band on each side of A's pulse |
@@ -338,11 +347,12 @@ All signals are 3.3 V; set a logic analyzer's threshold for 3.3 V logic.
 | Zephyr SPI7 | P9.28 CS, P9.31 CLK, P9.30 MOSI | `hello` at 1 MHz, mode 0, MSB first, once at startup and again for each `r5f0_0 spi` |
 | Hardware PWM, EHRPWM4 output B, set by Zephyr on R5F0_0 | P9.25 | the steps below, one output |
 | Software PWM, ICSSG0 slice 0 | P8.11 A, P8.12 B | the steps below on A; B the complement of A with dead band |
+| Hardware PWM, ICSSG0's eCAP0, set by Tx_PRU0 | P8.15 | the same period and high time as P8.11, one output, from the eCAP's own counter (its periods are not in phase with P8.11's) |
 | Hardware PWM, the ICSSG PWM module, ICSSG0 slice 1 | P9.12 A, P9.15 B | the same as P8.11 and P8.12, from the PWM module instead of software |
 | Multicore scheduler, ICSSG1 | P8.17 | low from 8 to 12 ns and from 16 to 24 ns of every 100 ns, high the rest |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
 
-**The steps.** All three PWM generators run the same 15-step program, 5 ms a step, 75 ms in all, then over again: 10 kHz at 10, 25, 50, 75, and 90% duty, then 15 kHz at the same five, then 20 kHz. The program keeps the GTC's time, the SoC's 200 MHz counter: step `n` runs while `GTC / 5 ms` counts `n` modulo 15. Every generator works out from the GTC which step it is on, so all three change step together, however far apart they were started. Each takes a new step at the end of one of its own periods, the one nearest the step's GTC time, and the three's periods are not in phase with each other, so one changes up to about half a period before or after another: a few tens of µs. The 15 kHz period is 66,664 ns, the nearest multiple of 4 ns, on the ICSSG0 slices.
+**The steps.** All four PWM generators run the same 15-step program, 5 ms a step, 75 ms in all, then over again: 10 kHz at 10, 25, 50, 75, and 90% duty, then 15 kHz at the same five, then 20 kHz. The program keeps the GTC's time, the SoC's 200 MHz counter: step `n` runs while `GTC / 5 ms` counts `n` modulo 15. Every generator works out from the GTC which step it is on, so all three change step together, however far apart they were started. Each takes a new step at the end of one of its own periods, the one nearest the step's GTC time, and the three's periods are not in phase with each other, so one changes up to about half a period before or after another: a few tens of µs. The 15 kHz period is 66,664 ns, the nearest multiple of 4 ns, on the ICSSG0 slices.
 
 **A and B.** On P8.11/P8.12 and on P9.12/P9.15, B is not simply A inverted. In a period of `P` ns with A high for `D` ns and a dead band of `d` ns (1000 ns):
 
@@ -419,7 +429,7 @@ The stock Debian image gives EHRPWM4 and W26 to Linux with `k3-j721e-beaglebonea
 
 The driver had one bug on this board: it handed `clock_control_get_rate()` its `uint64_t` rate as a `uint32_t *`, which leaves the upper half unset, and `pwm_set()` then saw a clock rate in the billions and failed with `-ENOTSUP`. `zephyr/patches/0001-drivers-pwm-ti_am3352_ehrpwm-set-all-64-bits-of-the-rate.patch` fixes it.
 
-Every 10 ms R5F0_0's fabric thread publishes the PWM's `struct ai64_pwm_status` (`zephyr/include/ai64_shm.h`) in its fabric page, as the ICSSG0 RTUs do for their slices, and the `pwm` window shows all three. A fabric route's `pwm` action takes about 120 µs on R5F0_0, because `pwm_set()` asks the device manager for the clock rate each time.
+Every 10 ms R5F0_0's fabric thread publishes the PWM's `struct ai64_pwm_status` (`zephyr/include/ai64_shm.h`) in its fabric page, as the ICSSG0 RTUs do for their slices, and the `pwm` window shows it with the other three. A fabric route's `pwm` action takes about 120 µs on R5F0_0, because `pwm_set()` asks the device manager for the clock rate each time.
 
 ### R5F caches
 
@@ -469,7 +479,7 @@ Each core's makefile names its image, its sources, and its defines, and includes
 | Core | remoteproc | Image | Project, and what it runs |
 | --- | --- | --- | --- |
 | ICSSG0 RTU0 | `b004000.rtu` | `ai64-icssg0-rtu0.elf` | pwm, slice 0: talks, over RPMsg and the fabric (node 8, `g0rtu0`) |
-| ICSSG0 Tx_PRU0 | `b00a000.txpru` | `ai64-icssg0-txpru0.elf` | pwm, slice 0: the modulator |
+| ICSSG0 Tx_PRU0 | `b00a000.txpru` | `ai64-icssg0-txpru0.elf` | pwm, slice 0: the modulator, and eCAP0 on P8.15 |
 | ICSSG0 PRU0 | `b034000.pru` | `ai64-icssg0-pru0.elf` | pwm, slice 0: PWM in software |
 | ICSSG0 RTU1 | `b006000.rtu` | `ai64-icssg0-rtu1.elf` | pwm, slice 1: talks, over the fabric (node 9, `g0rtu1`) |
 | ICSSG0 Tx_PRU1 | `b00c000.txpru` | `ai64-icssg0-txpru1.elf` | pwm, slice 1: the modulator |
@@ -485,9 +495,9 @@ In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 
 ICSSG1 keeps TI's design instead: every core runs a task, and nothing on it talks. `ai64 sched` reads its registers, and only reads them.
 
-### ICSSG0: PWM, two ways
+### ICSSG0: PWM, three ways
 
-Both slices make the same waveform, from the same request, with the same modulator. Only the PRU differs. [`pru/pwm/README.md`](pru/pwm/README.md) has the details: the memory map, the four IPC records, and how each core uses them.
+Both slices make the same waveform, from the same request, with the same modulator. Only the PRU differs. A third way copies slice 0's A, with the ICSSG's eCAP. [`pru/pwm/README.md`](pru/pwm/README.md) has the details: the memory map, the four IPC records, and how each core uses them.
 
 | | Slice 0: in software | Slice 1: the ICSSG PWM module |
 | --- | --- | --- |
@@ -497,6 +507,8 @@ Both slices make the same waveform, from the same request, with the same modulat
 | Timing | within a few tens of nanoseconds; PRU0 counts the edges it was more than 100 ns late for | exact, on the 250 MHz IEP clock |
 
 The waveform is A high for `D` from 40 ns into a period of `P`, and B high from `D + d` after that until `d` before the period ends: B is A's complement with dead band `d` on each side ([drawn here](#probe-the-pins)). Both start with a 1 µs dead band, stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, 5 ms a step on the GTC's time, so they change step with each other and with P9.25. The Tx_PRU of each slice makes the steps, sweeps the duty up and down every `sweep_ms` instead, or passes a fixed duty through.
+
+The third way is ICSSG0's eCAP0 in APWM mode, on P8.15. It is a PWM generator in its own right: a 32-bit counter on the 250 MHz core clock that counts to a period and holds its pin high below a compare value, with shadow registers that load at a period's end. Slice 0's Tx_PRU gives it the period and high time it gives PRU0, during the eCAP period whose end is nearest the time A changes, and does nothing else with it. It has one output, so no B and no dead band, and its counter is not in phase with IEP0. [`pru/pwm/README.md`](pru/pwm/README.md#the-cores) has the details.
 
 Two things about the J721E's PWM module took finding out on the board. An IEP compare only fires again once software clears its status bit (AM64x's ICSSG has `PWM_EFC_EN` to do that, and J721E's does not), and in the active state an output only toggles: its active level does nothing, and CMP0 does not bring it back. So each pin has one compare, which PRU1 moves between that pin's rise and its fall as soon as it fires; TI's AM65x PWM firmware works the same way. And the set's trip inputs must be masked: unmasked and unconnected, they keep the set in its trip state, and its pins at Z.
 

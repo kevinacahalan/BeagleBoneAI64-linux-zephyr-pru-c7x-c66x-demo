@@ -195,8 +195,7 @@ struct ai64_fab_page {
 	uint32_t trip[2][AI64_FAB_MAX_HOPS];             /* 0x280 */
 	/* Whatever the node publishes for the others to read, such as a
 	 * PWM generator's struct ai64_pwm_status (ai64_shm.h). */
-	uint32_t app[32];                                /* 0x300 */
-	uint32_t pad0[(0x400u - 0x380u) / 4u];
+	uint32_t app[64];                                /* 0x300 */
 	/* The inbox. seq[s] and rseq[s] are written by sender s only:
 	 * byte c of seq[s] counts its class c messages, rseq[s] its routes. */
 	uint32_t seq[AI64_FAB_SLOTS];                    /* 0x400 */

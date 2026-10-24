@@ -20,6 +20,7 @@ J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
 | --- | --- | --- | --- | --- | --- |
 | P8.11 | AB24 | `0x0f4` | 0, `PRG0_PRU0_GPO17` | ICSSG0 PRU0 | software PWM, output A |
 | P8.12 | AH28 | `0x0f0` | 0, `PRG0_PRU0_GPO16` | ICSSG0 PRU0 | software PWM, output B |
+| P8.15 | AB29 | `0x0f8` | 4, `PRG0_ECAP0_IN_APWM_OUT` | ICSSG0 eCAP0, run by Tx_PRU0 | eCAP PWM, a copy of output A |
 | P9.12 | AE27 | `0x0b8` | 3, `PRG0_PWM2_A0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output A |
 | P9.15 | AD25 | `0x0c0` | 3, `PRG0_PWM2_B0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output B |
 | P8.17 | AF22 | `0x00c` | 3, `PRG1_PWM2_A0` | the six ICSSG1 cores | the multicore scheduler |
@@ -39,6 +40,10 @@ All signals are 3.3 V.
 ## ICSSG0 slice 0: P8.11 and P8.12
 
 PRU0 drives R30 bits 17 and 16. Mux mode 0 on balls AB24 and AH28 is `PRG0_PRU0_GPO17` and `PRG0_PRU0_GPO16`, which connect those bits to the pads. The overlay hangs the pinctrl on the `&pru0_0` node, so `pru_rproc` applies it when the core probes. ICSSG0's `GPCFG0` register stays 0, direct GPO mode.
+
+## ICSSG0 eCAP0: P8.15
+
+Mux mode 4 on ball AB29 is `PRG0_ECAP0_IN_APWM_OUT`, the pin of ICSSG0's eCAP: its capture input, or in APWM mode its PWM output. Tx_PRU0 runs the eCAP, so the overlay hangs the pinctrl on `&tx_pru0_0`. The eCAP stays in capture mode, not driving the pin, until the first request. ICSSG1's eCAP has a header pin too, P9.18 (ball AH22, mode 6, with Y2 held off), which the demo does not use.
 
 ## ICSSG0 slice 1: P9.12 and P9.15
 

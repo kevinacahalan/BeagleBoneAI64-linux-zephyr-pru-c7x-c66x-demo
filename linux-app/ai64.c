@@ -27,8 +27,9 @@
  *   R5F core it talks to, r5f0_0 (the default), r5f0_1, r5f1_0, or r5f1_1.
  *
  * ai64 pwm [seconds|once]
- *   Prints what the three PWM generators run: ICSSG0 slice 0 (software),
- *   ICSSG0 slice 1 (the ICSSG PWM module), and EHRPWM4 on P9.25 (Zephyr),
+ *   Prints what the four PWM generators run: ICSSG0 slice 0 (software),
+ *   its copy of A on ICSSG0's eCAP (P8.15), ICSSG0 slice 1 (the ICSSG PWM
+ *   module), and EHRPWM4 on P9.25 (Zephyr),
  *   from the status each one's talking core publishes in its fabric page.
  *
  * ai64 sched [seconds|once]
@@ -96,7 +97,8 @@ static void print_help(void)
 	printf("  r5f0_0 chunk <text>                 Linux writes the DDR bulk buffer, R5F0_0 checks it\n");
 	printf("  r5f0_0 spi [text]                   R5F0_0 writes SPI7\n");
 	printf("  r5f0_1|r5f1_0|r5f1_1 say <text>\n");
-	printf("  rtu0 pwm <period_ns> <duty_ns>      P8.11/P8.12 software PWM (ICSSG0 slice 0), fixed\n");
+	printf("  rtu0 pwm <period_ns> <duty_ns>      P8.11/P8.12 software PWM (ICSSG0 slice 0), and its\n"
+	       "                                      eCAP copy of A on P8.15, fixed\n");
 	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
 	printf("  rtu0 <text>                         RTU0 echoes it back (RPMsg)\n");
 	printf("  (P9.12/P9.15, ICSSG0 slice 1's hardware PWM, has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
@@ -111,7 +113,7 @@ static void print_usage(const char *prog)
 	printf("  linux <fifo-dir>          the linux window (ai64-demo starts it)\n");
 	printf("  erpc [core] <rpmsg-dev> <fifo>  an R5F core's window (core: r5f0_0 ...)\n");
 	printf("  peer <label> <rpmsg-dev> <fifo>  the rtu0 window\n");
-	printf("  pwm [seconds|once]        the three PWM generators (the pwm window)\n");
+	printf("  pwm [seconds|once]        the four PWM generators (the pwm window)\n");
 	printf("  sched [seconds|once]      ICSSG1's multicore scheduler (the sched window)\n");
 	printf("  pads                      check the pin mux of every demo pin\n");
 	printf("  trace <remoteproc-name>   follow a core's trace log (the c66x and c7x windows)\n");
@@ -301,6 +303,7 @@ static const struct {
 } pads[] = {
 	{ 0x0f4, 0x10000, "P8.11 AB24 ICSSG0 PRU0 GPO17" },
 	{ 0x0f0, 0x10000, "P8.12 AH28 ICSSG0 PRU0 GPO16" },
+	{ 0x0f8, 0x10004, "P8.15 AB29 PRG0_ECAP0_IN_APWM_OUT" },
 	{ 0x0b8, 0x10003, "P9.12 AE27 PRG0_PWM2_A0" },
 	{ 0x0c0, 0x10003, "P9.15 AD25 PRG0_PWM2_B0" },
 	{ 0x00c, 0x10003, "P8.17 AF22 PRG1_PWM2_A0" },
@@ -329,7 +332,7 @@ static int pads_main(void)
 		uint32_t v = padcfg[pads[i].pad / 4];
 		int ok = v == pads[i].want;
 
-		printf("0x%03x %-30s 0x%08x %s\n", pads[i].pad, pads[i].pin, v,
+		printf("0x%03x %-36s 0x%08x %s\n", pads[i].pad, pads[i].pin, v,
 		       ok ? "ok" : "DIFFERENT");
 		bad |= !ok;
 	}
@@ -600,22 +603,24 @@ static int every_arg(int argc, char **argv, int *once)
 }
 
 /*
- * The three PWM generators: the fabric node whose page holds its status
- * (struct ai64_pwm_status), the core that writes it, its pins, and what
- * makes the edges.
+ * The four PWM generators: the fabric node whose page holds its status
+ * (struct ai64_pwm_status, at word rec of the app block), the core that
+ * writes it, its pins, and what makes the edges.
  */
 static const struct {
 	const char *pins;
 	const char *a, *b;
-	uint32_t node;
+	uint32_t node, rec;
 	const char *core;
 	const char *how;
 } pwm_gens[] = {
-	{ "P8.11 + P8.12", "P8.11", "P8.12", AI64_FAB_G0RTU0, "b004000.rtu",
+	{ "P8.11 + P8.12", "P8.11", "P8.12", AI64_FAB_G0RTU0, 0, "b004000.rtu",
 	  "software PWM: ICSSG0 slice 0, PRU0 sets the pins at the times it reads from IEP0" },
-	{ "P9.12 + P9.15", "P9.12", "P9.15", AI64_FAB_G0RTU1, "b006000.rtu",
+	{ "P8.15", "P8.15", NULL, AI64_FAB_G0RTU0, AI64_PWM_STATUS2_WORDS, "b004000.rtu",
+	  "hardware PWM: ICSSG0's eCAP0 in APWM mode, a copy of P8.11 (A) that Tx_PRU0 sets" },
+	{ "P9.12 + P9.15", "P9.12", "P9.15", AI64_FAB_G0RTU1, 0, "b006000.rtu",
 	  "hardware PWM: ICSSG0 slice 1, the ICSSG's PWM module toggles the pins on IEP1 compares" },
-	{ "P9.25", "P9.25", NULL, AI64_FAB_R5F0_0, "5c00000.r5f",
+	{ "P9.25", "P9.25", NULL, AI64_FAB_R5F0_0, 0, "5c00000.r5f",
 	  "hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_0 (Zephyr's PWM driver)" },
 };
 
@@ -674,7 +679,8 @@ static int pwm_main(int argc, char **argv)
 		if (!page) {
 			return 1;
 		}
-		st[g] = (volatile struct ai64_pwm_status *)((volatile struct ai64_fab_page *)page)->app;
+		st[g] = (volatile struct ai64_pwm_status *)
+			&((volatile struct ai64_fab_page *)page)->app[pwm_gens[g].rec];
 		at[g] = st[g]->at;
 		periods[g] = st[g]->periods;
 	}
@@ -730,6 +736,9 @@ static int pwm_main(int argc, char **argv)
 				printf("\n");
 			} else {
 				printf("  %s high %u ns of each %u ns period\n", pwm_gens[g].a, duty, period);
+				if (s->engine == AI64_PWM_ECAP) {
+					printf("  %.0f periods/s, counted from the eCAP's period flag\n", n / dt);
+				}
 			}
 			if (s->ctl_ack != s->ctl_seq) {
 				printf("  its last request is not running yet\n");

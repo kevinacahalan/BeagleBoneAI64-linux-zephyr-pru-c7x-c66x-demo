@@ -77,6 +77,10 @@ struct pwm_mod {
 	uint32_t ctl_seq;  /* the pwm_ctl seq it follows */
 	uint32_t updates;  /* pwm_next records it wrote */
 	uint32_t duty_ns;  /* the last duty it wrote */
+	/* Slice 0: what eCAP0 runs on P8.15, the copy of A, and its periods */
+	uint32_t ecap_period_ns;
+	uint32_t ecap_duty_ns;
+	uint32_t ecap_periods;
 };
 
 #define PWM_CTL  ((volatile struct pwm_ctl *)PWM_IPC_CTL)

@@ -5,6 +5,7 @@
 //   ICSSG0 slice 0, PWM in software (pru/pwm):
 //     PRU0  P8.11  AB24  pad 0x0f4  mode 0  PRG0_PRU0_GPO17, output A
 //     PRU0  P8.12  AH28  pad 0x0f0  mode 0  PRG0_PRU0_GPO16, output B
+//     Tx_PRU0  P8.15  AB29  pad 0x0f8  mode 4  PRG0_ECAP0_IN_APWM_OUT, A's copy
 //   ICSSG0 slice 1, the ICSSG's PWM module (pru/pwm):
 //     PRU1  P9.12  AE27  pad 0x0b8  mode 3  PRG0_PWM2_A0, output A
 //     PRU1  P9.15  AD25  pad 0x0c0  mode 3  PRG0_PWM2_B0, output B
@@ -51,6 +52,12 @@
 		>;
 	};
 
+	ai64_pwm_ecap_pins: ai64-pwm-ecap-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x0f8, PIN_OUTPUT, 4) /* (AB29) P8.15 PRG0_ECAP0_IN_APWM_OUT */
+		>;
+	};
+
 	ai64_pwm_icssg_pins: ai64-pwm-icssg-pins {
 		pinctrl-single,pins = <
 			J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
@@ -72,6 +79,12 @@
 &pru0_0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&ai64_pwm_soft_pins>;
+};
+
+/* Tx_PRU0 runs eCAP0. */
+&tx_pru0_0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ai64_pwm_ecap_pins>;
 };
 
 &pru0_1 {

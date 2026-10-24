@@ -82,6 +82,28 @@
 #define ICSSG_NS_PER_CYCLE 4u
 
 /*
+ * eCAP0 (SPRUJ61 15.10). In APWM mode it is a PWM generator with one
+ * output: its 32-bit counter, on the core clock, counts from 0 to CAP1 (the
+ * period less one count), and the output is high while the count is below
+ * CAP2. CAP3 and CAP4 shadow CAP1 and CAP2, and load into them when the
+ * count reaches CAP1, so a new period and duty start with a period.
+ * ECCTL2, ECFLG, and ECCLR are 16-bit. ECFLG's CTR_PRD sets at every
+ * period's end, until written to ECCLR.
+ */
+#define ICSSG_ECAP0 0x00030000u
+#define ECAP_TSCTR(e)      ((e) + 0x00u)
+#define ECAP_CAP(e, n)     ((e) + 0x04u + 4u * (n)) /* CAP1 to CAP4 */
+#define ECAP_ECCTL2(e)     ((e) + 0x2au)
+#define ECAP_ECFLG(e)      ((e) + 0x2eu)
+#define ECAP_ECCLR(e)      ((e) + 0x30u)
+#define ICSSG_REG16(addr)  (*(volatile uint16_t *)(addr))
+
+#define ECAP_TSCTRSTOP (1u << 4) /* the counter runs */
+#define ECAP_SYNCO_OFF (2u << 6)
+#define ECAP_APWM      (1u << 9)
+#define ECAP_CTR_PRD   (1u << 6)
+
+/*
  * Task managers, one per core, at TM_CFG + 0x100 * the core's index. In
  * general purpose mode an event, such as an IEP compare, preempts the core
  * into a task at the PC in TS2_PC_S0; XIN 252 returns from it.

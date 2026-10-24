@@ -7,9 +7,10 @@
  * inside R5F0_0's carveout.
  * The PWM generators: the limits every one of them accepts, and the status
  * record each publishes in the app block of its fabric page
- * (ai64_fabric.h), for any core to read. Three of them: ICSSG0 slice 0
- * makes PWM in software, ICSSG0 slice 1 with the ICSSG's PWM module
- * (pru/pwm/), and Zephyr on R5F0_0 with the SoC's EHRPWM4 on P9.25.
+ * (ai64_fabric.h), for any core to read. Four of them: ICSSG0 slice 0
+ * makes PWM in software, and a copy of its output A with ICSSG0's eCAP;
+ * ICSSG0 slice 1 with the ICSSG's PWM module (pru/pwm/); and Zephyr on
+ * R5F0_0 with the SoC's EHRPWM4 on P9.25.
  *
  * Do not put a loadable ELF section on the DDR addresses. The Zephyr overlay
  * and these macros must stay on the same addresses.
@@ -100,6 +101,7 @@ static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_
 #define AI64_PWM_SOFT   0u /* a PRU writing R30, timed by IEP0 */
 #define AI64_PWM_ICSSG  1u /* the ICSSG's PWM module, on IEP1 compares */
 #define AI64_PWM_EHRPWM 2u /* a SoC EHRPWM, through Zephyr's driver */
+#define AI64_PWM_ECAP   3u /* an ICSSG's eCAP in APWM mode */
 
 #define AI64_PWM_MAGIC 0x41493650u /* 'AI6P' */
 
@@ -112,6 +114,9 @@ static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_
  * passed. late_max_ns is the latest software edge since start.
  */
 #define AI64_PWM_LATE_NS 100u
+
+/* ICSSG0 RTU0 publishes the eCAP's record this many words into its app block. */
+#define AI64_PWM_STATUS2_WORDS 32u
 
 struct ai64_pwm_status {
 	uint32_t magic;

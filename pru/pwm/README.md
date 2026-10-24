@@ -1,11 +1,12 @@
-# PWM, two ways
+# PWM, three ways
 
 ## Introduction
 
-ICSSG0's two slices make the same PWM waveform in two different ways:
+ICSSG0 makes the same PWM waveform in three different ways:
 
 - **Slice 0, in software.** PRU0 drives both outputs on its own pins (R30) and times every edge by polling IEP0.
 - **Slice 1, in hardware.** The ICSSG's PWM module makes the edges, on IEP1 compare events. PRU1 only schedules the next compare.
+- **ICSSG0's eCAP, in hardware.** eCAP0 in APWM mode copies slice 0's output A to P8.15 from its own counter. Tx_PRU0 only gives it a new period and duty, and no core touches it between changes.
 
 Each slice splits its three cores the same way. The RTU talks to the rest of the SoC. The Tx_PRU is the modulator: it turns a request into the parameters of each coming period. The PRU makes the edges.
 
@@ -18,6 +19,7 @@ flowchart LR
   pru -->|"pwm_out"| tx
   tx -->|"pwm_mod"| rtu
   pru --> pins["A and B"]
+  tx -->|"slice 0: CAP3, CAP4"| ecap["eCAP0<br/>P8.15"]
 ```
 
 The layout follows TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects. Each core has its own directory, `firmware/beaglebone-ai64/<core>/`, with a `ti-pru-cgt/` directory for its makefile and linker script. Sources more than one core builds sit in `firmware/`, next to the project's memory map.
@@ -45,6 +47,7 @@ Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (
 | --- | --- | --- |
 | 0 | A on P8.11 (`PRG0_PRU0_GPO17`), B on P8.12 (`PRG0_PRU0_GPO16`) | PRU0, through R30 |
 | 1 | A on P9.12 (`PRG0_PWM2_A0`), B on P9.15 (`PRG0_PWM2_B0`) | the PWM module's set 2, pair 0, on IEP1 |
+| 0's eCAP | A's copy on P8.15 (`PRG0_ECAP0_IN_APWM_OUT`) | eCAP0, set by Tx_PRU0 |
 
 ## The cores
 
@@ -54,6 +57,9 @@ Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (
 | Tx_PRU0, Tx_PRU1 | `firmware/pwm_modulator.c` | Passes the requested duty through, steps through the program on the GTC's time, or sweeps the duty from its minimum to its maximum and back every `sweep_ms`, a step per period. |
 | PRU0 | `firmware/beaglebone-ai64/icss_g0_pru0_fw/main.c` | Spins on IEP0's count and writes R30 at each edge. Counts the edges it was more than 100 ns late for, and keeps the latest. |
 | PRU1 | `firmware/beaglebone-ai64/icss_g0_pru1_fw/main.c` | IEP1 counts nanoseconds. CMP0 ends the period, CMP1 toggles A, CMP2 toggles B. When a compare fires, PRU1 clears its status and rearms it for that pin's next edge. |
+| Tx_PRU0, again | `firmware/pwm_modulator.c` | Runs eCAP0 (below). RTU0 publishes the eCAP's own `struct ai64_pwm_status`, 32 words into its fabric page's app block. |
+
+**The eCAP.** In APWM mode eCAP0's 32-bit counter, on the 250 MHz core clock, counts from 0 to CAP1, the period less one count, and holds P8.15 high while the count is below CAP2. CAP3 and CAP4 shadow them, and load when the count reaches CAP1, so a change starts with a period. Whenever Tx_PRU0 gives PRU0 a new period and duty, it gives the eCAP the same, writing the shadows during the eCAP period whose end is nearest the time A changes, or, in steps, the step's GTC time. It counts the eCAP's periods from its `CTR_PRD` flag, so the count the `pwm` window shows comes from the eCAP itself. The eCAP has one output, so no B and no dead band, and its counter is not in phase with IEP0, so its edges do not line up with P8.11's. Two things to know about it: in capture mode CAP1 and CAP2 are capture registers, so a write to them does not stay (Tx_PRU0 selects APWM mode first), and its count survives a reboot (Tx_PRU0 zeroes it when it starts).
 
 **Why PRU1 rearms the compares.** On J721E a compare only fires again once software clears its status bit. AM64x has `PWM_EFC_EN` to clear it in hardware; J721E's `ICSSG_SA_MX_REG` has no such bit. An output in the active state only toggles: setting its active level to high or low has no effect, and CMP0 does not bring it back to its initial level. So each pin gets one compare, which PRU1 moves between that pin's rise and its fall. TI's AM65x PWM firmware for the `pwm-pru` Linux driver works the same way, and its 400 ns minimum pulse is the same limit.
 
@@ -79,7 +85,7 @@ The IPC block holds four records (`firmware/pwm_ipc.h`). Each has one writer. A 
 | `0x1f00` | `pwm_ctl`: the request, already clamped | RTU | Tx_PRU |
 | `0x1f40` | `pwm_next`: the coming periods' parameters, a seqlock | Tx_PRU | PRU |
 | `0x1f80` | `pwm_out`: what runs now, the period count, the late edges | PRU | RTU, Tx_PRU |
-| `0x1fc0` | `pwm_mod`: the request the modulator follows | Tx_PRU | RTU |
+| `0x1fc0` | `pwm_mod`: the request the modulator follows, and on slice 0 what the eCAP runs | Tx_PRU | RTU |
 
 The PRU reads `pwm_next` in the middle of a period, so it is a seqlock: the Tx_PRU makes `seq` odd while it writes, and the PRU only takes a record whose `seq` is even and the same before and after.
 
@@ -93,7 +99,7 @@ From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project an
 
 | What | How |
 | --- | --- |
-| See all three PWM generators | `sudo ai64 pwm` (the `pwm` window) |
+| See all four PWM generators | `sudo ai64 pwm` (the `pwm` window) |
 | Slice 0 | in the `linux` window: `rtu0 pwm <period_ns> <duty_ns>`, `rtu0 dead <ns>`, `rtu0 sweep <ms>` (0 stops it), `rtu0 status` |
 | Either slice, from any core | `sudo ai64 fabric route <nodes...> g0rtu1 pwm <period_ns> <duty_ns>`, likewise `dead` and `sweep`; the first PWM generator on the route takes it |
 

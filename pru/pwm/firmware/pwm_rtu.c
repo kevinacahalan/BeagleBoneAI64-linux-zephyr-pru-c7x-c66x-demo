@@ -16,6 +16,9 @@
  *   - It writes what it was asked, clamped, to the control record for the
  *     slice's Tx_PRU (pwm_ipc.h), and about every 10 ms publishes the
  *     slice's struct ai64_pwm_status (ai64_shm.h) in its fabric page.
+ *     Slice 0's Tx_PRU also runs eCAP0 on P8.15, a copy of A from the same
+ *     request, and RTU0 publishes its record too, AI64_PWM_STATUS2_WORDS
+ *     into the app block.
  *   - It says when the outputs follow a new request, and when the PRU
  *     reports late edges.
  */
@@ -41,17 +44,20 @@
 #define WHO     "ICSSG0 RTU0"
 #define ENGINE  AI64_PWM_SOFT
 #define OUTPUTS "software PWM on P8.11 (A) and P8.12 (B)"
+#define ECAP_OUT "hardware PWM on P8.15 (eCAP0, a copy of A)"
+#define ASKED   OUTPUTS ", and its copy on P8.15"
 #else
 #define WHO     "ICSSG0 RTU1"
 #define ENGINE  AI64_PWM_ICSSG
 #define OUTPUTS "hardware PWM on P9.12 (A) and P9.15 (B)"
+#define ASKED   OUTPUTS
 #endif
 
 #define STATUS_TICKS AI64_FAB_US(10000)
 #define LATE_TICKS   AI64_FAB_US(1000000)
 
 static uint32_t ctl_seq, ack_seq, late_told, late_at;
-static char tx[176];
+static char tx[224];
 #ifdef AI64_RPMSG
 static char cmd[56];
 #endif
@@ -102,7 +108,7 @@ static uint16_t reply_ask(const char *who)
 	uint16_t n = 0;
 
 	n = append_str(tx, n, sizeof(tx), who);
-	n = append_str(tx, n, sizeof(tx), " asked " WHO " for " OUTPUTS ": ");
+	n = append_str(tx, n, sizeof(tx), " asked " WHO " for " ASKED ": ");
 	if (ctl->steps_ms) {
 		n = append_str(tx, n, sizeof(tx), "10, 15, 20 kHz x 10-90% duty, a step every ");
 		n = append_u32(tx, n, sizeof(tx), ctl->steps_ms);
@@ -191,6 +197,51 @@ static uint16_t reply_status(void)
 	n = append_u32(tx, n, sizeof(tx), out->late);
 	return append_str(tx, n, sizeof(tx), " late edges");
 }
+
+static uint16_t reply_ecap(void)
+{
+	volatile struct pwm_mod *mod = PWM_MOD;
+	uint16_t n = 0;
+
+	n = append_str(tx, n, sizeof(tx), ECAP_OUT " now:");
+	n = say_ns(n, " period ", mod->ecap_period_ns);
+	n = say_ns(n, ", high ", mod->ecap_duty_ns);
+	n = append_str(tx, n, sizeof(tx), ", ");
+	n = append_u32(tx, n, sizeof(tx), mod->ecap_periods);
+	return append_str(tx, n, sizeof(tx), " periods");
+}
+#endif
+
+#if AI64_SLICE == 0
+/* The eCAP's record: the slice's request, and what eCAP0 runs. */
+static void publish_ecap(uint32_t now)
+{
+	volatile struct ai64_pwm_status *s = (volatile struct ai64_pwm_status *)
+		&FAB_PAGE(FAB_NODE)->app[AI64_PWM_STATUS2_WORDS];
+	volatile struct pwm_ctl *ctl = PWM_CTL;
+	volatile struct pwm_mod *mod = PWM_MOD;
+
+	s->magic = 0;
+	s->engine = AI64_PWM_ECAP;
+	s->unit = 0;
+	s->channel = 0;
+	s->rpmsg = 1;
+	s->ask_period_ns = ctl->period_ns;
+	s->ask_duty_ns = ctl->duty_ns;
+	s->ask_dead_ns = 0;
+	s->sweep_ms = ctl->sweep_ms;
+	s->steps_ms = ctl->steps_ms;
+	s->run_period_ns = mod->ecap_period_ns;
+	s->run_duty_ns = mod->ecap_duty_ns;
+	s->run_dead_ns = 0;
+	s->periods = mod->ecap_periods;
+	s->late = 0;
+	s->late_max_ns = 0;
+	s->ctl_seq = ctl_seq;
+	s->ctl_ack = mod->ctl_seq;
+	s->at = now;
+	s->magic = AI64_PWM_MAGIC;
+}
 #endif
 
 static void publish(uint32_t now)
@@ -248,6 +299,9 @@ static void publish(uint32_t now)
 	s->ctl_ack = mod->ctl_seq;
 	s->at = now;
 	s->magic = AI64_PWM_MAGIC;
+#if AI64_SLICE == 0
+	publish_ecap(now);
+#endif
 }
 
 #ifdef AI64_RPMSG
@@ -279,6 +333,7 @@ static void run_cmd(void)
 		tell(set_steps(who, a));
 	} else if (same(cmd, "status")) {
 		rtu_rpmsg_send(tx, reply_status());
+		rtu_rpmsg_send(tx, reply_ecap());
 	} else {
 		n = append_str(tx, 0, sizeof(tx), "Linux sent \"");
 		n = append_str(tx, n, sizeof(tx), cmd);
