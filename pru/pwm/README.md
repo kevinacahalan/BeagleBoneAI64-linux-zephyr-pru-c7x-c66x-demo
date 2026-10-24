@@ -39,7 +39,7 @@ A period of `P` ns, with duty `D` and dead band `d`:
 
 B is A's complement, with `d` of dead band on each side; at least as much after B, before the next A. `T0` is 40 ns: an IEP compare at count 0 never fires, so the hardware slice's period starts there, and the software slice does the same.
 
-Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (`AI64_PWM_STEP_HZ`), and at each through 10, 25, 50, 75, and 90% duty (`AI64_PWM_STEP_PCT`), 5 ms a step. The Tx_PRU counts the step in PWM periods, so a step is exactly 50, 75, or 100 periods. `pwm <period_ns> <duty_ns>` fixes the period and duty, and `steps <ms>` and `sweep <ms>` set them moving again. Every time is a multiple of 4 ns, one IEP count, so 15 kHz runs as a 66,664 ns period. Every edge stays 400 ns (`AI64_PWM_EDGE_MIN_NS`) from the next on the same pin, which is the time PRU1 needs to rearm a compare, so 0% and 100% duty are out of range. The RTU clamps what it is asked for and reports what it runs.
+Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (`AI64_PWM_STEP_HZ`), and at each through 10, 25, 50, 75, and 90% duty (`AI64_PWM_STEP_PCT`), 5 ms a step. The steps keep the GTC's time (`ai64_pwm_step_at()` in `ai64_shm.h`): once a period the Tx_PRU reads the GTC, and takes the next step on the period end nearest the step's GTC time. So both slices, and Zephyr's P9.25, are on the same step at the same time, whenever each was started. `pwm <period_ns> <duty_ns>` fixes the period and duty, and `steps <ms>` and `sweep <ms>` set them moving again. Every time is a multiple of 4 ns, one IEP count, so 15 kHz runs as a 66,664 ns period. Every edge stays 400 ns (`AI64_PWM_EDGE_MIN_NS`) from the next on the same pin, which is the time PRU1 needs to rearm a compare, so 0% and 100% duty are out of range. The RTU clamps what it is asked for and reports what it runs.
 
 | Slice | Pins | Core that drives them |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (
 | Core | Source | What it does |
 | --- | --- | --- |
 | RTU0, RTU1 | `firmware/pwm_rtu.c` | The slice's fabric node (8, `g0rtu0`, and 9, `g0rtu1`). RTU0 also has an RPMsg channel to Linux. Writes requests to `pwm_ctl`, and every 10 ms publishes a `struct ai64_pwm_status` in its fabric page. |
-| Tx_PRU0, Tx_PRU1 | `firmware/pwm_modulator.c` | Passes the requested duty through, or sweeps it from its minimum to its maximum and back every `sweep_ms`, a step per period. |
+| Tx_PRU0, Tx_PRU1 | `firmware/pwm_modulator.c` | Passes the requested duty through, steps through the program on the GTC's time, or sweeps the duty from its minimum to its maximum and back every `sweep_ms`, a step per period. |
 | PRU0 | `firmware/beaglebone-ai64/icss_g0_pru0_fw/main.c` | Spins on IEP0's count and writes R30 at each edge. Counts the edges it was more than 100 ns late for, and keeps the latest. |
 | PRU1 | `firmware/beaglebone-ai64/icss_g0_pru1_fw/main.c` | IEP1 counts nanoseconds. CMP0 ends the period, CMP1 toggles A, CMP2 toggles B. When a compare fires, PRU1 clears its status and rearms it for that pin's next edge. |
 

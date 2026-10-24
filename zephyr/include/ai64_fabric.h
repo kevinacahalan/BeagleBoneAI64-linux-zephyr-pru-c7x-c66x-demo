@@ -51,8 +51,9 @@
 #define AI64_FABRIC_H_
 
 #include <stdint.h>
+#include "ai64_shm.h"
 
-#define AI64_FAB_ADDR      0xA9000000u
+#define AI64_FAB_ADDR     0xA9000000u
 #define AI64_FAB_SIZE      0x00020000u /* what the cores map; the overlay reserves 1 MiB */
 #define AI64_FAB_PAGE      0x2000u
 #define AI64_FAB_SLOTS     12u /* what the layout has room for */
@@ -77,9 +78,7 @@
 #define AI64_FAB_ROUTE     3u
 #define AI64_FAB_CLASSES   4u
 
-/* The GTC: CNTCV low word at +8. Its frequency is at +0x20. */
-#define AI64_GTC_ADDR      0x00A90000u
-#define AI64_GTC_HZ        200000000u
+/* The GTC is AI64_GTC_ADDR (ai64_shm.h). */
 #define AI64_FAB_US(us)    ((uint32_t)(us) * (AI64_GTC_HZ / 1000000u))
 
 /* Mailbox cluster 11. FIFO n is node n's doorbell; each holds 4 messages. */

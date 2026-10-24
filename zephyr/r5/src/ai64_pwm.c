@@ -7,10 +7,11 @@
  * Linux sets it over eRPC (setPwm for a fixed duty, setPwmSteps), and any
  * core with a fabric route's pwm or steps action for r5f0_0. Like the
  * ICSSG0 slices it starts stepping through AI64_PWM_STEP_HZ and
- * AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS, from a
- * delayable work item: each step asks the
- * device manager for the clock rate over TI-SCI, which an interrupt
- * handler must not. About every 10 ms the fabric thread publishes its
+ * AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS, on the GTC's
+ * time (ai64_shm.h), so it changes step with them. A delayable work item
+ * takes the steps. pwm_set() would ask the device manager for EHRPWM4's
+ * clock rate over TI-SCI each time, which takes longer than a 20 kHz
+ * period; the rate does not change, so this asks once and sets cycles. About every 10 ms the fabric thread publishes its
  * struct ai64_pwm_status (ai64_shm.h) in this node's fabric page, as the
  * ICSSG0 RTUs do for their PWM slices. The EHRPWM counts no periods, so
  * periods stays 0, and late does not apply.
@@ -32,9 +33,11 @@ static const uint32_t step_hz[AI64_PWM_STEP_FREQS] = AI64_PWM_STEP_HZ;
 static const uint32_t step_pct[AI64_PWM_STEPS] = AI64_PWM_STEP_PCT;
 static K_MUTEX_DEFINE(lock);
 static uint32_t ask_period, ask_duty, run_period, run_duty, ctl_seq, ctl_ack;
+/* EHRPWM4's clock, asked for once */
+static uint64_t cycles_per_sec;
 static uint32_t steps_ms, step_at;
-/* When the next step is due, in ticks: steps keep time, however long a step takes. */
-static int64_t step_due;
+/* The GTC low word when the next step begins. */
+static uint32_t step_next;
 
 static void step_work(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(step, step_work);
@@ -42,8 +45,16 @@ static K_WORK_DELAYABLE_DEFINE(step, step_work);
 /* Set the outputs; the caller holds the lock. */
 static int apply(uint32_t period_ns, uint32_t duty_ns)
 {
-	int ret = pwm_set_dt(&out, period_ns, duty_ns);
+	int ret = 0;
 
+	if (cycles_per_sec == 0u) {
+		ret = pwm_get_cycles_per_sec(out.dev, out.channel, &cycles_per_sec);
+	}
+	if (ret == 0) {
+		ret = pwm_set_cycles(out.dev, out.channel,
+				     (uint32_t)(period_ns * cycles_per_sec / NSEC_PER_SEC),
+				     (uint32_t)(duty_ns * cycles_per_sec / NSEC_PER_SEC), out.flags);
+	}
 	if (ret == 0) {
 		run_period = period_ns;
 		run_duty = duty_ns;
@@ -61,16 +72,59 @@ static int apply_step(uint32_t n)
 	return apply(period, (uint32_t)((uint64_t)period * step_pct[n % AI64_PWM_STEPS] / 100u));
 }
 
+static uint32_t gtc_lo(void)
+{
+	return sys_read32(AI64_GTC_ADDR + 8u);
+}
+
+static uint64_t gtc(void)
+{
+	uint32_t hi, lo;
+
+	do {
+		hi = sys_read32(AI64_GTC_ADDR + 12u);
+		lo = gtc_lo();
+	} while (sys_read32(AI64_GTC_ADDR + 12u) != hi);
+	return ((uint64_t)hi << 32) | lo;
+}
+
+/*
+ * When to set the next step, as a GTC low word. The EHRPWM takes a new
+ * period and duty at the end of its period, so half a period before the
+ * step's time puts the change on the period end nearest it.
+ */
+static uint32_t step_set_at(void)
+{
+	return step_next - (uint32_t)((uint64_t)run_period * AI64_GTC_HZ / 2000000000u);
+}
+
+#define GTC_PER_TICK (AI64_GTC_HZ / CONFIG_SYS_CLOCK_TICKS_PER_SEC)
+
+/*
+ * The work runs just after a kernel tick, so the GTC it reads is that
+ * tick's time: it wakes next on the tick nearest the step's time, within
+ * half a tick of it. A relative timeout would end on the tick after.
+ */
 static void step_work(struct k_work *work)
 {
+	uint32_t tick = gtc_lo();
+	int32_t left;
+
 	ARG_UNUSED(work);
 
 	k_mutex_lock(&lock, K_FOREVER);
 	if (steps_ms != 0u) {
-		step_at = step_at + 1u == AI64_PWM_STEP_FREQS * AI64_PWM_STEPS ? 0u : step_at + 1u;
-		(void)apply_step(step_at);
-		step_due += k_ms_to_ticks_ceil64(steps_ms);
-		k_work_reschedule(&step, K_TIMEOUT_ABS_TICKS(step_due));
+		left = (int32_t)(step_set_at() - tick);
+		/* A step is GTC time, so a late one is taken late, never skipped or doubled. */
+		if (left < (int32_t)GTC_PER_TICK / 2) {
+			step_at = step_at + 1u == AI64_PWM_STEP_FREQS * AI64_PWM_STEPS ? 0u : step_at + 1u;
+			(void)apply_step(step_at);
+			step_next += AI64_PWM_STEP_GTC(steps_ms);
+			left = (int32_t)(step_set_at() - tick);
+		}
+		left = left < 0 ? 0 : left;
+		k_work_reschedule(&step, K_TIMEOUT_ABS_TICKS(k_uptime_ticks() +
+							      (left + GTC_PER_TICK / 2u) / GTC_PER_TICK));
 	}
 	k_mutex_unlock(&lock);
 }
@@ -126,12 +180,11 @@ int ai64_pwm_steps(const char *who, uint32_t ms)
 	steps_ms = ms;
 	ctl_seq++;
 	if (ms != 0u) {
-		/* The first step now; the work moves on from it. */
-		step_at = 0;
+		/* The step the GTC is on now; the work, on the next tick, moves on from it. */
+		step_at = ai64_pwm_step_at(gtc(), ms, &step_next);
 		ask_duty = 0;
-		(void)apply_step(0);
-		step_due = k_uptime_ticks() + k_ms_to_ticks_ceil64(ms);
-		k_work_reschedule(&step, K_TIMEOUT_ABS_TICKS(step_due));
+		(void)apply_step(step_at);
+		k_work_reschedule(&step, K_TICKS(1));
 	} else {
 		(void)k_work_cancel_delayable(&step);
 		ctl_ack = ctl_seq;

@@ -5,14 +5,15 @@
  * the slice's PRU reads once a period. Three ways, by what was asked:
  *   - a fixed duty: passed through
  *   - steps_ms: each frequency of AI64_PWM_STEP_HZ in turn, and at each
- *     one each duty of AI64_PWM_STEP_PCT, steps_ms a step
+ *     one each duty of AI64_PWM_STEP_PCT, steps_ms a step, on the GTC's
+ *     time (ai64_shm.h), so both slices and P9.25 change step together
  *   - sweep_ms: from the minimum duty to the maximum and back every
  *     sweep_ms, a step per period
- * It counts the PRU's periods to keep time, so its pace is the PWM's own.
- * Both slices build this file; the PRUs that read pwm_next make their edges
- * in different ways (pwm_ipc.h).
+ * Once a period it writes the next period's parameters. Both slices build
+ * this file; the PRUs that read pwm_next make their edges in different
+ * ways (pwm_ipc.h).
  *
- * Like the PRU, it only touches its slice's data RAM.
+ * Besides its slice's data RAM it only reads the GTC.
  */
 
 #include <stdint.h>
@@ -25,7 +26,7 @@
 static const uint32_t step_hz[AI64_PWM_STEP_FREQS] = AI64_PWM_STEP_HZ;
 static const uint32_t step_pct[AI64_PWM_STEPS] = AI64_PWM_STEP_PCT;
 static uint32_t next_seq;
-static uint32_t step_period[AI64_PWM_STEP_FREQS], hold[AI64_PWM_STEP_FREQS];
+static uint32_t step_period[AI64_PWM_STEP_FREQS];
 static uint32_t step_duty[AI64_PWM_STEP_FREQS][AI64_PWM_STEPS];
 
 static void write_next(uint32_t period, uint32_t duty, uint32_t dead)
@@ -42,6 +43,22 @@ static void write_next(uint32_t period, uint32_t duty, uint32_t dead)
 	n->seq = next_seq;
 	mod->updates = mod->updates + 1u;
 	mod->duty_ns = duty;
+}
+
+#define GTC_LO (*(volatile uint32_t *)(AI64_GTC_ADDR + 8u))
+#define GTC_HI (*(volatile uint32_t *)(AI64_GTC_ADDR + 12u))
+/* GTC ticks in ns nanoseconds */
+#define GTC_TICKS(ns) ((ns) / (1000000000u / AI64_GTC_HZ))
+
+static uint64_t gtc(void)
+{
+	uint32_t hi, lo;
+
+	do {
+		hi = GTC_HI;
+		lo = GTC_LO;
+	} while (GTC_HI != hi);
+	return ((uint64_t)hi << 32) | lo;
 }
 
 /* periods of period_ns in ms milliseconds, at least 1 */
@@ -61,8 +78,8 @@ void main(void)
 	uint32_t period = 0, duty = 0, dead = 0, sweep = 0, steps = 0;
 	/* The sweep: lo to hi in half periods, step ns a period plus rem/half. */
 	uint32_t lo = 0, hi = 0, half = 1, step = 0, rem = 0, acc = 0, up = 1;
-	/* The steps: at frequency f (step_period), each duty held for hold[f] periods. */
-	uint32_t held = 0, f = 0, at = 0;
+	/* The steps: step n is at frequency f = n / 5 (step_period), duty at = n % 5; the next at GTC next. */
+	uint32_t f = 0, at = 0, next = 0, len = 0;
 	uint32_t i, j;
 
 	trace_init();
@@ -99,18 +116,18 @@ void main(void)
 					uint32_t top = pwm_duty_max(p, dead);
 
 					step_period[i] = p;
-					hold[i] = periods_in(steps, p);
 					for (j = 0; j < AI64_PWM_STEPS; j++) {
 						uint32_t d = (uint32_t)((uint64_t)p * step_pct[j] / 100u);
 
 						step_duty[i][j] = d < lo ? lo : d > top ? top : d;
 					}
 				}
-				held = 0;
-				f = 0;
-				at = 0;
-				period = step_period[0];
-				duty = step_duty[0][0];
+				len = AI64_PWM_STEP_GTC(steps);
+				i = ai64_pwm_step_at(gtc(), steps, &next);
+				f = i / AI64_PWM_STEPS;
+				at = i % AI64_PWM_STEPS;
+				period = step_period[f];
+				duty = step_duty[f][at];
 			} else if (sweep) {
 				half = periods_in(sweep, period) / 2u;
 				half = half ? half : 1u;
@@ -128,15 +145,21 @@ void main(void)
 			trace_puts(steps ? ": steps\n" : sweep ? ": sweeping\n" : ": fixed duty\n");
 		}
 		if ((steps || sweep) && out->periods != periods_seen) {
-			uint32_t n = out->periods - periods_seen;
-
 			periods_seen = out->periods;
 			if (steps) {
-				held += n;
-				if (held < hold[f]) {
+				/*
+				 * The PRU has just begun a period with what it last read;
+				 * this write is for the one after, which starts a period
+				 * from now. It takes the next step when that start is
+				 * past the step's GTC time less half a period, so the
+				 * change lands on the period end nearest it.
+				 */
+				uint32_t start = GTC_LO + GTC_TICKS(period);
+
+				if ((int32_t)(start + GTC_TICKS(period / 2u) - next) < 0) {
 					continue;
 				}
-				held = 0;
+				next += len;
 				if (++at == AI64_PWM_STEPS) {
 					at = 0;
 					f = f + 1u == AI64_PWM_STEP_FREQS ? 0 : f + 1u;

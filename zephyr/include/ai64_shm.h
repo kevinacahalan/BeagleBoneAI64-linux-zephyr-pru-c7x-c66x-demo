@@ -20,6 +20,13 @@
 #include <stdint.h>
 
 /*
+ * The GTC, the SoC's 64-bit timebase, which Linux's arch timer also
+ * counts: CNTCV at +8 (low word) and +0xc. Its frequency is at +0x20.
+ */
+#define AI64_GTC_ADDR 0x00A90000u
+#define AI64_GTC_HZ   200000000u
+
+/*
  * R5F0_0 owns 0xa2000000-0xa2ffffff (Linux reserved-memory, no-map).
  * Zephyr's board file splits it into vrings (1 MiB), resource table (1 MiB),
  * and DRAM (14 MiB at 0xa2200000). zephyr/r5/boards/ shrinks DRAM so the
@@ -61,16 +68,33 @@ struct ai64_bulk {
  * Steps: every generator can run a short program, a step every steps_ms:
  * at each frequency of AI64_PWM_STEP_HZ in turn, each duty of
  * AI64_PWM_STEP_PCT (percent of the period) in turn, then over again. That
- * is 15 steps, 75 ms at 5 ms a step. All three start doing it, so a logic
- * analyzer shows them change together; a request for a fixed period and
- * duty stops it.
+ * is 15 steps, 75 ms at 5 ms a step. A request for a fixed period and duty
+ * stops it.
+ *
+ * The program keeps the GTC's time, not its own: step n runs while
+ * GTC / AI64_PWM_STEP_GTC(steps_ms) % 15 == n. So generators asked for the
+ * same steps_ms change step together, however far apart they were
+ * started. Each changes at the end of one of its own periods, the one
+ * nearest the step's GTC time, so within about half a period of it.
  */
 #define AI64_PWM_STEP_FREQS        3u
 #define AI64_PWM_STEP_HZ           { 10000u, 15000u, 20000u }
 #define AI64_PWM_STEPS             5u
 #define AI64_PWM_STEP_PCT          { 10u, 25u, 50u, 75u, 90u }
 #define AI64_PWM_DEFAULT_STEPS_MS  5u
-#define AI64_PWM_STEPS_MAX_MS      60000u
+/* A step stays under 2^31 GTC ticks, so 32-bit GTC differences order it. */
+#define AI64_PWM_STEPS_MAX_MS      10000u
+#define AI64_PWM_STEP_GTC(ms)      ((uint32_t)(ms) * (AI64_GTC_HZ / 1000u))
+
+/* The step the program is on at GTC time gtc; *next is the GTC low word when the next begins. */
+static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_t *next)
+{
+	uint32_t len = AI64_PWM_STEP_GTC(steps_ms);
+	uint64_t n = gtc / len;
+
+	*next = (uint32_t)((n + 1u) * len);
+	return (uint32_t)(n % (AI64_PWM_STEP_FREQS * AI64_PWM_STEPS));
+}
 
 /* What makes the edges */
 #define AI64_PWM_SOFT   0u /* a PRU writing R30, timed by IEP0 */
