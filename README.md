@@ -13,52 +13,78 @@ The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasI
 
 ```mermaid
 flowchart LR
-  ai64["Linux ai64<br/>A72"]
-  r5["Zephyr<br/>R5F0_0"]
-  r5b["Zephyr<br/>R5F0_1, R5F1_0, R5F1_1"]
-  dm["device manager"]
-  ep["EHRPWM4<br/>P9.25"]
-  dsp["C66x 0, C66x 1, C7x"]
-  fab(("the fabric"))
-  subgraph s00["ICSSG0 slice 0, software PWM"]
-    rtu0["RTU0"]
-    tx0["Tx_PRU0<br/>modulator"]
-    pru0["PRU0<br/>A, B on P8.11, P8.12"]
-    ecap["eCAP0<br/>A's copy on P8.15"]
+  subgraph dsps["DSPs"]
+    c660["C66x 0"]
+    c661["C66x 1"]
+    c7x["C7x"]
   end
-  subgraph s01["ICSSG0 slice 1, PWM module"]
-    rtu1["RTU1"]
-    tx1["Tx_PRU1<br/>modulator"]
-    pru1["PRU1 and IEP1<br/>A, B on P9.12, P9.15"]
+  ai64["Linux ai64<br/>A72"]
+  subgraph zeph["Zephyr, a copy on each R5F"]
+    r500["R5F0_0"]
+    r501["R5F0_1"]
+    r510["R5F1_0"]
+    r511["R5F1_1"]
+  end
+  dm["device manager<br/>MCU R5F"]
+  spi7["SPI7<br/>P9.31 CLK, P9.28 CS0, P9.30 MOSI"]
+  ep["EHRPWM4<br/>P9.25"]
+  uart2["UART2, Zephyr console<br/>P8.34 TX, P8.22 RX"]
+  subgraph g0["ICSSG0"]
+    subgraph s00["slice 0, software PWM"]
+      rtu0["RTU0"]
+      tx0["Tx_PRU0<br/>modulator"]
+      pru0["PRU0"]
+    end
+    subgraph s01["slice 1, PWM module"]
+      rtu1["RTU1"]
+      tx1["Tx_PRU1<br/>modulator"]
+      pru1["PRU1"]
+    end
+    iep0["IEP0<br/>counts ns"]
+    r30["PRU0's R30<br/>A, B on P8.11, P8.12"]
+    ecap["eCAP0, APWM<br/>A's copy on P8.15"]
+    iep1["IEP1<br/>CMP0, CMP1, CMP2"]
+    pwm2["PWM module, set 2<br/>A, B on P9.12, P9.15"]
   end
   subgraph g1["ICSSG1, scheduler"]
-    mcs["six cores, a task each<br/>on IEP0 compares, P8.17"]
+    mcs["six cores<br/>PRU, RTU, Tx_PRU x2"]
+    g1iep["IEP0<br/>a compare every 4 ns"]
+    g1tm["six task managers"]
+    g1pwm["PWM2_0 initial state<br/>P8.17"]
   end
-  ai64 <-->|"RPMsg: eRPC"| r5
-  ai64 <-->|"RPMsg: eRPC"| r5b
-  ai64 -->|"DDR bulk buffer"| r5
-  r5b -->|"trace buffers"| ai64
-  ai64 -->|"FIR jobs in their RAM"| dsp
-  dsp -->|"trace buffers"| ai64
-  ai64 -.->|"mailbox: shutdown request"| dsp
-  ai64 -.->|"mailbox: shutdown request"| r5b
-  ai64 -.->|"mailbox: shutdown request"| r5
-  r5 <-->|"TI-SCI"| dm
-  r5 -->|"Zephyr PWM driver"| ep
+  c660 <-->|"FIR jobs, trace"| ai64
+  c661 <-->|"FIR jobs, trace"| ai64
+  c7x <-->|"FIR jobs, trace"| ai64
+  ai64 <-->|"eRPC, bulk buffer"| r500
+  ai64 <-->|"eRPC, trace"| r501
+  ai64 <-->|"eRPC, trace"| r510
+  ai64 <-->|"eRPC, trace"| r511
+  r500 <-->|"TI-SCI"| dm
+  r501 <-->|"TI-SCI"| dm
+  r510 <-->|"TI-SCI"| dm
+  r511 <-->|"TI-SCI"| dm
+  dm -->|"clock, power"| ep
+  r500 -->|"Zephyr SPI driver"| spi7
+  r500 -->|"Zephyr PWM driver"| ep
+  r500 -->|"Zephyr console"| uart2
   ai64 <-->|"RPMsg text"| rtu0
-  rtu0 -->|"slice RAM"| tx0
-  tx0 -->|"slice RAM"| pru0
-  tx0 -->|"period, duty"| ecap
-  rtu1 -->|"slice RAM"| tx1
-  tx1 -->|"slice RAM"| pru1
-  mcs -->|"Linux reads its registers"| ai64
-  fab <--> ai64
-  fab <--> r5
-  fab <--> r5b
-  fab <--> dsp
-  fab <--> rtu0
-  fab <--> rtu1
+  rtu0 -->|"pwm_ctl"| tx0
+  tx0 -->|"pwm_next"| pru0
+  pru0 -->|"polls"| iep0
+  pru0 -->|"writes each edge"| r30
+  tx0 -->|"CAP3, CAP4"| ecap
+  rtu1 -->|"pwm_ctl"| tx1
+  tx1 -->|"pwm_next"| pru1
+  pru1 -->|"rearms compares"| iep1
+  iep1 -->|"toggles"| pwm2
+  mcs -->|"PRU0 sets it up"| g1iep
+  g1iep -->|"compare events"| g1tm
+  g1tm -->|"start a task"| mcs
+  mcs -->|"each task writes"| g1pwm
+  ai64 -.->|"reads"| g1pwm
 ```
+
+Every core, peripheral, and pin the demo controls has a box of its own, and each arrow is who controls whom. Linux, the R5Fs, the DSPs, and the ICSSG0 RTUs also all talk to each other over the fabric:
 
 ```mermaid
 flowchart LR
