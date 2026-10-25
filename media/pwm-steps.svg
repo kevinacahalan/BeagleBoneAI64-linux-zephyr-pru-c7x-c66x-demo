@@ -1,0 +1,165 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='558' viewBox='0 0 900 558'>
+  <rect width='900' height='558' fill='#ffffff'/>
+  <text x='20.0' y='26.0' font-family='Helvetica, Arial, sans-serif' font-size='15' fill='#1f2328' text-anchor='start' font-weight='bold'>One pass of the step program, captured: each period's duty, 50 MS/s</text>
+  <text x='278.3' y='50.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>10 kHz</text>
+  <line x1='160.0' y1='36.0' x2='160.0' y2='358.0' stroke='#59636e' stroke-width='1' stroke-dasharray='4 3'/>
+  <text x='515.0' y='50.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>15 kHz</text>
+  <line x1='396.7' y1='36.0' x2='396.7' y2='358.0' stroke='#59636e' stroke-width='1' stroke-dasharray='4 3'/>
+  <text x='751.7' y='50.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>20 kHz</text>
+  <line x1='633.3' y1='36.0' x2='633.3' y2='358.0' stroke='#59636e' stroke-width='1' stroke-dasharray='4 3'/>
+  <line x1='870.0' y1='36.0' x2='870.0' y2='358.0' stroke='#59636e' stroke-width='1' stroke-dasharray='4 3'/>
+  <text x='20.0' y='90.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>P8.11</text>
+  <text x='20.0' y='106.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>slice 0 A, software</text>
+  <line x1='160.0' y1='126.0' x2='870.0' y2='126.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='95.0' x2='870.0' y2='95.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='64.0' x2='870.0' y2='64.0' stroke='#d1d9e0' stroke-width='1'/>
+  <text x='154.0' y='68.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>100%</text>
+  <text x='154.0' y='130.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>0</text>
+  <rect x='160.0' y='70.2' width='0.0' height='55.8' fill='#ddf4ff'/>
+  <rect x='160.0' y='119.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='207.3' y='110.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='254.7' y='95.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='302.0' y='79.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='349.3' y='70.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='396.7' y='119.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='444.0' y='110.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='491.3' y='95.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='538.7' y='79.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='586.0' y='70.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='633.3' y='119.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='680.7' y='110.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='728.0' y='95.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='775.3' y='79.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='822.7' y='70.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <path d='M160.0,70.2H160.0M160.0,119.8H207.3M207.3,110.5H254.7M254.7,95.0H302.0M302.0,79.5H349.3M349.3,70.2H396.7M396.7,119.8H444.0M444.0,110.5H491.3M491.3,95.0H538.7M538.7,79.5H586.0M586.0,70.2H633.3M633.3,119.8H680.7M680.7,110.5H728.0M728.0,95.0H775.3M775.3,79.5H822.7M822.7,70.2H870.0' fill='none' stroke='#0969da' stroke-width='2'/>
+  <text x='20.0' y='166.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>P8.15</text>
+  <text x='20.0' y='182.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>eCAP0, APWM</text>
+  <line x1='160.0' y1='202.0' x2='870.0' y2='202.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='171.0' x2='870.0' y2='171.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='140.0' x2='870.0' y2='140.0' stroke='#d1d9e0' stroke-width='1'/>
+  <text x='154.0' y='144.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>100%</text>
+  <text x='154.0' y='206.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>0</text>
+  <rect x='160.0' y='146.2' width='0.1' height='55.8' fill='#ddf4ff'/>
+  <rect x='160.1' y='195.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='207.4' y='186.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='254.7' y='171.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='302.1' y='155.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='349.4' y='146.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='396.7' y='195.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='444.1' y='186.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='491.4' y='171.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='538.7' y='155.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='586.1' y='146.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='633.4' y='195.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='680.7' y='186.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='728.1' y='171.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='775.4' y='155.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='822.7' y='146.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <path d='M160.0,146.2H160.1M160.1,195.8H207.4M207.4,186.5H254.7M254.7,171.0H302.1M302.1,155.5H349.4M349.4,146.2H396.7M396.7,195.8H444.1M444.1,186.5H491.4M491.4,171.0H538.7M538.7,155.5H586.1M586.1,146.2H633.4M633.4,195.8H680.7M680.7,186.5H728.1M728.1,171.0H775.4M775.4,155.5H822.7M822.7,146.2H870.0' fill='none' stroke='#0969da' stroke-width='2'/>
+  <text x='20.0' y='242.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>P9.12</text>
+  <text x='20.0' y='258.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>slice 1 A, PWM module</text>
+  <line x1='160.0' y1='278.0' x2='870.0' y2='278.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='247.0' x2='870.0' y2='247.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='216.0' x2='870.0' y2='216.0' stroke='#d1d9e0' stroke-width='1'/>
+  <text x='154.0' y='220.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>100%</text>
+  <text x='154.0' y='282.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>0</text>
+  <rect x='160.0' y='222.2' width='0.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='160.3' y='271.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='207.6' y='262.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='254.9' y='247.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='302.3' y='231.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='349.6' y='222.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='396.9' y='271.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='444.3' y='262.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='491.6' y='247.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='538.9' y='231.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='586.3' y='222.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='633.6' y='271.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='680.9' y='262.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='728.3' y='247.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='775.6' y='231.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='822.9' y='222.2' width='47.1' height='55.8' fill='#ddf4ff'/>
+  <path d='M160.0,222.2H160.3M160.3,271.8H207.6M207.6,262.5H254.9M254.9,247.0H302.3M302.3,231.5H349.6M349.6,222.2H396.9M396.9,271.8H444.3M444.3,262.5H491.6M491.6,247.0H538.9M538.9,231.5H586.3M586.3,222.2H633.6M633.6,271.8H680.9M680.9,262.5H728.3M728.3,247.0H775.6M775.6,231.5H822.9M822.9,222.2H870.0' fill='none' stroke='#0969da' stroke-width='2'/>
+  <text x='20.0' y='318.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>P9.25</text>
+  <text x='20.0' y='334.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>EHRPWM4 B, Zephyr</text>
+  <line x1='160.0' y1='354.0' x2='870.0' y2='354.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='323.0' x2='870.0' y2='323.0' stroke='#d1d9e0' stroke-width='1'/>
+  <line x1='160.0' y1='292.0' x2='870.0' y2='292.0' stroke='#d1d9e0' stroke-width='1'/>
+  <text x='154.0' y='296.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>100%</text>
+  <text x='154.0' y='358.0' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='end' font-weight='normal'>0</text>
+  <rect x='160.0' y='347.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='207.3' y='338.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='254.7' y='323.0' width='48.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='303.0' y='307.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='350.3' y='298.2' width='46.4' height='55.8' fill='#ddf4ff'/>
+  <rect x='396.7' y='347.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='444.0' y='338.5' width='47.3' height='15.5' fill='#ddf4ff'/>
+  <rect x='491.4' y='323.0' width='47.3' height='31.0' fill='#ddf4ff'/>
+  <rect x='538.7' y='307.5' width='48.0' height='46.5' fill='#ddf4ff'/>
+  <rect x='586.7' y='298.2' width='47.3' height='55.8' fill='#ddf4ff'/>
+  <rect x='634.0' y='347.8' width='47.3' height='6.2' fill='#ddf4ff'/>
+  <rect x='681.4' y='338.5' width='46.4' height='15.5' fill='#ddf4ff'/>
+  <rect x='727.8' y='323.0' width='47.8' height='31.0' fill='#ddf4ff'/>
+  <rect x='775.6' y='307.5' width='47.3' height='46.5' fill='#ddf4ff'/>
+  <rect x='822.9' y='298.2' width='47.1' height='55.8' fill='#ddf4ff'/>
+  <path d='M160.0,347.8H207.3M207.3,338.5H254.7M254.7,323.0H303.0M303.0,307.5H350.3M350.3,298.2H396.7M396.7,347.8H444.0M444.0,338.5H491.4M491.4,323.0H538.7M538.7,307.5H586.7M586.7,298.2H634.0M634.0,347.8H681.4M681.4,338.5H727.8M727.8,323.0H775.6M775.6,307.5H822.9M822.9,298.2H870.0' fill='none' stroke='#0969da' stroke-width='2'/>
+  <line x1='160.0' y1='354.0' x2='160.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <text x='160.0' y='372.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>0 ms</text>
+  <line x1='207.3' y1='354.0' x2='207.3' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='254.7' y1='354.0' x2='254.7' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='302.0' y1='354.0' x2='302.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='349.3' y1='354.0' x2='349.3' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='396.7' y1='354.0' x2='396.7' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <text x='396.7' y='372.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>25 ms</text>
+  <line x1='444.0' y1='354.0' x2='444.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='491.3' y1='354.0' x2='491.3' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='538.7' y1='354.0' x2='538.7' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='586.0' y1='354.0' x2='586.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='633.3' y1='354.0' x2='633.3' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <text x='633.3' y='372.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>50 ms</text>
+  <line x1='680.7' y1='354.0' x2='680.7' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='728.0' y1='354.0' x2='728.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='775.3' y1='354.0' x2='775.3' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='822.7' y1='354.0' x2='822.7' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <line x1='870.0' y1='354.0' x2='870.0' y2='359.0' stroke='#59636e' stroke-width='1'/>
+  <text x='870.0' y='372.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>75 ms</text>
+  <text x='160.0' y='394.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal'>Duty steps through 10, 25, 50, 75, 90% at each frequency. Bars merge periods of the same duty.</text>
+  <text x='20.0' y='424.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#1f2328' text-anchor='start' font-weight='bold'>Zoom: 20 kHz, 25% duty to 50% (300 µs). The new duty's first period on each pin starts at the dot.</text>
+  <text x='20.0' y='454.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#1f2328' text-anchor='start' font-weight='bold'>P8.11</text>
+  <rect x='248.4' y='440.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='366.7' y='440.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='485.0' y='440.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='603.4' y='440.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='721.8' y='440.0' width='59.1' height='18.0' fill='#ddf4ff'/>
+  <rect x='840.0' y='440.0' width='30.0' height='18.0' fill='#ddf4ff'/>
+  <polyline points='160.0,458.0 248.4,458.0 248.4,440.0 278.0,440.0 278.0,458.0 366.7,458.0 366.7,440.0 396.3,440.0 396.3,458.0 485.0,458.0 485.0,440.0 544.2,440.0 544.2,458.0 603.4,458.0 603.4,440.0 662.6,440.0 662.6,458.0 721.8,458.0 721.8,440.0 780.9,440.0 780.9,458.0 840.0,458.0 840.0,440.0 870.0,440.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <circle cx='485.0' cy='461.0' r='3.5' fill='#cf222e'/>
+  <text x='20.0' y='482.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#1f2328' text-anchor='start' font-weight='bold'>P8.15</text>
+  <rect x='160.0' y='468.0' width='15.7' height='18.0' fill='#ddf4ff'/>
+  <rect x='264.4' y='468.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='382.8' y='468.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='501.1' y='468.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='619.5' y='468.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='737.8' y='468.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='856.1' y='468.0' width='13.9' height='18.0' fill='#ddf4ff'/>
+  <polyline points='160.0,468.0 175.7,468.0 175.7,486.0 264.4,486.0 264.4,468.0 294.0,468.0 294.0,486.0 382.8,486.0 382.8,468.0 412.3,468.0 412.3,486.0 501.1,486.0 501.1,468.0 560.3,468.0 560.3,486.0 619.5,486.0 619.5,468.0 678.6,468.0 678.6,486.0 737.8,486.0 737.8,468.0 797.0,468.0 797.0,486.0 856.1,486.0 856.1,468.0 870.0,468.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <circle cx='501.1' cy='489.0' r='3.5' fill='#cf222e'/>
+  <text x='20.0' y='510.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#1f2328' text-anchor='start' font-weight='bold'>P9.12</text>
+  <rect x='197.0' y='496.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='315.3' y='496.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='433.7' y='496.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='552.0' y='496.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='670.3' y='496.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='788.7' y='496.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <polyline points='160.0,514.0 197.0,514.0 197.0,496.0 226.6,496.0 226.6,514.0 315.3,514.0 315.3,496.0 344.9,496.0 344.9,514.0 433.7,514.0 433.7,496.0 463.3,496.0 463.3,514.0 552.0,514.0 552.0,496.0 611.2,496.0 611.2,514.0 670.3,514.0 670.3,496.0 729.5,496.0 729.5,514.0 788.7,514.0 788.7,496.0 847.8,496.0 847.8,514.0 870.0,514.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <circle cx='552.0' cy='517.0' r='3.5' fill='#cf222e'/>
+  <text x='20.0' y='538.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#1f2328' text-anchor='start' font-weight='bold'>P9.25</text>
+  <rect x='183.6' y='524.0' width='29.6' height='18.0' fill='#ddf4ff'/>
+  <rect x='302.0' y='524.0' width='29.5' height='18.0' fill='#ddf4ff'/>
+  <rect x='420.3' y='524.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='538.7' y='524.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='657.0' y='524.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <rect x='775.4' y='524.0' width='59.2' height='18.0' fill='#ddf4ff'/>
+  <polyline points='160.0,542.0 183.6,542.0 183.6,524.0 213.2,524.0 213.2,542.0 302.0,542.0 302.0,524.0 331.5,524.0 331.5,542.0 420.3,542.0 420.3,524.0 479.5,524.0 479.5,542.0 538.7,542.0 538.7,524.0 597.9,524.0 597.9,542.0 657.0,542.0 657.0,524.0 716.2,524.0 716.2,542.0 775.4,542.0 775.4,524.0 834.6,524.0 834.6,542.0 870.0,542.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <circle cx='420.3' cy='545.0' r='3.5' fill='#cf222e'/>
+</svg>

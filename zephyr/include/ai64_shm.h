@@ -120,7 +120,7 @@ static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_
 
 struct ai64_pwm_status {
 	uint32_t magic;
-	uint32_t engine;     /* AI64_PWM_SOFT, AI64_PWM_ICSSG, AI64_PWM_EHRPWM */
+	uint32_t engine;     /* AI64_PWM_SOFT, AI64_PWM_ICSSG, AI64_PWM_EHRPWM, or AI64_PWM_ECAP */
 	uint32_t unit;       /* the ICSSG, or the EHRPWM instance */
 	uint32_t channel;    /* the slice, or the EHRPWM output (0 A, 1 B) */
 	uint32_t rpmsg;      /* 1 when Linux can also reach it over RPMsg */

@@ -13,6 +13,7 @@ The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasI
 
 ```mermaid
 flowchart LR
+  fab(("the fabric<br/>any core to any other"))
   subgraph dsps["DSPs"]
     c660["C66x 0"]
     c661["C66x 1"]
@@ -25,10 +26,10 @@ flowchart LR
     r510["R5F1_0"]
     r511["R5F1_1"]
   end
-  dm["device manager<br/>MCU R5F"]
+  uart2["UART2, Zephyr console<br/>P8.34 TX, P8.22 RX"]
   spi7["SPI7<br/>P9.31 CLK, P9.28 CS0, P9.30 MOSI"]
   ep["EHRPWM4<br/>P9.25"]
-  uart2["UART2, Zephyr console<br/>P8.34 TX, P8.22 RX"]
+  dm["device manager<br/>MCU R5F"]
   subgraph g0["ICSSG0"]
     subgraph s00["slice 0, software PWM"]
       rtu0["RTU0"]
@@ -52,39 +53,51 @@ flowchart LR
     g1tm["six task managers"]
     g1pwm["PWM2_0 initial state<br/>P8.17"]
   end
-  c660 <-->|"FIR jobs, trace"| ai64
-  c661 <-->|"FIR jobs, trace"| ai64
-  c7x <-->|"FIR jobs, trace"| ai64
-  ai64 <-->|"eRPC, bulk buffer"| r500
-  ai64 <-->|"eRPC, trace"| r501
-  ai64 <-->|"eRPC, trace"| r510
-  ai64 <-->|"eRPC, trace"| r511
-  r500 <-->|"TI-SCI"| dm
-  r501 <-->|"TI-SCI"| dm
-  r510 <-->|"TI-SCI"| dm
-  r511 <-->|"TI-SCI"| dm
-  dm -->|"clock, power"| ep
+  c660 <-->|"FIR jobs, trace, shutdown"| ai64
+  c661 <-->|"FIR jobs, trace, shutdown"| ai64
+  c7x <-->|"FIR jobs, trace, shutdown"| ai64
+  ai64 <-->|"eRPC, bulk buffer, shutdown"| r500
+  ai64 <-->|"eRPC, trace, shutdown"| r501
+  ai64 <-->|"eRPC, trace, shutdown"| r510
+  ai64 <-->|"eRPC, trace, shutdown"| r511
+  r500 -->|"Zephyr console"| uart2
   r500 -->|"Zephyr SPI driver"| spi7
   r500 -->|"Zephyr PWM driver"| ep
-  r500 -->|"Zephyr console"| uart2
-  ai64 <-->|"RPMsg text"| rtu0
+  r500 <-->|"TI-SCI: interrupt route,<br/>EHRPWM4 clock"| dm
+  r501 <-->|"TI-SCI: interrupt route"| dm
+  r510 <-->|"TI-SCI: interrupt route"| dm
+  r511 <-->|"TI-SCI: interrupt route"| dm
+  dm -->|"clock, power"| ep
   rtu0 -->|"pwm_ctl"| tx0
   tx0 -->|"pwm_next"| pru0
-  pru0 -->|"polls"| iep0
+  pru0 -->|"sets up, polls"| iep0
   pru0 -->|"writes each edge"| r30
-  tx0 -->|"CAP3, CAP4"| ecap
+  tx0 -->|"period, duty"| ecap
   rtu1 -->|"pwm_ctl"| tx1
   tx1 -->|"pwm_next"| pru1
-  pru1 -->|"rearms compares"| iep1
-  iep1 -->|"toggles"| pwm2
-  mcs -->|"PRU0 sets it up"| g1iep
+  pru1 -->|"sets up, rearms compares"| iep1
+  pru1 -->|"sets up"| pwm2
+  iep1 -->|"compare events toggle"| pwm2
+  mcs -->|"set up"| g1iep
+  mcs -->|"arm"| g1tm
   g1iep -->|"compare events"| g1tm
   g1tm -->|"start a task"| mcs
   mcs -->|"each task writes"| g1pwm
-  ai64 -.->|"reads"| g1pwm
+  ai64 -.->|"reads the registers"| g1
+  ai64 <-->|"RPMsg text"| rtu0
+  fab <--> ai64
+  fab <--> r500
+  fab <--> r501
+  fab <--> r510
+  fab <--> r511
+  fab <--> c660
+  fab <--> c661
+  fab <--> c7x
+  fab <-->|"requests, status"| rtu0
+  fab <-->|"requests, status"| rtu1
 ```
 
-Every core, peripheral, and pin the demo controls has a box of its own, and each arrow is who controls whom. Linux, the R5Fs, the DSPs, and the ICSSG0 RTUs also all talk to each other over the fabric:
+Each arrow goes from a core to what it controls or talks to; the label says how. Linux also loads and starts every core here through remoteproc, which the diagram leaves out. The fabric joins Linux, the R5Fs, the DSPs, and both ICSSG0 RTUs directly to each other, so any of them can reach either slice, not only Linux. RTU1 takes requests only over the fabric; RTU0 takes them over RPMsg too. What the fabric is made of, and how far into a slice it reaches:
 
 ```mermaid
 flowchart LR
@@ -351,14 +364,14 @@ Type these in the linux window. The R5F commands start with the core's name: eac
 | `r5f0_0 chunk <text>` | Linux writes the DDR bulk buffer, and Zephyr checks its CRC |
 | `r5f0_1 say <text>` | Zephyr on R5F0_1 replies `Zephyr on R5F0_1 got: <text>`. Same for `r5f1_0` and `r5f1_1`. Those three cores have no PWM, bulk buffer, or SPI, so `pwm`, `steps`, `chunk`, and `spi` fail there. |
 | `rtu0 pwm <period_ns> <duty_ns>` | RTU0 sets the software PWM on P8.11 (A) and P8.12 (B), and its eCAP copy of A on P8.15, to a fixed period and A high time, and stops the steps |
-| `rtu0 steps <ms>` | the same steps as P9.25, counted in PWM periods by the slice's Tx_PRU; `steps 0` stops them |
+| `rtu0 steps <ms>` | the same steps as P9.25, on the same GTC time, made by the slice's Tx_PRU; `steps 0` stops them and goes back to the last fixed period and duty (20 kHz, 25% until there is one) |
 | `rtu0 sweep <ms>` | at the period of the last `pwm`, the Tx_PRU sweeps A's high time from its least to its most and back every `ms`; `sweep 0` stops it |
 | `rtu0 dead <ns>` | the dead band on each side of A's pulse |
-| `rtu0 status` | what PRU0 runs now, how many periods, and how many late edges |
+| `rtu0 status` | what PRU0 runs now, how many periods, and how many late edges; and what the eCAP on P8.15 runs |
 | `rtu0 <text>` | RTU0 echoes the text |
 | `help`, `quit` | List the commands, or leave |
 
-Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple of 4 ns, one IEP count, and every edge stays at least 400 ns from the next on the same pin, so A's high time runs from 400 ns to the period less 440 ns and twice the dead band; the RTU clamps what it is asked for. All three generators start stepping, 5 ms a step; a fixed `pwm` request stops the steps, and `steps <ms>` starts them again. Slice 1, the hardware PWM on P9.12 and P9.15, has no RPMsg: `sudo ai64 fabric route g0rtu1 pwm <period_ns> <duty_ns>` (or `steps`, `sweep`, or `dead`) reaches it through the fabric instead, and so can any core on the route.
+Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple of 4 ns, one IEP count, and every edge stays at least 400 ns from the next on the same pin, so A's high time runs from 400 ns to the period less 440 ns and twice the dead band; the RTU clamps what it is asked for. All four generators start stepping, 5 ms a step; a fixed `pwm` request stops the steps, and `steps <ms>` starts them again. The eCAP on P8.15 has no requests of its own: it follows slice 0. Slice 1, the hardware PWM on P9.12 and P9.15, has no RPMsg: `sudo ai64 fabric route g0rtu1 pwm <period_ns> <duty_ns>` (or `steps`, `sweep`, or `dead`) reaches it through the fabric instead, and so can any core on the route.
 
 `ai64-demo` without `--tmux` prints all twelve windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[Sched]`, `[C66x0]`, `[C66x1]`, `[C7x]`, or `[Fabric]`. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
@@ -378,25 +391,36 @@ All signals are 3.3 V; set a logic analyzer's threshold for 3.3 V logic.
 | Multicore scheduler, ICSSG1 | P8.17 | low from 8 to 12 ns and from 16 to 24 ns of every 100 ns, high the rest |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
 
-**The steps.** All four PWM generators run the same 15-step program, 5 ms a step, 75 ms in all, then over again: 10 kHz at 10, 25, 50, 75, and 90% duty, then 15 kHz at the same five, then 20 kHz. The program keeps the GTC's time, the SoC's 200 MHz counter: step `n` runs while `GTC / 5 ms` counts `n` modulo 15. Every generator works out from the GTC which step it is on, so all three change step together, however far apart they were started. Each takes a new step at the end of one of its own periods, the one nearest the step's GTC time, and the three's periods are not in phase with each other, so one changes up to about half a period before or after another: a few tens of µs. The 15 kHz period is 66,664 ns, the nearest multiple of 4 ns, on the ICSSG0 slices.
+The pictures here are logic analyzer captures of the board running the demo, started by `ai64-demo` and left at its defaults.
+
+![Captured: each period's duty on P8.11, P8.15, P9.12, and P9.25 through one 75 ms pass of the steps, and a 300 µs zoom on one step change](media/pwm-steps.svg)
+
+**The steps.** All four PWM generators run the same 15-step program, 5 ms a step, 75 ms in all, then over again: 10 kHz at 10, 25, 50, 75, and 90% duty, then 15 kHz at the same five, then 20 kHz. The program keeps the GTC's time, the SoC's 200 MHz counter: step `n` runs while `GTC / 5 ms` counts `n` modulo 15. Every generator works out from the GTC which step it is on, so all four change step together, however far apart they were started. Each takes a new step at the end of one of its own periods, and their periods are not in phase with each other, so they do not change at the same instant. In the capture above, the three ICSSG0 generators change within 30 µs of each other, and P9.25 from 70 µs before them to 125 µs after: Zephyr sets its step from a 100 µs kernel tick, and the EHRPWM takes it at the end of its period. The 15 kHz period is 66,664 ns, the nearest multiple of 4 ns, on the ICSSG0 slices.
 
 **A and B.** On P8.11/P8.12 and on P9.12/P9.15, B is not simply A inverted. In a period of `P` ns with A high for `D` ns and a dead band of `d` ns (1000 ns):
 
-```
-         |  |<----- D ----->|
-A  _________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_____________________________________|‾‾‾‾‾‾
-B  ______________________________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|______________
-         |40|               |<d->|                        |<d->|40|
-    period start                                    period end, P
-```
+![Captured at 20 kHz and 25% duty: A, B, and the dead band between them on both slices, and P8.15 and P9.25 at their own phase](media/pwm-pair.svg)
 
 - A rises 40 ns into each period (an IEP compare at count 0 never fires, so both slices start there) and is high for `D`.
 - B rises `d` after A falls, and falls `d` before the period ends, so both pins are low for `d` after A's pulse and for `d` + 40 ns before the next one.
 - B's high time is `P − D − 2d − 40`: at 20 kHz and 25% duty, A is high 12,500 ns and B 35,460 ns. The `pwm` window prints both.
+- P8.15 and P9.25 run the same `P` and `D` as A, each from a counter of its own, so their periods start wherever their counters do. They have no B.
 
-That is what a half bridge's gate drive needs: the two switches are never on together. The software slice's edges wander by a few tens of ns, the time PRU0 takes to see IEP0 pass an edge time; the hardware slice's edges are exact to the 4 ns IEP count.
+That is what a half bridge's gate drive needs: the two switches are never on together. The software slice's edges wander by a few tens of ns, the time PRU0 takes to see IEP0 pass an edge time; the hardware slice's edges are exact to the 4 ns IEP count. Over the 96 periods of one 20 kHz, 25% step at 250 MS/s, slice 0's A was high 12,476 to 12,524 ns and its dead band 988 to 1,020 ns; slice 1's were 12,496 to 12,500 ns and 1,000 to 1,004 ns, within the analyzer's 4 ns sample.
+
+P9.25's period is 8 ns long at every step, 50,008 ns at 20 kHz: one count of EHRPWM4's 125 MHz clock. Zephyr's EHRPWM driver writes the period's count to TBPRD, but counting up the EHRPWM's period is TBPRD + 1 counts. Its high time is right.
 
 **P8.17** changes every 4 ns, the ICSSG core clock, so it needs an analyzer at 500 MS/s or more to resolve; built with `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000` ([The multicore scheduler](#icssg1-the-multicore-scheduler)) it is slow enough for any.
+
+![Captured at 500 MS/s: P8.17 over two 100 ns periods, low from 8 to 12 ns and from 16 to 24 ns of each, with the core whose task each compare starts](media/p817.svg)
+
+At 500 MS/s the capture resolves the schedule to the analyzer's 2 ns sample: 10.000 million periods a second, each low for 4 and then 8 ns.
+
+**SPI7** sends `hello` once at startup, and whatever `r5f0_0 spi` asks for after that. Chip select stays low for the whole transfer.
+
+The test bench the demo was developed on: the BeagleBone AI-64 under a screw-terminal breakout on headers P8 and P9, 5 V from a bench supply, Ethernet, logic analyzer probes on the demo's pins, and an SD card mux in the microSD slot (teal, right) so the PC can reflash the card. To run the demo you need only the board, a microSD card, a 5 V supply, and a network link.
+
+![The BeagleBone AI-64 on the test bench, with a screw-terminal breakout, a bench power supply, logic analyzer probes, and an SD card mux](media/test-bench.jpg)
 
 `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
@@ -405,10 +429,10 @@ That is what a half bridge's gate drive needs: the two switches are never on tog
 ### Linux to Zephyr: eRPC over RPMsg
 
 - The R5F image opens the RPMsg channel `rpmsg-raw` at address 1024, which Linux sees as `/dev/rpmsgN`.
-- `zephyr/erpc/ai64.erpc` defines the functions Linux can call on Zephyr: `say`, `spiWrite`, `setPwm`, and `takeChunk`. The generated client and server code is in `zephyr/erpc/shim/`; `zephyr/erpc/regen.sh` regenerates it after you change the IDL.
+- `zephyr/erpc/ai64.erpc` defines the functions Linux can call on Zephyr: `say`, `spiWrite`, `setPwm`, `setPwmSteps`, and `takeChunk`. The generated client and server code is in `zephyr/erpc/shim/`; `zephyr/erpc/regen.sh` regenerates it after you change the IDL.
 - Both sides run eRPC's framed transport straight over the RPMsg file descriptor (`linux-app/ai64_erpc_linux.cpp` and `zephyr/r5/src/ai64_erpc.cpp`).
 
-The board files are upstream Zephyr's `beaglebone_ai64/j721e/main_r5f0_0` (and `main_r5f0_1`, `main_r5f1_0`, `main_r5f1_1`), at the Zephyr `main` commit pinned in `zephyr/west.yml`. One app, `zephyr/r5`, builds once per core. `zephyr/r5/boards/` adds what each core needs on top: every core's overlay adds its TI-SCI nodes; R5F0_0's also adds SPI7, the bulk buffer, and EHRPWM4; the other three cores' `.conf` files send the log to a RAM console that Linux reads as a trace. `zephyr/patches/` holds one fix to Zephyr itself, which `zephyr/scripts/apply-patches.sh` applies after each `west update` ([EHRPWM4](#zephyr-ehrpwm4-on-p925)).
+The board files are upstream Zephyr's `beaglebone_ai64/j721e/main_r5f0_0` (and `main_r5f0_1`, `main_r5f1_0`, `main_r5f1_1`), at the Zephyr `main` commit pinned in `zephyr/west.yml`. One app, `zephyr/r5`, builds once per core. `zephyr/r5/boards/` adds what each core needs on top: every core's overlay adds its TI-SCI nodes; R5F0_0's also adds SPI7, the bulk buffer, and EHRPWM4; the other three cores' `.conf` files send the log to a RAM console that Linux reads as a trace. `zephyr/patches/` holds two fixes to Zephyr itself, which `zephyr/scripts/apply-patches.sh` applies after each `west update`: one to the EHRPWM driver and one to the R5F timer driver ([EHRPWM4](#zephyr-ehrpwm4-on-p925)).
 
 In split mode a cluster's core 1 cannot power up before its core 0, and core 0 cannot power down before core 1. `ai64-demo` starts R5F0_0, R5F1_0, R5F0_1, R5F1_1 in that order and stops them in reverse.
 
@@ -444,7 +468,7 @@ The overlays also move the board's mailbox interrupt from VIM 256 to 228. If the
 
 ### Zephyr: EHRPWM4 on P9.25
 
-P9.25's ball W26 can be `EHRPWM4_B`, output B of the SoC's EHRPWM4. Zephyr's `ti,am3352-ehrpwm` driver drives it on R5F0_0, and `zephyr/r5/src/ai64_pwm.c` sets it through the PWM API (`pwm_set_dt()` on the `pwms` of `/zephyr,user`): the 15 steps at boot, 5 ms a step, from a delayable work item on the GTC's time like the ICSSG0 slices' steps (it asks for EHRPWM4's clock rate over TI-SCI once, which an interrupt handler must not, and then sets cycles with `pwm_set_cycles()`, since a TI-SCI call on every step would make it late), then whatever `setPwm` or `setPwmSteps` over eRPC, or a fabric route's `pwm` or `steps` action, asks for. Steps keep time only if Zephyr's clock does: `zephyr/patches/0002` fixes the R5F timer driver, which lost the part of a tick left over at each timer interrupt, so Zephyr's clock ran about 1.6% slow on these cores. R5F0_0's overlay describes the rest:
+P9.25's ball W26 can be `EHRPWM4_B`, output B of the SoC's EHRPWM4. Zephyr's `ti,am3352-ehrpwm` driver drives it on R5F0_0, and `zephyr/r5/src/ai64_pwm.c` sets it through the PWM API, on the `pwms` of `/zephyr,user`. At boot it starts the 15 steps, 5 ms a step, from a delayable work item on the GTC's time like the ICSSG0 slices' steps; after that it does whatever `setPwm` or `setPwmSteps` over eRPC, or a fabric route's `pwm` or `steps` action, asks for. `pwm_set()` would ask the device manager for EHRPWM4's clock rate over TI-SCI on every call, about 60 µs, so `ai64_pwm.c` asks once (`pwm_get_cycles_per_sec()`) and then calls `pwm_set_cycles()`. Steps keep time only if Zephyr's clock does: `zephyr/patches/0002` fixes the R5F timer driver, which lost the part of a tick left over at each timer interrupt, so Zephyr's clock ran about 1.6% slow on these cores. R5F0_0's overlay describes the rest:
 
 - **Its clock**, through TI-SCI clock control: device 87, clock 0, the same as the Linux device tree's `main_ehrpwm4`.
 - **Its power**, through a TI-SCI power domain for device 87, which turns the module on at boot (`CONFIG_POWER_DOMAIN`).
@@ -455,7 +479,7 @@ The stock Debian image gives EHRPWM4 and W26 to Linux with `k3-j721e-beaglebonea
 
 The driver had one bug on this board: it handed `clock_control_get_rate()` its `uint64_t` rate as a `uint32_t *`, which leaves the upper half unset, and `pwm_set()` then saw a clock rate in the billions and failed with `-ENOTSUP`. `zephyr/patches/0001-drivers-pwm-ti_am3352_ehrpwm-set-all-64-bits-of-the-rate.patch` fixes it.
 
-Every 10 ms R5F0_0's fabric thread publishes the PWM's `struct ai64_pwm_status` (`zephyr/include/ai64_shm.h`) in its fabric page, as the ICSSG0 RTUs do for their slices, and the `pwm` window shows it with the other three. A fabric route's `pwm` action takes about 120 µs on R5F0_0, because `pwm_set()` asks the device manager for the clock rate each time.
+Every 10 ms R5F0_0's fabric thread publishes the PWM's `struct ai64_pwm_status` (`zephyr/include/ai64_shm.h`) in its fabric page, as the ICSSG0 RTUs do for their slices, and the `pwm` window shows it with the other three.
 
 ### R5F caches
 
@@ -538,7 +562,7 @@ The third way is ICSSG0's eCAP0 in APWM mode, on P8.15. It is a PWM generator in
 
 Two things about the J721E's PWM module took finding out on the board. An IEP compare only fires again once software clears its status bit (AM64x's ICSSG has `PWM_EFC_EN` to do that, and J721E's does not), and in the active state an output only toggles: its active level does nothing, and CMP0 does not bring it back. So each pin has one compare, which PRU1 moves between that pin's rise and its fall as soon as it fires; TI's AM65x PWM firmware works the same way. And the set's trip inputs must be masked: unmasked and unconnected, they keep the set in its trip state, and its pins at Z.
 
-`ai64 pwm` shows both slices running 20,000 periods a second at the defaults, and 50,000 after `fabric route ... g0rtu1 pwm 20000 5000`. With both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late, and neither slice counted a late edge in 25 restarts of the demo.
+`ai64 pwm` shows both slices running about 15,000 periods a second while they step (10, 15, and 20 kHz, a third of the time each), 20,000 at their fixed default of 20 kHz after `steps 0`, and 50,000 after `fabric route ... g0rtu1 pwm 20000 5000`. With both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late, and neither slice counted a late edge in 25 restarts of the demo.
 
 ### ICSSG1: the multicore scheduler
 
@@ -640,28 +664,28 @@ The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric l
 
 ```
 $ sudo ai64 fabric route c7x r5f1_1 g0rtu1 c66x1 pwm 20000 5000
-linux  -> c7x         7.7 us
-c7x    -> r5f1_1      5.8 us
-r5f1_1 -> g0rtu1      5.9 us   g0rtu1 set its PWM
-g0rtu1 -> c66x1      32.8 us
-c66x1  -> linux       2.2 us
-5 hops, 54.4 us, value ok
+linux  -> c7x         8.3 us
+c7x    -> r5f1_1      4.5 us
+r5f1_1 -> g0rtu1      5.3 us   g0rtu1 set its PWM
+g0rtu1 -> c66x1      39.7 us
+c66x1  -> linux       1.7 us
+5 hops, 59.6 us, value ok
 ```
 
 ICSSG0 slice 1's PWM, on P9.12 and P9.15, then runs at 50 kHz, a fixed 25%, and RTU1 logs when PRU1 follows (`ai64 trace b006000.rtu`). The hop after an action is slower because the RTU builds and logs a line of text first. The first PWM generator on the route takes the action, so a route through R5F0_0 sets P9.25:
 
 ```
 $ sudo ai64 fabric route c66x0 r5f0_0 g0rtu0 pwm 500000 125000
-linux  -> c66x0      14.8 us
-c66x0  -> r5f0_0      5.2 us   r5f0_0 set its PWM
-r5f0_0 -> g0rtu0    124.3 us
-g0rtu0 -> linux      24.1 us
-4 hops, 168.4 us, value ok
+linux  -> c66x0      13.1 us
+c66x0  -> r5f0_0      6.9 us   r5f0_0 set its PWM
+r5f0_0 -> g0rtu0     21.5 us
+g0rtu0 -> linux       2.7 us
+4 hops, 44.2 us, value ok
 ```
 
-P9.25 then runs at 2 kHz, a fixed 25%; Zephyr's `pwm_set()` asks the device manager for the clock rate over TI-SCI, which is most of the 124 µs. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
+P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_0 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
-**Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices at 20,000 periods a second with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both.
+**Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both.
 
 **What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ICSSG0 RTUs' polling does not show in their slices' edges: with both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late. And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr app parks in WFI with its interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
 

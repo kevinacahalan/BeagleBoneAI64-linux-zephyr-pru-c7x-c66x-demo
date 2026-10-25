@@ -70,6 +70,7 @@ With the demo running, the pad registers at `0x0011c000 + pad` read:
 | Pad | Value | Meaning |
 | --- | --- | --- |
 | `0x0f4`, `0x0f0` | `0x10000` | output, mode 0 |
+| `0x0f8` | `0x10004` | output, mode 4 |
 | `0x0b8`, `0x0c0`, `0x00c` | `0x10003` | output, mode 3 |
 | `0x1a4` | `0x10006` | output, mode 6 |
 | `0x200`, `0x0b0`, `0x0b4`, `0x0d4` | `0x200007` | held off |

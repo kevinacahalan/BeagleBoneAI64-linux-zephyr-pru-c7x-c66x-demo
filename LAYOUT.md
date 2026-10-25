@@ -83,7 +83,7 @@
 
 `pru/` — the ICSSG firmware, as two projects laid out the way TI's open-pru projects are: one directory per core, `<project>/firmware/beaglebone-ai64/icss_g<N>_<core>_fw/`, with its own `ti-pru-cgt/makefile` and `linker.cmd`. `pru/Makefile` builds both projects, and `pru_rules.mak` holds the rules every core's makefile includes.
 
-`pru/pwm/` — ICSSG0: PWM in software on slice 0 and with the ICSSG PWM module on slice 1. `firmware/` holds the project's memory map (`pwm_map.h`) and IPC records (`pwm_ipc.h`), and the RTU and Tx_PRU sources both slices build; each PRU's `main.c` is in its core's directory. `README.md` explains the project.
+`pru/pwm/` — ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1, and with eCAP0, which slice 0's Tx_PRU runs. `firmware/` holds the project's memory map (`pwm_map.h`) and IPC records (`pwm_ipc.h`), and the RTU and Tx_PRU sources both slices build; each PRU's `main.c` is in its core's directory. `README.md` explains the project.
 
 `pru/multicore_scheduler/` — ICSSG1: the port of open-pru's `examples/multicore_scheduler`, a `main.c` and a `pwm_toggle.asm` per core. BSD-3-Clause, as TI's original. `README.md` says what changed for J721E.
 
@@ -96,6 +96,8 @@
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 
 `yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the twelve ICSSG images, and the DSP images; `recipes-kernel/` patches TI's 6.18 kernel so the R5F and C66x cores restart.
+
+`media/` — the README's pictures: the bench photo, and logic analyzer captures of the demo's pins.
 
 `containers/` — Containerfiles for the Linux, PRU, Zephyr, and DSP build images.
 
