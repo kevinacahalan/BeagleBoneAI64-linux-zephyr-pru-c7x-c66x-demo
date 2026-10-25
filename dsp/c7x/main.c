@@ -4,7 +4,8 @@
  * line every 10 s, timed with the core's TSC cycle counter, and runs the
  * jobs Linux hands it (ai64_dsp_job.h) from the start of its L2 SRAM:
  * FIR filters, and an int8 layer on its Matrix Multiply Accelerator
- * (ai64_c7x_mma.c).
+ * (ai64_c7x_mma.c), which is also the pipeline's classifier
+ * (ai64_c7x_pipe.c).
  * It runs from the core's DDR carveout. It turns the MMU and caches on
  * first (ai64_c7x_mmu.c). It is also a fabric node (ai64_fabric.h): it
  * answers and sends pings, passes tours and routes on, and adds to the
@@ -21,6 +22,7 @@
 #include "ai64_dsp_mbox.h"
 #include "ai64_c7x_mmu.h"
 #include "ai64_c7x_mma.h"
+#include "ai64_c7x_pipe.h"
 
 #define AI64_JOB_LOCAL    AI64_JOB_C7X_LOCAL
 #define AI64_JOB_CYCLES() __TSC
@@ -41,6 +43,11 @@
 #define AI64_FAB_COPY_IN(d, s, n)  memcpy((d), (const void *)(s), 4u * (n))
 #define AI64_FAB_COPY_OUT(d, s, n) memcpy((void *)(d), (s), 4u * (n))
 #include "ai64_fabric.h"
+
+static uint32_t gtc_lo(void)
+{
+	return AI64_FAB_NOW();
+}
 
 /* Mailbox cluster 4 (0x31f84000): Linux receives on FIFO 0, sends on FIFO 1. */
 #define MBOX_BASE 0x31f84000u
@@ -66,12 +73,14 @@ int main(void)
 	trace_mark();
 	job_init();
 	fab_init(AI64_FAB_C7X);
+	ai64_c7x_pipe_init(gtc_lo);
 
 	last = __TSC;
 	for (;;) {
 		if (job_poll() && ++jobs == 1u) {
 			trace_puts("first job done\n");
 		}
+		(void)ai64_c7x_pipe_poll();
 		fab_poll();
 		if (mbox_shutdown_requested(MBOX_BASE, 1u, 0u)) {
 			trace_puts("c7x shutting down\n");

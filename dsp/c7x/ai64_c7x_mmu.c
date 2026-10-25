@@ -14,11 +14,15 @@
  *                      Linux and the core both poll
  *   0x64801000 60 KiB  normal write-back: the rest of the job block. The
  *                      job code writes L1D back around each job.
+ *   0x64810000  4 KiB  normal non-cacheable: the pipeline's features, which
+ *                      C66x 0 writes (ai64_pipe.h)
+ *   0x64811000 12 KiB  normal write-back: the pipeline's weights and outputs
  *   0xa8000000  2 MiB  normal non-cacheable: the DMA pool, then the trace
  *                      buffer and resource table (c7x.cmd), which Linux reads
  *   0xa8200000 14 MiB  normal write-back: code, data, and stack
  *   0xa9000000 128 KiB normal non-cacheable: the fabric (ai64_fabric.h),
  *                      which every demo core reads and writes
+ *   0xa9090000 64 KiB  normal non-cacheable: the pipeline's DDR block
  *
  * Anything else faults. The tables use a 4 KiB granule and a 48-bit
  * address space, so a walk starts at level 0 (512 GiB an entry) and goes
@@ -38,6 +42,7 @@
 
 #include "ai64_dsp_job.h"
 #include "ai64_fabric.h"
+#include "ai64_pipe.h"
 #include "ai64_c7x_mmu.h"
 
 /* c7x_regs.asm */
@@ -136,6 +141,10 @@ void ai64_c7x_mmu_init(void)
 	for (i = 1; i < AI64_JOB_SIZE / SZ_4K; i++) {
 		L3_SRAM[i] = leaf(DESC_PAGE, L2SRAM_BASE + i * SZ_4K, ATTR_WB);
 	}
+	for (i = 0; i < AI64_PIPE_C7X_SIZE / SZ_4K; i++) {
+		L3_SRAM[(AI64_PIPE_C7X_ADDR - L2SRAM_BASE) / SZ_4K + i] =
+			leaf(DESC_PAGE, AI64_PIPE_C7X_ADDR + i * SZ_4K, i == 0 ? ATTR_NC : ATTR_WB);
+	}
 
 	L2_2G[(CARVEOUT_BASE - 2u * SZ_1G) / SZ_2M] =
 		leaf(DESC_BLOCK, CARVEOUT_BASE, ATTR_NC);
@@ -146,6 +155,10 @@ void ai64_c7x_mmu_init(void)
 	L2_2G[(AI64_FAB_ADDR - 2u * SZ_1G) / SZ_2M] = table(L3_FAB);
 	for (i = 0; i < AI64_FAB_SIZE / SZ_4K; i++) {
 		L3_FAB[i] = leaf(DESC_PAGE, AI64_FAB_ADDR + i * SZ_4K, ATTR_NC);
+	}
+	for (i = 0; i < AI64_PIPE_SIZE / SZ_4K; i++) {
+		L3_FAB[(AI64_PIPE_ADDR - AI64_FAB_ADDR) / SZ_4K + i] =
+			leaf(DESC_PAGE, AI64_PIPE_ADDR + i * SZ_4K, ATTR_NC);
 	}
 
 	ai64_set_mair(MAIR_VALUE);

@@ -2,7 +2,8 @@
  * C66x hello image: everything in the core's own L2 SRAM. Linux loads it
  * there through the core's local view (0x00800000), which ti_k3_dsp maps
  * for both C66x cores. The boot address (_c_int00) has to be 1 KiB aligned.
- * The last 64 KiB, from 0x00838000, is the job block (ai64_dsp_job.h).
+ * The 32 KiB from 0x00830000 take the pipeline's windows (ai64_pipe.h), and
+ * the last 64 KiB, from 0x00838000, are the job block (ai64_dsp_job.h).
  */
 -c
 -e _c_int00
@@ -11,7 +12,7 @@
 
 MEMORY
 {
-	L2SRAM : origin = 0x00800000, length = 0x00038000
+	L2SRAM : origin = 0x00800000, length = 0x00030000
 }
 
 SECTIONS

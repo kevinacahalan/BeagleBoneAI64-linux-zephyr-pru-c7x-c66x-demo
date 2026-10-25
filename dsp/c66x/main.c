@@ -5,7 +5,8 @@
  * jobs Linux hands it (ai64_dsp_job.h). Everything lives in the core's own
  * L2 SRAM, the job block included, so it needs no cache setup. It is also
  * a fabric node (ai64_fabric.h): it answers and sends pings, passes tours
- * and routes on, and adds to the spinlock tally.
+ * and routes on, and adds to the spinlock tally. C66x 0 is also the
+ * pipeline's FFT stage (ai64_c66x_pipe.c).
  */
 
 #include <stdint.h>
@@ -16,6 +17,8 @@
 #define AI64_TRACE_NAME "trace:c66x"
 #include "ai64_dsp_trace.h"
 #include "ai64_dsp_mbox.h"
+#include "ai64_c66x_pipe.h"
+#include "ai64_pipe.h"
 
 #define AI64_JOB_LOCAL    AI64_JOB_C66X_LOCAL
 #define AI64_JOB_CYCLES() TSCL
@@ -29,7 +32,7 @@
  * XMPAXL (the replacement address) then XMPAXH (the logical base and
  * size). The MAR registers of that page and of the fabric's 16 MiB reset
  * with XMC prefetch (PFX) on. Clearing them makes every read go to the GTC
- * or to DDR.
+ * or to DDR. The pipeline writes the C7x's L2 SRAM, which gets the same.
  */
 #define AI64_C66X_GTC 0x7ffff000u
 #define XMPAXL(n)     (*(volatile uint32_t *)(0x08000000u + 8u * (n)))
@@ -52,9 +55,15 @@ static void fabric_map(void)
 {
 	MAR(AI64_C66X_GTC) = 0;
 	MAR(AI64_FAB_ADDR) = 0;
+	MAR(AI64_PIPE_C7X_ADDR) = 0;
 	XMPAXL(2) = ((AI64_GTC_ADDR >> 12) << 8) | MPAX_RWX;
 	XMPAXH(2) = AI64_C66X_GTC | MPAX_4K;
 	_mfence();
+}
+
+static uint32_t gtc_lo(void)
+{
+	return AI64_FAB_NOW();
 }
 
 /*
@@ -79,6 +88,10 @@ int main(void)
 	job_init();
 	fabric_map();
 	fab_init(AI64_FAB_C66X0 + DNUM);
+	if (DNUM == 0) {
+		ai64_c66x_pipe_init(gtc_lo);
+		trace_puts("pipeline: FFT stage up\n");
+	}
 
 	/* Any write starts TSCL counting. */
 	TSCL = 0;
@@ -86,6 +99,9 @@ int main(void)
 	for (;;) {
 		if (job_poll() && ++jobs == 1u) {
 			trace_puts("first job done\n");
+		}
+		if (DNUM == 0) {
+			(void)ai64_c66x_pipe_poll();
 		}
 		fab_poll();
 		if (mbox_shutdown_requested(MBOX_BASE, 2u * DNUM + 1u, 2u * DNUM)) {
