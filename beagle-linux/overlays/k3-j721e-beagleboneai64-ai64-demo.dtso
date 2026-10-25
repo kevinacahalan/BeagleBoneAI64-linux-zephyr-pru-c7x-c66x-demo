@@ -9,9 +9,12 @@
 //   ICSSG0 slice 1, the ICSSG's PWM module (pru/pwm):
 //     PRU1  P9.12  AE27  pad 0x0b8  mode 3  PRG0_PWM2_A0, output A
 //     PRU1  P9.15  AD25  pad 0x0c0  mode 3  PRG0_PWM2_B0, output B
+//     PRU1  P8.31  AE29  pad 0x100  mode 1  PRG0_PRU1_GPI0, the pipeline's
+//           input (zephyr/include/ai64_pipe.h); P8.31's other ball, AJ25
+//           (pad 0x084), is held off: mode 7, transmit disabled
 //   ICSSG1, the multicore scheduler (pru/multicore_scheduler):
 //     all six cores  P8.17  AF22  pad 0x00c  mode 3  PRG1_PWM2_A0
-//   Each of these header pins has one ball, so nothing is held off.
+//   The other header pins have one ball each.
 //
 // Zephyr muxes its own pins (UART2 on P8.34/P8.22, SPI7 on P9.28/P9.30/
 // P9.31, EHRPWM4_B on P9.25) from its devicetree. They are not in this
@@ -65,6 +68,13 @@
 		>;
 	};
 
+	ai64_pipe_pins: ai64-pipe-pins {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x100, PIN_INPUT, 1) /* (AE29) P8.31 PRG0_PRU1_GPI0 */
+			J721E_IOPAD(0x084, PIN_DISABLE, 7) /* (AJ25) P8.31, held off */
+		>;
+	};
+
 	ai64_mcs_pins: ai64-mcs-pins {
 		pinctrl-single,pins = <
 			J721E_IOPAD(0x00c, PIN_OUTPUT, 3) /* (AF22) P8.17 PRG1_PWM2_A0 */
@@ -87,9 +97,10 @@
 	pinctrl-0 = <&ai64_pwm_ecap_pins>;
 };
 
+/* PRU1 runs the PWM module, and samples P8.31. */
 &pru0_1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&ai64_pwm_icssg_pins>;
+	pinctrl-0 = <&ai64_pwm_icssg_pins>, <&ai64_pipe_pins>;
 };
 
 /* PRU0 sets up the scheduler; all six ICSSG1 cores write the pin's state. */

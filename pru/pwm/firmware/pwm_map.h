@@ -11,8 +11,9 @@
  *   0x0c00 - 0x1eff  RTU     4.75 KiB, RPMsg and the fabric node included
  *   0x1f00 - 0x1fff  IPC     the slice's four records (pwm_ipc.h)
  *
- * A slice never touches the other slice's data RAM. The 64 KiB of ICSSG0
- * shared RAM at 0x10000 is free for an application.
+ * A slice never touches the other slice's data RAM. Slice 1 keeps the
+ * pipeline's windows of P8.31 samples in ICSSG0's shared RAM at 0x10000
+ * (zephyr/include/ai64_pipe.h); the rest of its 64 KiB is free.
  */
 #ifndef PWM_MAP_H_
 #define PWM_MAP_H_

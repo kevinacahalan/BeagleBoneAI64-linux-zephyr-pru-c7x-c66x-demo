@@ -21,6 +21,10 @@
  *     into the app block.
  *   - It says when the outputs follow a new request, and when the PRU
  *     reports late edges.
+ *   - Slice 1's stamps each window of P8.31 samples its PRU fills
+ *     (ai64_pipe.h) with the GTC, and while the pipeline runs rings
+ *     R5F0_0's mailbox with it. The PRU has no time to read the GTC: a
+ *     read from it stalls the core for longer than an edge can wait.
  */
 
 #include <stdint.h>
@@ -162,6 +166,115 @@ static uint32_t fab_action(struct ai64_fab_msg *m);
 #define AI64_FAB_LOCKREG  (AI64_SPINLOCK_ADDR + AI64_FAB_LOCK_OFF)
 #define AI64_FAB_ACTION(m) fab_action(m)
 #include "ai64_fabric.h"
+
+#if AI64_SLICE == 1
+#include "ai64_pipe.h"
+
+#define PIPE      ((volatile struct ai64_pipe *)AI64_PIPE_ADDR)
+#define PIPE_PRU  ((volatile struct ai64_pipe_pru *)(AI64_PIPE_SMEM_LOCAL + AI64_PIPE_PRU_OFF))
+#define PIPE_SLOT(w) \
+	((volatile struct ai64_pipe_slot *)(AI64_PIPE_SMEM_LOCAL + \
+					    ((w) % AI64_PIPE_SLOTS) * AI64_PIPE_SLOT_SIZE))
+#define GTC_HI()  (*(volatile uint32_t *)(AI64_GTC_ADDR + 12u))
+
+static uint32_t pipe_seen, pipe_synced, pipe_weights;
+
+static void pipe_reset(void)
+{
+	volatile struct ai64_pipe_stage *st = &PIPE->stage[AI64_PIPE_RTU];
+
+	st->magic = 0;
+	st->windows = 0;
+	st->dropped = 0;
+	st->last = 0;
+	st->lat_sum = 0;
+	st->lat_min = 0xffffffffu;
+	st->lat_max = 0;
+	st->lat_last = 0;
+	st->work_sum = 0;
+	st->work_max = 0;
+	st->errors = 0;
+	st->magic = AI64_PIPE_MAGIC;
+}
+
+static void pipe_init(void)
+{
+	pipe_reset();
+	pipe_seen = 0;
+	pipe_synced = 0;
+	pipe_weights = PIPE->ctl.weights_seq;
+}
+
+/*
+ * The windows PRU1 filled since the last look: each one's end is where its
+ * last chunk came, counted back from the chunk PRU1 is on now, at 8 us a
+ * chunk. So the stamp is within a chunk of the truth however late this
+ * core comes round.
+ */
+static void pipe_poll(void)
+{
+	volatile struct ai64_pipe_pru *pru = PIPE_PRU;
+	volatile struct ai64_pipe_stage *st = &PIPE->stage[AI64_PIPE_RTU];
+	uint32_t wins = pru->wins, chunks, hi, lo, w, lat, work;
+	uint64_t now;
+
+	if (pru->magic != AI64_PIPE_MAGIC || wins == pipe_seen) {
+		return;
+	}
+	/*
+	 * The first look (shared RAM keeps the last run's record until PRU1
+	 * starts again), or PRU1 started again: from its newest window on.
+	 */
+	if (!pipe_synced || wins - pipe_seen > AI64_PIPE_RESYNC) {
+		pipe_synced = 1;
+		pipe_seen = wins - 1u;
+	}
+	do {
+		hi = GTC_HI();
+		lo = AI64_FAB_NOW();
+	} while (GTC_HI() != hi);
+	chunks = pru->chunks;
+	now = ((uint64_t)hi << 32) | lo;
+	if (wins - pipe_seen > AI64_PIPE_SLOTS) {
+		st->dropped += wins - pipe_seen - AI64_PIPE_SLOTS;
+		pipe_seen = wins - AI64_PIPE_SLOTS;
+	}
+	for (w = pipe_seen; w != wins; w++) {
+		volatile struct ai64_pipe_slot *sl = PIPE_SLOT(w);
+		uint64_t end = now - (uint64_t)(chunks - (w + 1u) * AI64_PIPE_CHUNKS) * AI64_PIPE_CHUNK_GTC;
+
+		sl->tag.win = w;
+		sl->tag.t_end_lo = (uint32_t)end;
+		sl->tag.t_end_hi = (uint32_t)(end >> 32);
+		sl->tag.t_rtu = lo;
+	}
+	pipe_seen = wins;
+	w = wins - 1u;
+	lat = lo - PIPE_SLOT(w)->tag.t_end_lo;
+	if (PIPE->ctl.magic == AI64_PIPE_MAGIC && PIPE->ctl.run) {
+		*(volatile uint32_t *)AI64_PIPE_MBOX_MSG(AI64_PIPE_MBOX_R5F0_0) = w;
+	}
+	if (PIPE->ctl.weights_seq != pipe_weights) {
+		pipe_weights = PIPE->ctl.weights_seq;
+		pipe_reset();
+	}
+	work = AI64_FAB_NOW() - lo;
+	st->windows = wins;
+	st->last = w;
+	st->lat_last = lat;
+	st->lat_sum += lat;
+	if (lat < st->lat_min) {
+		st->lat_min = lat;
+	}
+	if (lat > st->lat_max) {
+		st->lat_max = lat;
+	}
+	st->work_sum += work;
+	if (work > st->work_max) {
+		st->work_max = work;
+	}
+}
+#endif
 
 static uint32_t fab_action(struct ai64_fab_msg *m)
 {
@@ -374,9 +487,15 @@ void main(void)
 	trace_puts(tx);
 	trace_putc('\n');
 
+#if AI64_SLICE == 1
+	pipe_init();
+#endif
 	status_at = AI64_FAB_NOW();
 	for (;;) {
 		fab_poll();
+#if AI64_SLICE == 1
+		pipe_poll();
+#endif
 #ifdef AI64_RPMSG
 		if (rtu_rpmsg_receive(cmd, sizeof(cmd))) {
 			run_cmd();
