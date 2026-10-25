@@ -10,6 +10,7 @@ FILESEXTRAPATHS:prepend := "${@os.path.abspath(os.path.join(os.path.dirname(d.ge
 SRC_URI = " \
     file://dsp;subdir=src \
     file://zephyr/include/ai64_fabric.h;subdir=src \
+    file://zephyr/include/ai64_shm.h;subdir=src \
 "
 
 S = "${UNPACKDIR}/src"
