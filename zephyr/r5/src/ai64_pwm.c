@@ -6,7 +6,9 @@
  *
  * Linux sets it over eRPC (setPwm for a fixed duty, setPwmSteps), another
  * R5F core with an AI64_IPC_PWM or AI64_IPC_STEPS request (ai64_jobs.c),
- * and any core with a fabric route's pwm or steps action for r5f0_1. Like the
+ * any core with a fabric route's pwm or steps action for r5f0_1, and the
+ * pipeline (ai64_pipe_pwm.c), which holds it on the class the C7x found.
+ * Like the
  * ICSSG0 slices it starts stepping through AI64_PWM_STEP_HZ and
  * AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS, on the GTC's
  * time (ai64_shm.h), so it changes step with them. A delayable work item
@@ -42,6 +44,8 @@ static uint32_t ask_period, ask_duty, run_period, run_duty, ctl_seq, ctl_ack;
 /* EHRPWM4's clock, asked for once */
 static uint64_t cycles_per_sec;
 static uint32_t steps_ms, step_at;
+/* Set from the pipeline's classes (ai64_pwm_class()). */
+static bool following;
 /* The GTC low word when the next step begins. */
 static uint32_t step_next;
 
@@ -159,6 +163,7 @@ int ai64_pwm_set(const char *who, uint32_t period_ns, uint32_t duty_ns)
 	ask_period = period_ns;
 	ask_duty = duty_ns;
 	steps_ms = 0;
+	following = false;
 	(void)k_work_cancel_delayable(&step);
 	ctl_seq++;
 	ret = apply(period_ns, duty_ns);
@@ -184,6 +189,7 @@ int ai64_pwm_steps(const char *who, uint32_t ms)
 	}
 	k_mutex_lock(&lock, K_FOREVER);
 	steps_ms = ms;
+	following = false;
 	ctl_seq++;
 	if (ms != 0u) {
 		/* The step the GTC is on now; the work, on the next tick, moves on from it. */
@@ -199,6 +205,31 @@ int ai64_pwm_steps(const char *who, uint32_t ms)
 	LOG_INF("pwm: %s set P9.25 (EHRPWM4_B) stepping 10, 15, 20 kHz x 10-90%% duty, every %u ms",
 		who, ms);
 	return 0;
+}
+
+int ai64_pwm_class(uint32_t n)
+{
+	int ret;
+
+	if (n >= AI64_PWM_STEP_FREQS * AI64_PWM_STEPS || !pwm_is_ready_dt(&out)) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&lock, K_FOREVER);
+	if (steps_ms != 0u) {
+		steps_ms = 0;
+		(void)k_work_cancel_delayable(&step);
+	}
+	following = true;
+	ctl_seq++;
+	ask_duty = 0;
+	ret = apply_step(n);
+	k_mutex_unlock(&lock);
+	return ret;
+}
+
+bool ai64_pwm_following(void)
+{
+	return following;
 }
 
 void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now)
@@ -230,7 +261,11 @@ void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now)
 void ai64_job_status(char *buf, size_t len)
 {
 	k_mutex_lock(&lock, K_FOREVER);
-	if (steps_ms) {
+	if (following) {
+		snprintf(buf, len, "P9.25: following the pipeline, now %u Hz at %u%% duty",
+			 run_period ? 1000000000u / run_period : 0u,
+			 run_period ? (uint32_t)(((uint64_t)run_duty * 200u / run_period + 1u) / 2u) : 0u);
+	} else if (steps_ms) {
 		snprintf(buf, len, "P9.25: stepping every %u ms, now %u Hz at %u%% duty", steps_ms,
 			 run_period ? 1000000000u / run_period : 0u,
 			 run_period ? (uint32_t)(((uint64_t)run_duty * 200u / run_period + 1u) / 2u) : 0u);

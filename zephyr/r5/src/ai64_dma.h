@@ -12,6 +12,11 @@
  */
 int ai64_dma_copy(uint64_t dst, uint64_t src, uint32_t len, uint32_t *ns);
 
+/* The same, then the 32-bit value written at SoC address bell, by the UDMA
+ * once the copy has landed. */
+int ai64_dma_copy_bell(uint64_t dst, uint64_t src, uint32_t len, uint64_t bell, uint32_t value,
+		       uint32_t *ns);
+
 /* Turn the channel off, for a core about to stop (main.c's shutdown). */
 void ai64_dma_stop(void);
 

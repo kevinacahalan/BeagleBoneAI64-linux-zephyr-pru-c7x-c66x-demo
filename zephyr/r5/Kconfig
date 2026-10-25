@@ -43,6 +43,16 @@ config AI64_DMA
 	  R5F0_0. Copies between DDR and the DSPs' memories for Linux's
 	  dmaCopy call, with the main NAVSS UDMA.
 
+config AI64_PIPE
+	bool "This core's stage of the pipeline (zephyr/include/ai64_pipe.h)"
+	default y if AI64_JOB_SPI || AI64_JOB_PWM
+	select AI64_DMA if AI64_JOB_SPI
+	help
+	  R5F0_0 copies each window of P8.31 samples from ICSSG0 into C66x
+	  0's L2 SRAM with its UDMA (src/ai64_pipe_dma.c). R5F0_1 sets P9.25
+	  from the class the C7x finds for it, and keeps score
+	  (src/ai64_pipe_pwm.c).
+
 config AI64_BLINK_HALF_PERIOD_US
 	int "Half period of the P8.18 square wave, in microseconds"
 	depends on AI64_JOB_BLINK

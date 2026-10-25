@@ -22,8 +22,9 @@
  *      Linux writes it
  *   7  the fabric, normal non-cacheable: every demo core's inbox
  *      (ai64_fabric.h)
- *   8  the R5F cores' ipc_service buffers, and R5F0_0's DMA rings and
- *      descriptor, normal non-cacheable (boards/ai64_ipc.dtsi)
+ *   8  the R5F cores' ipc_service buffers, R5F0_0's DMA rings and
+ *      descriptor (boards/ai64_ipc.dtsi), and the pipeline's DDR block
+ *      after them (ai64_pipe.h), normal non-cacheable
  *
  * It runs at the EARLY init level, before soc_early_init_hook() invalidates
  * and enables both caches (CONFIG_CACHE_MANAGEMENT), so the regions are in
@@ -38,12 +39,14 @@
 #include "ai64_erpc.h"
 #include "ai64_shm.h"
 #include "ai64_fabric.h"
+#include "ai64_pipe.h"
 
 /* The core's carveout starts at the vring region (zephyr,ipc_shm). */
 #define CARVEOUT_BASE  DT_REG_ADDR(DT_CHOSEN(zephyr_ipc_shm))
 #define CARVEOUT_SIZE  0x01000000u
 
-/* The sixteen 4 KiB ipc_service buffer slots, 64 KiB (boards/ai64_ipc.dtsi). */
+/* The sixteen 4 KiB ipc_service buffer slots, 64 KiB (boards/ai64_ipc.dtsi),
+ * then the pipeline's 64 KiB: one 128 KiB region. */
 #define IPC_BASE       0xa9080000u
 
 /* DRACR: AP = full access, plus TEX/C/B. */
@@ -87,7 +90,9 @@ static int ai64_mpu_init(void)
 	mpu_set(7, AI64_FAB_ADDR, 17, ATTR_NORMAL_NC);
 	BUILD_ASSERT(DT_REG_ADDR(DT_NODELABEL(ai64_dma_mem)) == IPC_BASE,
 		     "the ipc_service buffers start at IPC_BASE");
-	mpu_set(8, IPC_BASE, 16, ATTR_NORMAL_NC);
+	BUILD_ASSERT(AI64_PIPE_ADDR == IPC_BASE + 0x10000u && AI64_PIPE_SIZE == 0x10000u,
+		     "the pipeline's block follows the ipc_service buffers");
+	mpu_set(8, IPC_BASE, 17, ATTR_NORMAL_NC);
 	barrier_dsync_fence_full();
 	barrier_isync_fence_full();
 	return 0;

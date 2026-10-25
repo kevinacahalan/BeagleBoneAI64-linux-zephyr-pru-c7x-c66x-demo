@@ -16,6 +16,10 @@
  *   writes its address into the transmit ring and rings the ring's
  *   doorbell; the UDMA reads the descriptor, moves the bytes, and returns
  *   the descriptor to the completion ring, which the core polls.
+ * - ai64_dma_copy_bell() puts a second TR after the copy, which writes a
+ *   word: a doorbell for whoever waits on the copy. Every TR has the WAIT
+ *   flag, so the second only starts once the first one's writes have
+ *   landed, and the word is never seen before the bytes it stands for.
  *
  * The rings and the descriptor live in the non-cacheable 4 KiB that
  * boards/ai64_ipc.dtsi leaves unused (the slot for core 0 to itself), so
@@ -85,11 +89,13 @@ struct tr15 {
 	uint16_t dicnt0, dicnt1, dicnt2, dicnt3;
 } __packed __aligned(64);
 
+#define MAX_TRS 2u
+
 struct trdesc {
 	uint32_t info0, info1, info2, tag;
 	uint8_t pad[48];
-	struct tr15 tr;
-	uint32_t response;
+	struct tr15 tr[MAX_TRS];
+	uint32_t response[MAX_TRS];
 } __aligned(64);
 
 BUILD_ASSERT(sizeof(struct tr15) == 64, "a type-15 TR is 64 bytes");
@@ -103,11 +109,12 @@ BUILD_ASSERT(sizeof(struct tr15) == 64, "a type-15 TR is 64 bytes");
 #define TR_CSF_SUPR_EVT     (BIT(2) << 24)
 #define TR_CSF_EOP          (BIT(7) << 24)
 
-/* The non-cacheable slot: descriptor, then the two rings. */
+/* The non-cacheable slot: descriptor, the two rings, and a doorbell's word. */
 struct dma_mem {
 	struct trdesc desc;
 	uint64_t tx_ring[RING_ELEMS];
 	uint64_t cq_ring[RING_ELEMS];
+	uint32_t bell;
 };
 
 #define DMA_MEM_NODE DT_NODELABEL(ai64_dma_mem)
@@ -209,9 +216,30 @@ void ai64_dma_stop(void)
 	ready = false;
 }
 
-int ai64_dma_copy(uint64_t dst, uint64_t src, uint32_t len, uint32_t *ns)
+static void tr_fill(volatile struct tr15 *tr, uint64_t dst, uint64_t src, uint32_t len,
+		    bool last)
+{
+	tr->flags = TR_TYPE15 | TR_WAIT | TR_CSF_SUPR_EVT | (last ? TR_CSF_EOP : 0u);
+	tr->addr = src;
+	tr->icnt0 = len;
+	tr->icnt1 = 1;
+	tr->icnt2 = 1;
+	tr->icnt3 = 1;
+	tr->dim1 = len;
+	tr->daddr = dst;
+	tr->dicnt0 = len;
+	tr->dicnt1 = 1;
+	tr->dicnt2 = 1;
+	tr->dicnt3 = 1;
+	tr->ddim1 = len;
+}
+
+/* One descriptor: the copy, and with bell the doorbell word after it. */
+static int run(uint64_t dst, uint64_t src, uint32_t len, const uint64_t *bell, uint32_t value,
+	       uint32_t *ns)
 {
 	volatile struct trdesc *d = &mem->desc;
+	uint32_t ntr = bell ? 2u : 1u;
 	uint32_t t0, waited;
 	uint64_t got;
 	int ret = 0;
@@ -229,22 +257,14 @@ int ai64_dma_copy(uint64_t dst, uint64_t src, uint32_t len, uint32_t *ns)
 	}
 
 	memset((void *)d, 0, sizeof(*d));
-	d->info0 = INFO0_TYPE_TR | 0u; /* last TR index 0: one TR */
+	d->info0 = INFO0_TYPE_TR | (ntr - 1u); /* the last TR's index */
 	d->info1 = INFO1_RECSIZE_64B | INFO1_PKTID(0) | INFO1_FLOWID_NONE;
 	d->info2 = cq_ring; /* return ring */
-	d->tr.flags = TR_TYPE15 | TR_WAIT | TR_CSF_SUPR_EVT | TR_CSF_EOP;
-	d->tr.addr = src;
-	d->tr.icnt0 = len;
-	d->tr.icnt1 = 1;
-	d->tr.icnt2 = 1;
-	d->tr.icnt3 = 1;
-	d->tr.dim1 = len;
-	d->tr.daddr = dst;
-	d->tr.dicnt0 = len;
-	d->tr.dicnt1 = 1;
-	d->tr.dicnt2 = 1;
-	d->tr.dicnt3 = 1;
-	d->tr.ddim1 = len;
+	tr_fill(&d->tr[0], dst, src, len, ntr == 1u);
+	if (bell) {
+		mem->bell = value;
+		tr_fill(&d->tr[1], *bell, (uint64_t)(uintptr_t)&mem->bell, sizeof(uint32_t), true);
+	}
 	barrier_dmem_fence_full();
 
 	t0 = sys_read32(AI64_GTC_ADDR + 8u);
@@ -278,4 +298,15 @@ int ai64_dma_copy(uint64_t dst, uint64_t src, uint32_t len, uint32_t *ns)
 out:
 	k_mutex_unlock(&lock);
 	return ret;
+}
+
+int ai64_dma_copy(uint64_t dst, uint64_t src, uint32_t len, uint32_t *ns)
+{
+	return run(dst, src, len, NULL, 0, ns);
+}
+
+int ai64_dma_copy_bell(uint64_t dst, uint64_t src, uint32_t len, uint64_t bell, uint32_t value,
+		       uint32_t *ns)
+{
+	return run(dst, src, len, &bell, value, ns);
 }

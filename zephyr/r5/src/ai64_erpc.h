@@ -2,6 +2,7 @@
 #ifndef AI64_ERPC_H_
 #define AI64_ERPC_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/util.h>
@@ -26,6 +27,11 @@ int ai64_spi7_write(const void *buf, size_t len);
 int ai64_pwm_set(const char *who, uint32_t period_ns, uint32_t duty_ns);
 /* ms 0 stops the steps and leaves the duty where it is. */
 int ai64_pwm_steps(const char *who, uint32_t ms);
+/* Hold P9.25 on step n of the program, quietly: the pipeline's class n
+ * (src/ai64_pipe_pwm.c). A set or steps request ends it. */
+int ai64_pwm_class(uint32_t n);
+/* P9.25 is on the pipeline's class, with no request since. */
+bool ai64_pwm_following(void);
 void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now);
 int ai64_rpmsg_tx(const void *data, size_t len);
 void ai64_erpc_push(const void *data, size_t len);
