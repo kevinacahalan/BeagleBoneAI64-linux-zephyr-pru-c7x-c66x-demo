@@ -2,7 +2,9 @@
 /*
  * C7x image. It writes a hello into its remoteproc trace buffer, then one
  * line every 10 s, timed with the core's TSC cycle counter, and runs the
- * jobs Linux hands it (ai64_dsp_job.h) from the start of its L2 SRAM.
+ * jobs Linux hands it (ai64_dsp_job.h) from the start of its L2 SRAM:
+ * FIR filters, and an int8 layer on its Matrix Multiply Accelerator
+ * (ai64_c7x_mma.c).
  * It runs from the core's DDR carveout. It turns the MMU and caches on
  * first (ai64_c7x_mmu.c). It is also a fabric node (ai64_fabric.h): it
  * answers and sends pings, passes tours and routes on, and adds to the
@@ -18,6 +20,7 @@
 #include "ai64_dsp_trace.h"
 #include "ai64_dsp_mbox.h"
 #include "ai64_c7x_mmu.h"
+#include "ai64_c7x_mma.h"
 
 #define AI64_JOB_LOCAL    AI64_JOB_C7X_LOCAL
 #define AI64_JOB_CYCLES() __TSC

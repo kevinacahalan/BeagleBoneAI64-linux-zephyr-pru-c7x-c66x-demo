@@ -16,6 +16,14 @@
  * n < count. x holds count + taps - 1 samples. AI64_JOB_PING does nothing,
  * to time the handoff alone.
  *
+ * The C7x also runs an int8 neural-network layer, 64 inputs to 64 outputs,
+ * on count rows (a multiple of 16, up to 256): y = round((a x b) >> shift),
+ * saturated to int8, or with ReLU to uint8 (0 to 255); a count x 64 and
+ * b 64 x 64 int8, y count x 64, row-major, with shift and relu in the arg
+ * word. AI64_JOB_LAYER_MMA runs it on the C7x's
+ * Matrix Multiply Accelerator, AI64_JOB_LAYER_C in C on the C7x itself
+ * (c7x/ai64_c7x_mma.c). The C66x refuses both.
+ *
  * Linux and both DSP compilers include this file, so it only uses 32-bit
  * fields at fixed offsets.
  */
@@ -36,6 +44,8 @@
 
 #define AI64_JOB_PING      1u
 #define AI64_JOB_FIR       2u
+#define AI64_JOB_LAYER_MMA 3u
+#define AI64_JOB_LAYER_C   4u
 
 #define AI64_JOB_OK        0u
 #define AI64_JOB_BAD_OP    1u
@@ -43,6 +53,7 @@
 
 #define AI64_JOB_MAX_COUNT 8192u
 #define AI64_JOB_MAX_TAPS  64u
+#define AI64_JOB_LAYER_MAX_ROWS 256u
 
 /* Word offsets of the header fields. */
 #define AI64_JOB_W_MAGIC    0  /* DSP: set once at boot */
@@ -53,11 +64,17 @@
 #define AI64_JOB_W_TAPS     5  /* Linux */
 #define AI64_JOB_W_STATUS   6  /* DSP */
 #define AI64_JOB_W_CYCLES   7  /* DSP: core cycles the job took */
+#define AI64_JOB_W_ARG      8  /* Linux: a layer's shift, and relu in bit 8 */
 
 /* Byte offsets of the int16_t arrays. */
 #define AI64_JOB_H_OFF 0x0040u /* taps */
 #define AI64_JOB_X_OFF 0x0100u /* input, count + taps - 1 samples */
 #define AI64_JOB_Y_OFF 0x4200u /* output, count samples */
+
+/* Byte offsets of a layer's int8 arrays. */
+#define AI64_JOB_LAYER_A_OFF 0x0100u /* count x 64 inputs */
+#define AI64_JOB_LAYER_B_OFF 0x4200u /* 64 x 64 weights */
+#define AI64_JOB_LAYER_Y_OFF 0x5200u /* count x 64 outputs */
 
 #ifdef AI64_JOB_CYCLES
 /*
@@ -319,6 +336,22 @@ static int job_poll(void)
 	switch (JOB_WORD(AI64_JOB_W_OP)) {
 	case AI64_JOB_PING:
 		break;
+#ifdef __C7000__
+	case AI64_JOB_LAYER_MMA:
+	case AI64_JOB_LAYER_C: {
+		uint32_t arg = JOB_WORD(AI64_JOB_W_ARG);
+
+		if (count == 0 || count > AI64_JOB_LAYER_MAX_ROWS || count % 16u || (arg & 0xffu) > 31u) {
+			status = AI64_JOB_BAD_SIZE;
+			break;
+		}
+		(JOB_WORD(AI64_JOB_W_OP) == AI64_JOB_LAYER_MMA ? ai64_c7x_layer_mma : ai64_c7x_layer_c)(
+			(const int8_t *)(base + AI64_JOB_LAYER_A_OFF),
+			(const int8_t *)(base + AI64_JOB_LAYER_B_OFF),
+			(int8_t *)(base + AI64_JOB_LAYER_Y_OFF), count, arg & 0xffu, (arg >> 8) & 1u);
+		break;
+	}
+#endif
 	case AI64_JOB_FIR:
 		if (count == 0 || count > AI64_JOB_MAX_COUNT ||
 		    taps == 0 || taps > AI64_JOB_MAX_TAPS) {
