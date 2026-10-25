@@ -2,7 +2,7 @@
 
 This demo muxes header pins from two places: the Linux overlay (the ICSSG pins) and the Zephyr devicetree inside the R5F0_0 image (the Zephyr pins). RPMsg, the fabric, and ICSSG RAM use no pin.
 
-Most BeagleBone AI-64 header pins are wired to two SoC balls, an "a" ball and a "b" ball. The ball the demo does not use is held off (mux mode 7, transmit disabled) so it cannot fight the one it does. Every ICSSG pin the demo uses has one ball.
+Most BeagleBone AI-64 header pins are wired to two SoC balls, an "a" ball and a "b" ball. The ball the demo does not use is held off (mux mode 7, transmit disabled) so it cannot fight the one it does. Every ICSSG pin the demo uses has one ball, but P8.31.
 
 The Linux overlay is `beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso`. It writes each pad with `J721E_IOPAD()` from BeagleBoard-DeviceTrees `ti/k3-pinctrl.h` (commit `550f7711a4696d5f5e92505289379b754e871313`). This repository does not contain a copy of that header; `./beagle-linux/scripts/build.sh linux` clones the tree and preprocesses the overlay the way that tree's Makefile does (`cpp -nostdinc -I src/arm64`, then `dtc`).
 
@@ -23,6 +23,8 @@ J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
 | P8.15 | AB29 | `0x0f8` | 4, `PRG0_ECAP0_IN_APWM_OUT` | ICSSG0 eCAP0, run by Tx_PRU0 | eCAP PWM, a copy of output A |
 | P9.12 | AE27 | `0x0b8` | 3, `PRG0_PWM2_A0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output A |
 | P9.15 | AD25 | `0x0c0` | 3, `PRG0_PWM2_B0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output B |
+| P8.31 | AE29 | `0x100` | 1, `PRG0_PRU1_GPI0` | ICSSG0 PRU1, its GPI shift register | the pipeline's input, jumpered from P9.15 |
+| P8.31 | AJ25 | `0x084` | 7, held off | — | shorted to AE29 |
 | P8.17 | AF22 | `0x00c` | 3, `PRG1_PWM2_A0` | the six ICSSG1 cores | the multicore scheduler |
 | P9.25 | W26 | `0x1a4` | 6, `EHRPWM4_B` | Zephyr on R5F0_1 | EHRPWM4 output B |
 | P9.25 | AC4 | `0x200` | 7, held off | — | shorted to W26 |
@@ -50,6 +52,10 @@ Mux mode 4 on ball AB29 is `PRG0_ECAP0_IN_APWM_OUT`, the pin of ICSSG0's eCAP: i
 
 Mux mode 3 on these balls is the ICSSG's PWM module: `PRG0_PWM2_A0` and `PRG0_PWM2_B0` are the positive and negative outputs of set 2's first pair, which IEP1's CMP1 and CMP2 toggle. The pinctrl hangs on `&pru0_1`, the PRU that runs that set. A PWM pad is in tri-state with its pull-down on until the module drives it: the set's state registers start at Z, and so do they in the trip state, which an unmasked, unconnected trip input holds it in. PRU1 sets both pins low before the first period, and masks the trips.
 
+## ICSSG0 slice 1: P8.31, the pipeline's input
+
+Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its GPI shift register samples in 28-bit shift mode ([the pipeline](README.md#the-pipeline-p831-to-p925)). PRU1 drives no pin of its own, since the PWM module drives P9.12 and P9.15, so its inputs are free. P8.31's other ball, AJ25 (`PRG1_PRU1_GPO11`, pad `0x084`), is held off. The pinctrl goes with PRU1's other pins, on `&pru0_1`. A jumper wire from P9.15 brings it slice 1's output B; without one the pin floats, and the pipeline finds nothing to train on.
+
 ## ICSSG1: P8.17
 
 `PRG1_PWM2_A0`, mode 3, is the positive output of ICSSG1's PWM set 2. IEP1 never runs on ICSSG1, so the set stays in its initial state, and the pin follows the initial state the six cores' tasks write: that is how the RTUs and Tx_PRUs, whose R30 reaches no pad, drive a pin. The pinctrl hangs on `&pru1_0`, the core that sets the scheduler up.
@@ -74,8 +80,9 @@ With the demo running, the pad registers at `0x0011c000 + pad` read:
 | `0x0f4`, `0x0f0` | `0x10000` | output, mode 0 |
 | `0x0f8` | `0x10004` | output, mode 4 |
 | `0x0b8`, `0x0c0`, `0x00c` | `0x10003` | output, mode 3 |
+| `0x100` | `0x54001` | input, mode 1 |
 | `0x1a4` | `0x10006` | output, mode 6 |
-| `0x200`, `0x0b0`, `0x0b4`, `0x0d4` | `0x200007` | held off |
+| `0x200`, `0x0b0`, `0x0b4`, `0x0d4`, `0x084` | `0x200007` | held off |
 | `0x230`, `0x234`, `0x238` | `0x10006` | output, mode 6 |
 | `0x01c` | `0x1000e` | output, mode 14 |
 | `0x014` | `0x5000e` | input, mode 14 |

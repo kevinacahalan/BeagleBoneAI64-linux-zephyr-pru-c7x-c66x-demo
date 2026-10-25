@@ -53,10 +53,10 @@ Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (
 
 | Core | Source | What it does |
 | --- | --- | --- |
-| RTU0, RTU1 | `firmware/pwm_rtu.c` | The slice's fabric node (8, `g0rtu0`, and 9, `g0rtu1`). RTU0 also has an RPMsg channel to Linux. Writes requests to `pwm_ctl`, and every 10 ms publishes a `struct ai64_pwm_status` in its fabric page. |
+| RTU0, RTU1 | `firmware/pwm_rtu.c` | The slice's fabric node (8, `g0rtu0`, and 9, `g0rtu1`). RTU0 also has an RPMsg channel to Linux. Writes requests to `pwm_ctl`, and every 10 ms publishes a `struct ai64_pwm_status` in its fabric page. RTU1 also stamps the pipeline's windows ([below](#the-pipelines-first-stage)). |
 | Tx_PRU0, Tx_PRU1 | `firmware/pwm_modulator.c` | Passes the requested duty through, steps through the program on the GTC's time, or sweeps the duty from its minimum to its maximum and back every `sweep_ms`, a step per period. |
 | PRU0 | `firmware/beaglebone-ai64/icss_g0_pru0_fw/main.c` | Spins on IEP0's count and writes R30 at each edge. Counts the edges it was more than 100 ns late for, and keeps the latest. |
-| PRU1 | `firmware/beaglebone-ai64/icss_g0_pru1_fw/main.c` | IEP1 counts nanoseconds. CMP0 ends the period, CMP1 toggles A, CMP2 toggles B. When a compare fires, PRU1 clears its status and rearms it for that pin's next edge. |
+| PRU1 | `firmware/beaglebone-ai64/icss_g0_pru1_fw/main.c` | IEP1 counts nanoseconds. CMP0 ends the period, CMP1 toggles A, CMP2 toggles B. When a compare fires, PRU1 clears its status and rearms it for that pin's next edge. In the same loop it takes the pipeline's samples of P8.31 ([below](#the-pipelines-first-stage)). |
 | Tx_PRU0, again | `firmware/pwm_modulator.c` | Runs eCAP0 (below). RTU0 publishes the eCAP's own `struct ai64_pwm_status`, 32 words into its fabric page's app block. |
 
 **The eCAP.** In APWM mode eCAP0's 32-bit counter, on the 250 MHz core clock, counts from 0 to CAP1, the period less one count, and holds P8.15 high while the count is below CAP2. CAP3 and CAP4 shadow them, and load when the count reaches CAP1, so a change starts with a period. Whenever Tx_PRU0 gives PRU0 a new period and duty, it gives the eCAP the same, writing the shadows during the eCAP period whose end is nearest the time A changes, or, in steps, the step's GTC time. It counts the eCAP's periods from its `CTR_PRD` flag, so the count the `pwm` window shows comes from the eCAP itself. The eCAP has one output, so no B and no dead band, and its counter is not in phase with IEP0, so its edges do not line up with P8.11's. Two things to know about it: in capture mode CAP1 and CAP2 are capture registers, so a write to them does not stay (Tx_PRU0 selects APWM mode first), and its count survives a reboot (Tx_PRU0 zeroes it when it starts).
@@ -76,7 +76,14 @@ Both slices start with 1 µs of dead band, stepping through 10, 15, and 20 kHz (
 | `0x0c00`–`0x1eff` | RTU, RPMsg and the fabric node included | 4.75 KiB |
 | `0x1f00`–`0x1fff` | the IPC block | 256 B |
 
-The 64 KiB of ICSSG0 shared RAM at `0x10000` is free.
+The 64 KiB of ICSSG0 shared RAM at `0x10000` hold the pipeline's ring of P8.31 windows, 8 KiB, and PRU1's counts after it (`zephyr/include/ai64_pipe.h`); the rest is free.
+
+## The pipeline's first stage
+
+Slice 1 also feeds the [pipeline](../../README.md#the-pipeline-p831-to-p925), which runs P8.31 through ICSSG0, R5F0_0's UDMA, the C66x, and the C7x, and out on P9.25. The same split holds: PRU1 keeps time, RTU1 talks.
+
+- **PRU1** runs P8.31 (`PRG0_PRU1_GPI0`, jumpered from P9.15) through its R31 GPI shift register: 28-bit shift mode, the 250 MHz core clock divided by 12.5 and by 10, so a sample every 500 ns, the newest in bit 0. R31 bit 28, Cnt_16, is high for one sample's time after every 16th, and the loop that rearms the PWM compares takes R31's low 16 bits where it rises: 128 chunks make a window of 2048 samples, 1.024 ms, in one of 16 slots in shared RAM. The hardware times every sample, and a chunk costs PRU1 two loads and two stores every 8 µs, so its PWM keeps every edge.
+- **RTU1** stamps each window with the GTC, which PRU1 cannot read without stalling an edge: it counts back from the chunk PRU1 is on now, 8 µs a chunk, so the stamp is within a chunk of the truth however late RTU1 comes round. While the pipeline runs it then rings R5F0_0's mailbox, cluster 11 FIFO 15, with the window's number.
 
 The IPC block holds four records (`firmware/pwm_ipc.h`). Each has one writer. A writer fills in the fields before the `seq` that says they changed.
 
