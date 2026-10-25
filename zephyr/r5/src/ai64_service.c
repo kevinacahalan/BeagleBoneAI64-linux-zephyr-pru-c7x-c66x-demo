@@ -8,6 +8,8 @@
  * ipc_service link (ai64_ipc.c), and returns that core's answer. status
  * returns this core's job status; on R5F1_1, the monitor, every core's.
  * takeChunk checks a bulk buffer Linux already wrote, on R5F0_0 only.
+ * dmaCopy, also R5F0_0's, copies with its UDMA channel (ai64_dma.c), from
+ * the bulk buffer to a DSP's job block and nowhere else.
  */
 
 #include <zephyr/kernel.h>
@@ -22,6 +24,10 @@
 #include "ai64_erpc.h"
 #include "ai64_ipc.h"
 #include "ai64_shm.h"
+#include "ai64_dsp_job.h"
+#if CONFIG_AI64_DMA
+#include "ai64_dma.h"
+#endif
 
 LOG_MODULE_DECLARE(ai64_r5, LOG_LEVEL_INF);
 
@@ -187,5 +193,51 @@ uint32_t takeChunk(uint32_t seq, uint32_t length, uint32_t crc)
 	got = ai64_crc32((const uint8_t *)bulk->data, length);
 	LOG_INF("chunk seq %u len %u crc %08x", seq, length, got);
 	return got;
+#endif
+}
+
+#if CONFIG_AI64_DMA
+/* Whether [a, a + n) lies inside [base, base + size). */
+static bool inside(uint32_t a, uint32_t n, uint64_t base, uint32_t size)
+{
+	return a >= base && n <= size && a - base <= size - n;
+}
+
+/* Where the R5F's own copy goes, for cpuNs. */
+static uint8_t cpu_copy[0x4000] __aligned(64);
+#endif
+
+int32_t dmaCopy(uint32_t dst, uint32_t src, uint32_t length, uint32_t *cpuNs)
+{
+#if !CONFIG_AI64_DMA
+	ARG_UNUSED(dst);
+	ARG_UNUSED(src);
+	ARG_UNUSED(length);
+	*cpuNs = 0;
+	return -ENOTSUP;
+#else
+	uint32_t ns = 0, t0, n;
+	int ret;
+
+	*cpuNs = 0;
+	if (!inside(src, length, AI64_BULK_ADDR + 16u, AI64_BULK_SIZE - 16u) ||
+	    !inside(dst, length, AI64_JOB_C7X_PHYS, AI64_JOB_SIZE)) {
+		LOG_INF("erpc dma: %#x -> %#x, %u bytes: only bulk buffer -> C7x job block", src, dst,
+			length);
+		return -EINVAL;
+	}
+	ret = ai64_dma_copy(dst, src, length, &ns);
+	if (ret) {
+		LOG_ERR("erpc dma: failed (%d)", ret);
+		return ret;
+	}
+	/* The same bytes copied by this core, as far as cpu_copy holds them. */
+	n = length < sizeof(cpu_copy) ? length : sizeof(cpu_copy);
+	t0 = sys_read32(AI64_GTC_ADDR + 8u);
+	memcpy(cpu_copy, (const void *)(uintptr_t)src, n);
+	*cpuNs = (uint32_t)((uint64_t)(sys_read32(AI64_GTC_ADDR + 8u) - t0) *
+			    (1000000000u / AI64_GTC_HZ) * length / n);
+	LOG_INF("erpc dma: %u bytes in %u ns (memcpy %u ns)", length, ns, *cpuNs);
+	return (int32_t)ns;
 #endif
 }

@@ -2,7 +2,10 @@
  * Linux calls these Zephyr functions over each R5F core's RPMsg channel.
  * Any core takes spiWrite, setPwm, and setPwmSteps, and passes them to the
  * core whose job they are. Bulk bytes stay in the DDR region from
- * ai64_shm.h. They are not eRPC payload.
+ * ai64_shm.h. They are not eRPC payload. dmaCopy is R5F0_0's: its UDMA
+ * copies from the bulk buffer to a DSP's job block, and it returns the
+ * nanoseconds the copy took (cpuNs: the same bytes copied by the R5F), or a
+ * negative errno.
  */
 program ai64
 
@@ -13,4 +16,5 @@ interface Ai64Service {
     takeChunk(in uint32 seq, in uint32 length, in uint32 crc) -> uint32
     spiWrite(in string text) -> string
     status() -> string
+    dmaCopy(in uint32 dst, in uint32 src, in uint32 length, out uint32 cpuNs) -> int32
 }

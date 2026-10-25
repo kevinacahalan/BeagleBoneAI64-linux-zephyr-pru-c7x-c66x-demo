@@ -36,6 +36,13 @@ config AI64_JOB_MONITOR
 
 endchoice
 
+config AI64_DMA
+	bool "A UDMA memory-to-memory channel (src/ai64_dma.c)"
+	default y if AI64_JOB_SPI
+	help
+	  R5F0_0. Copies between DDR and the DSPs' memories for Linux's
+	  dmaCopy call, with the main NAVSS UDMA.
+
 config AI64_BLINK_HALF_PERIOD_US
 	int "Half period of the P8.18 square wave, in microseconds"
 	depends on AI64_JOB_BLINK

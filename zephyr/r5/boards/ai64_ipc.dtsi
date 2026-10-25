@@ -20,6 +20,9 @@
  *
  * A board overlay defines AI64_IPC_SELF, includes this file, and adds one
  * AI64_IPC_LINK(self, peer) for each of the other three cores.
+ *
+ * The slot for core 0 to itself carries no link: R5F0_0 keeps its DMA
+ * rings and descriptor there (src/ai64_dma.c), non-cacheable like the rest.
  */
 
 /*
@@ -73,6 +76,10 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
+		ai64_dma_mem: memory@a9080000 {
+			compatible = "mmio-sram";
+			reg = <0xa9080000 0x1000>;
+		};
 		ai64_ipc_buf_0_1: memory@a9081000 {
 			compatible = "mmio-sram";
 			reg = <0xa9081000 0x1000>;

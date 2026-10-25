@@ -32,6 +32,7 @@ target_compile_definitions(app PRIVATE AI64_SELF=${AI64_SELF_${AI64_CORE}} AI64_
 
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../dsp/include
   ${CMAKE_CURRENT_SOURCE_DIR}/../erpc/shim
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${ERPC}/infra
@@ -75,3 +76,4 @@ target_sources_ifdef(CONFIG_AI64_JOB_SPI     app PRIVATE src/ai64_spi.c)
 target_sources_ifdef(CONFIG_AI64_JOB_PWM     app PRIVATE src/ai64_pwm.c)
 target_sources_ifdef(CONFIG_AI64_JOB_BLINK   app PRIVATE src/ai64_blink.c)
 target_sources_ifdef(CONFIG_AI64_JOB_MONITOR app PRIVATE src/ai64_monitor.c)
+target_sources_ifdef(CONFIG_AI64_DMA         app PRIVATE src/ai64_dma.c)

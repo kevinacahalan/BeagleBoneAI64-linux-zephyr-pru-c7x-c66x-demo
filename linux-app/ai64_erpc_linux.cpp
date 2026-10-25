@@ -126,6 +126,11 @@ extern "C" int ai64_erpc_status(char *out, size_t outlen)
 	return 0;
 }
 
+extern "C" int32_t ai64_erpc_dma(uint32_t dst, uint32_t src, uint32_t length, uint32_t *cpu_ns)
+{
+	return dmaCopy(dst, src, length, cpu_ns);
+}
+
 extern "C" int ai64_erpc_pwm(uint32_t period_ns, uint32_t duty_ns)
 {
 	int32_t rc = setPwm(period_ns, duty_ns);

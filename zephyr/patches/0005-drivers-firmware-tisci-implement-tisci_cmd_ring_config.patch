@@ -1,0 +1,45 @@
+--- a/drivers/firmware/tisci/tisci.c
++++ b/drivers/firmware/tisci/tisci.c
+@@ -1369,6 +1369,42 @@
+ 
+ /* UDMAP Management Functions */
+ 
++int tisci_cmd_ring_config(const struct device *dev, uint32_t valid_params, uint16_t nav_id,
++			  uint16_t index, uint32_t addr_lo, uint32_t addr_hi, uint32_t count,
++			  uint8_t mode, uint8_t size, uint8_t order_id)
++{
++	struct tisci_msg_rm_ring_cfg_req req;
++	struct tisci_msg_rm_ring_cfg_resp resp;
++	struct tisci_xfer *xfer;
++	int ret;
++
++	xfer = tisci_setup_one_xfer(dev, TISCI_MSG_RM_RING_CFG, 0, &req, sizeof(req), &resp,
++				    sizeof(resp));
++	if (!xfer) {
++		LOG_ERR(" Failed to setup ring config transfer");
++		return -EINVAL;
++	}
++
++	req.valid_params = valid_params;
++	req.nav_id = nav_id;
++	req.index = index;
++	req.addr_lo = addr_lo;
++	req.addr_hi = addr_hi;
++	req.count = count;
++	req.mode = mode;
++	req.size = size;
++	req.order_id = order_id;
++
++	ret = tisci_do_xfer(dev, xfer);
++	if (ret) {
++		LOG_ERR("Ring %u config failed (ret=%d)", index, ret);
++		return ret;
++	}
++
++	LOG_DBG("Ring %u configured successfully", index);
++	return 0;
++}
++
+ int tisci_cmd_rm_udmap_tx_ch_cfg(const struct device *dev,
+ 				 const struct tisci_msg_rm_udmap_tx_ch_cfg *params)
+ {

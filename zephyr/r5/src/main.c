@@ -28,6 +28,9 @@
 #include "ai64_shm.h"
 #include "ai64_erpc.h"
 #include "ai64_tisci.h"
+#if CONFIG_AI64_DMA
+#include "ai64_dma.h"
+#endif
 
 LOG_MODULE_REGISTER(ai64_r5, LOG_LEVEL_INF);
 
@@ -93,6 +96,10 @@ static FUNC_NORETURN void park_for_shutdown(void)
 {
 	unsigned int i;
 
+#if CONFIG_AI64_DMA
+	/* A DMA channel left on would still be on when the core runs again. */
+	ai64_dma_stop();
+#endif
 	sys_write32(RP_MBOX_SHUTDOWN_ACK, MBOX_MESSAGE(MBOX_TX_FIFO));
 	(void)arch_irq_lock();
 	/* A pending interrupt, even a masked one, wakes WFI. Mask them at the VIM. */

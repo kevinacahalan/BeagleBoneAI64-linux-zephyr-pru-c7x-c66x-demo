@@ -105,6 +105,8 @@ static void print_help(void)
 	printf("  r5fX_Y pwm <period_ns> <duty_ns>    R5F0_1 sets P9.25 (EHRPWM4), fixed\n");
 	printf("  r5fX_Y steps <ms>                   R5F0_1 steps P9.25 10/15/20 kHz x 10-90%%, 0 stops\n");
 	printf("  r5f0_0 chunk <text>                 Linux writes the DDR bulk buffer, R5F0_0 checks it\n");
+	printf("  r5f0_0 dma [rows]                   R5F0_0's UDMA copies a layer's input from DDR to the\n"
+	       "                                      C7x's L2; the C7x's MMA runs the layer\n");
 	printf("  rtu0 pwm <period_ns> <duty_ns>      P8.11/P8.12 software PWM (ICSSG0 slice 0), and its\n"
 	       "                                      eCAP copy of A on P8.15, fixed\n");
 	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
@@ -1273,6 +1275,106 @@ static int do_chunk(const char *text)
 	return 0;
 }
 
+/*
+ * r5f0_0 dma [rows]: Linux writes a layer's input in R5F0_0's bulk buffer
+ * (DDR), R5F0_0's UDMA copies it into the C7x's job block (L2 SRAM), the
+ * C7x runs the layer on its MMA, and Linux checks the copy and the result.
+ */
+static int do_dma(const char *arg)
+{
+	static volatile struct ai64_bulk *bulk;
+	static volatile uint32_t *job;
+	static int8_t a[AI64_JOB_LAYER_MAX_ROWS * 64], b[64 * 64], want[AI64_JOB_LAYER_MAX_ROWS * 64];
+	uint32_t rows = arg[0] ? (uint32_t)atoi(arg) : AI64_JOB_LAYER_MAX_ROWS;
+	uint32_t i, len, shift, relu, cpu_ns = 0;
+	volatile int8_t *ja, *jb, *jy;
+	char state[32], line[300];
+	double t0, layer_us;
+	int32_t ns;
+
+	if (rows == 0 || rows > AI64_JOB_LAYER_MAX_ROWS || rows % 16) {
+		snprintf(line, sizeof(line), "%s: dma wants rows, a multiple of 16 up to %u", g_who,
+			 AI64_JOB_LAYER_MAX_ROWS);
+		note_line(line);
+		return -1;
+	}
+	/* A powered-off DSP's L2 SRAM does not answer, and reading it hangs the SoC. */
+	if (!rproc_attr("64800000.dsp", "state", state, sizeof(state)) && strcmp(state, "running")) {
+		snprintf(line, sizeof(line), "%s: dma: the C7x is %s", g_who, state);
+		note_line(line);
+		return -1;
+	}
+	if (!bulk) {
+		bulk = map_phys(AI64_BULK_ADDR, AI64_BULK_SIZE);
+	}
+	if (!job) {
+		job = map_phys(AI64_JOB_C7X_PHYS, AI64_JOB_SIZE);
+	}
+	if (!bulk || !job || job[AI64_JOB_W_MAGIC] != AI64_JOB_MAGIC) {
+		snprintf(line, sizeof(line), "%s: dma: no bulk buffer or C7x job block", g_who);
+		note_line(line);
+		return -1;
+	}
+	ja = (volatile int8_t *)((volatile uint8_t *)job + AI64_JOB_LAYER_A_OFF);
+	jb = (volatile int8_t *)((volatile uint8_t *)job + AI64_JOB_LAYER_B_OFF);
+	jy = (volatile int8_t *)((volatile uint8_t *)job + AI64_JOB_LAYER_Y_OFF);
+	len = rows * 64;
+
+	/* The input goes to DDR only; the C7x's copy starts as filler. */
+	for (i = 0; i < len; i++) {
+		a[i] = (int8_t)(rand() % 256 - 128);
+		bulk->data[i] = (uint8_t)a[i];
+		ja[i] = 0x55;
+	}
+	for (i = 0; i < 64 * 64; i++) {
+		b[i] = (int8_t)(rand() % 256 - 128);
+		jb[i] = b[i];
+	}
+	shift = 8 + rand() % 6;
+	relu = rand() & 1;
+
+	ns = ai64_erpc_dma((uint32_t)(AI64_JOB_C7X_PHYS + AI64_JOB_LAYER_A_OFF),
+			   AI64_BULK_ADDR + 16u, len, &cpu_ns);
+	if (ns < 0) {
+		snprintf(line, sizeof(line), "%s: dma: the call failed (%d)", g_who, ns);
+		note_line(line);
+		return -1;
+	}
+	for (i = 0; i < len; i++) {
+		if (ja[i] != a[i]) {
+			snprintf(line, sizeof(line), "%s: dma: byte %u in the C7x's L2 is %d, expected %d",
+				 g_who, i, ja[i], a[i]);
+			note_line(line);
+			return -1;
+		}
+	}
+	layer_ref(a, b, want, rows, shift, relu);
+	job[AI64_JOB_W_ARG] = shift | relu << 8;
+	t0 = now_us();
+	if (dsp_run(job, AI64_JOB_LAYER_MMA, rows, 0)) {
+		snprintf(line, sizeof(line), "%s: dma: the C7x refused the layer", g_who);
+		note_line(line);
+		return -1;
+	}
+	layer_us = now_us() - t0;
+	for (i = 0; i < len; i++) {
+		if (jy[i] != want[i]) {
+			snprintf(line, sizeof(line), "%s: dma: layer output %u is %d, expected %d", g_who, i,
+				 jy[i], want[i]);
+			note_line(line);
+			return -1;
+		}
+	}
+	snprintf(line, sizeof(line),
+		 "%s: dma: its UDMA copied %u bytes from DDR to the C7x's L2 in %.1f us (%.0f MB/s; "
+		 "the R5F reading them itself: %.1f us), then the C7x's MMA ran the layer: "
+		 "%u cycles, %.1f us round trip; all match the A72",
+		 g_who, len, ns / 1000.0, len * 1000.0 / ns, cpu_ns / 1000.0,
+		 job[AI64_JOB_W_CYCLES], layer_us);
+	note_line(line);
+	return 0;
+}
+
 static int erpc_line(const char *line)
 {
 	char reply[200];
@@ -1336,6 +1438,9 @@ static int erpc_line(const char *line)
 	if (!strncmp(line, "chunk ", 6)) {
 		return do_chunk(line + 6);
 	}
+	if (!strcmp(line, "dma") || !strncmp(line, "dma ", 4)) {
+		return do_dma(line[3] ? line + 4 : "");
+	}
 	if (!strcmp(line, "status")) {
 		char text[800];
 		char shown[900];
@@ -1373,7 +1478,7 @@ static int erpc_line(const char *line)
 		char shown[200];
 
 		snprintf(shown, sizeof(shown),
-			 "%s: commands are say <text> | status | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]",
+			 "%s: commands are say <text> | status | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text] | dma [rows]",
 			 g_who);
 		note_line(shown);
 	}
@@ -1599,11 +1704,13 @@ static const struct {
 	{ "r5f1_0", "spi via r5f1_0" },
 	/* By now the monitor has a second of round trips. */
 	{ "r5f1_1", "status" },
+	/* DDR -> R5F0_0's UDMA -> the C7x's L2 -> its MMA. */
+	{ "r5f0_0", "dma" },
 };
 
 static void usage_hint(void)
 {
-	printf("use r5fX_Y say|status|spi|pwm|steps ..., r5f0_0 chunk <text>, "
+	printf("use r5fX_Y say|status|spi|pwm|steps ..., r5f0_0 chunk <text>|dma [rows], "
 	       "rtu0 pwm|steps|sweep|dead|status|<text>, or help\n");
 	fflush(stdout);
 }
@@ -1646,7 +1753,7 @@ static int linux_main(int argc, char **argv)
 		pump(400, 0);
 	}
 
-	printf("linux window ready. commands: r5fX_Y say|status|spi|pwm|steps ... | r5f0_0 chunk ... | "
+	printf("linux window ready. commands: r5fX_Y say|status|spi|pwm|steps ... | r5f0_0 chunk|dma ... | "
 	       "rtu0 pwm|steps|sweep|dead|status|<text> | help\n");
 	fflush(stdout);
 
