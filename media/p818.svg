@@ -1,0 +1,56 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='300' viewBox='0 0 900 300'>
+  <rect width='900' height='300' fill='#ffffff'/>
+  <text x='20.0' y='26.0' font-family='Helvetica, Arial, sans-serif' font-size='15' fill='#1f2328' text-anchor='start' font-weight='bold'>P8.18, captured: 20036 half periods of R5F1_0's 500 µs k_timer, to the nearest µs</text>
+  <rect x='101.7' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='109.5' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='140.7' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='148.5' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='160.2' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='168.0' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='277.2' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='285.0' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='296.7' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='304.5' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='374.7' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='382.5' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='413.7' y='189.2' width='15.6' height='40.8' fill='#0969da'/>
+  <text x='421.5' y='185.2' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>8</text>
+  <rect x='433.2' y='114.1' width='15.6' height='115.9' fill='#0969da'/>
+  <rect x='452.7' y='73.1' width='15.6' height='156.9' fill='#0969da'/>
+  <rect x='472.2' y='60.0' width='15.6' height='170.0' fill='#0969da'/>
+  <rect x='491.7' y='72.1' width='15.6' height='157.9' fill='#0969da'/>
+  <rect x='511.2' y='111.5' width='15.6' height='118.5' fill='#0969da'/>
+  <rect x='530.7' y='179.7' width='15.6' height='50.3' fill='#0969da'/>
+  <text x='538.5' y='175.7' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>14</text>
+  <rect x='550.2' y='209.6' width='15.6' height='20.4' fill='#0969da'/>
+  <text x='558.0' y='205.6' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>2</text>
+  <rect x='628.2' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='636.0' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='667.2' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='675.0' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='784.2' y='217.1' width='15.6' height='12.9' fill='#0969da'/>
+  <text x='792.0' y='213.1' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>1</text>
+  <rect x='823.2' y='209.6' width='15.6' height='20.4' fill='#0969da'/>
+  <text x='831.0' y='205.6' font-family='Helvetica, Arial, sans-serif' font-size='10' fill='#59636e' text-anchor='middle' font-weight='normal'>2</text>
+  <line x1='90.0' y1='230.0' x2='870.0' y2='230.0' stroke='#1f2328' stroke-width='1'/>
+  <line x1='90.0' y1='230.0' x2='90.0' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='90.0' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>480</text>
+  <line x1='187.5' y1='230.0' x2='187.5' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='187.5' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>485</text>
+  <line x1='285.0' y1='230.0' x2='285.0' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='285.0' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>490</text>
+  <line x1='382.5' y1='230.0' x2='382.5' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='382.5' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>495</text>
+  <line x1='480.0' y1='230.0' x2='480.0' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='480.0' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>500</text>
+  <line x1='577.5' y1='230.0' x2='577.5' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='577.5' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>505</text>
+  <line x1='675.0' y1='230.0' x2='675.0' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='675.0' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>510</text>
+  <line x1='772.5' y1='230.0' x2='772.5' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='772.5' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>515</text>
+  <line x1='870.0' y1='230.0' x2='870.0' y2='235.0' stroke='#59636e' stroke-width='1'/>
+  <text x='870.0' y='248.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>520</text>
+  <text x='480.0' y='266.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal'>µs (counts on a log scale)</text>
+  <text x='90.0' y='46.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal'>99.83% within 2.5 µs of 500; extremes 480.6 and 518.4 µs</text>
+</svg>

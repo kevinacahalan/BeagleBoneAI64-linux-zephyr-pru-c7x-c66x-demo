@@ -24,16 +24,17 @@ J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
 | P9.12 | AE27 | `0x0b8` | 3, `PRG0_PWM2_A0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output A |
 | P9.15 | AD25 | `0x0c0` | 3, `PRG0_PWM2_B0` | ICSSG0 PWM module, run by PRU1 | ICSSG PWM, output B |
 | P8.17 | AF22 | `0x00c` | 3, `PRG1_PWM2_A0` | the six ICSSG1 cores | the multicore scheduler |
-| P9.25 | W26 | `0x1a4` | 6, `EHRPWM4_B` | Zephyr on R5F0_0 | EHRPWM4 output B |
+| P9.25 | W26 | `0x1a4` | 6, `EHRPWM4_B` | Zephyr on R5F0_1 | EHRPWM4 output B |
 | P9.25 | AC4 | `0x200` | 7, held off | — | shorted to W26 |
-| P9.28 | U2 | `0x230` | 6, `SPI7_CS0` | Zephyr | SPI7 chip select |
+| P9.28 | U2 | `0x230` | 6, `SPI7_CS0` | Zephyr on R5F0_0 | SPI7 chip select |
 | P9.28 | AF28 | `0x0b0` | 7, held off | — | shorted to U2 |
-| P9.30 | V6 | `0x238` | 6, `SPI7_D0` | Zephyr | SPI7 MOSI |
+| P9.30 | V6 | `0x238` | 6, `SPI7_D0` | Zephyr on R5F0_0 | SPI7 MOSI |
 | P9.30 | AE28 | `0x0b4` | 7, held off | — | shorted to V6 |
-| P9.31 | U3 | `0x234` | 6, `SPI7_CLK` | Zephyr | SPI7 clock, 1 MHz |
+| P9.31 | U3 | `0x234` | 6, `SPI7_CLK` | Zephyr on R5F0_0 | SPI7 clock, 1 MHz |
 | P9.31 | AB26 | `0x0d4` | 7, held off | — | shorted to U3 |
-| P8.34 | AD22 | `0x01c` | 14, `UART2_TXD` | Zephyr | Zephyr console, 115200 8N1 |
+| P8.34 | AD22 | `0x01c` | 14, `UART2_TXD` | Zephyr on R5F0_0 | Zephyr console, 115200 8N1 |
 | P8.22 | AH23 | `0x014` | 14, `UART2_RXD` | Zephyr | Zephyr console |
+| P8.18 | AJ23 | `0x010` | 7, `GPIO0_4`, here GPIO2_4 | Zephyr on R5F1_0 | 1 kHz square wave |
 
 All signals are 3.3 V.
 
@@ -53,13 +54,14 @@ Mux mode 3 on these balls is the ICSSG's PWM module: `PRG0_PWM2_A0` and `PRG0_PW
 
 `PRG1_PWM2_A0`, mode 3, is the positive output of ICSSG1's PWM set 2. IEP1 never runs on ICSSG1, so the set stays in its initial state, and the pin follows the initial state the six cores' tasks write: that is how the RTUs and Tx_PRUs, whose R30 reaches no pad, drive a pin. The pinctrl hangs on `&pru1_0`, the core that sets the scheduler up.
 
-## Zephyr: P9.25, SPI7, and UART2
+## Zephyr: P9.25, SPI7, UART2, and P8.18
 
-The Zephyr image muxes its own pins from its devicetree, the way the PocketBeagle 2 demo's M4 does. The R5F can write the pad registers because Linux has already unlocked them. Linux does not touch these pads: `main_spi7`, `main_uart2`, and `main_ehrpwm4` stay disabled in the Linux device tree.
+Each Zephyr image muxes its own pins from its devicetree, the way the PocketBeagle 2 demo's M4 does. The R5F can write the pad registers because Linux has already unlocked them. Linux does not touch these pads: `main_spi7`, `main_uart2`, and `main_ehrpwm4` stay disabled in the Linux device tree.
 
-- **P9.25** is EHRPWM4 output B, mode 6 on W26, with AC4 held off: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_0.overlay`. The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`, which gives the same ball and EHRPWM4 to Linux. `install-beagle.sh` removes that overlay from the default label and adds this demo's; the original `extlinux.conf` is saved as `extlinux.conf.ai64-bak`.
-- **SPI7**: the same overlay. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed. The board firmware leaves MCSPI7 powered (`k3conf dump device` shows `DEVICE_STATE_ON`).
-- **UART2**: the upstream Zephyr board file. Any 3.3 V USB-serial adapter reads the console there.
+- **P9.25** is EHRPWM4 output B, mode 6 on W26, with AC4 held off: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_1.overlay`. The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`, which gives the same ball and EHRPWM4 to Linux. `install-beagle.sh` removes that overlay from the default label and adds this demo's; the original `extlinux.conf` is saved as `extlinux.conf.ai64-bak`.
+- **SPI7**: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_0.overlay`. Its functional clock is 50 MHz. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed. The board firmware leaves MCSPI7 powered (`k3conf dump device` shows `DEVICE_STATE_ON`).
+- **UART2**: the upstream Zephyr board file for R5F0_0. Any 3.3 V USB-serial adapter reads the console there.
+- **P8.18** is ball AJ23 in mode 7, GPIO, with bit 4 of the pad set: bits 5:4 pick which of the main domain's GPIO0, GPIO2, GPIO4, and GPIO6 drives a pad, and 1 is GPIO2. Linux owns GPIO0 and leaves GPIO2 disabled, so R5F1_0 takes GPIO2 whole: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f1_0.overlay`. The pad reads `0x10017`.
 
 What each pin should show, and how B relates to A on the ICSSG0 pairs, is in the README's [Probe the pins](README.md#probe-the-pins).
 
@@ -77,8 +79,9 @@ With the demo running, the pad registers at `0x0011c000 + pad` read:
 | `0x230`, `0x234`, `0x238` | `0x10006` | output, mode 6 |
 | `0x01c` | `0x1000e` | output, mode 14 |
 | `0x014` | `0x5000e` | input, mode 14 |
+| `0x010` | `0x10017` | output, mode 7, GPIO2 |
 
-`sudo ai64 pads` reads them and marks any that differ. The Zephyr pads only take these values once R5F0_0 has booted.
+`sudo ai64 pads` reads them and marks any that differ. A Zephyr pad only takes its value once its core has booted: SPI7 and UART2 with R5F0_0, P9.25 with R5F0_1, P8.18 with R5F1_0.
 
 ## Left alone
 

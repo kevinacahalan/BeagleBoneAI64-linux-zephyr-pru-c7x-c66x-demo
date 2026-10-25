@@ -1,0 +1,36 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='300' viewBox='0 0 900 300'>
+  <rect width='900' height='300' fill='#ffffff'/>
+  <text x='20.0' y='26.0' font-family='Helvetica, Arial, sans-serif' font-size='15' fill='#1f2328' text-anchor='start' font-weight='bold'>SPI7, captured at 50 MS/s: the first byte, 'h' = 0x68</text>
+  <text x='20.0' y='74.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>CS0</text>
+  <text x='20.0' y='90.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>P9.28</text>
+  <polyline points='120.0,60.0 197.9,60.0 197.9,90.0 870.0,90.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <text x='20.0' y='144.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>CLK</text>
+  <text x='20.0' y='160.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>P9.31</text>
+  <polyline points='120.0,160.0 402.5,160.0 402.5,130.0 428.5,130.0 428.5,160.0 454.5,160.0 454.5,130.0 480.5,130.0 480.5,160.0 506.4,160.0 506.4,130.0 532.4,130.0 532.4,160.0 558.4,160.0 558.4,130.0 584.3,130.0 584.3,160.0 610.3,160.0 610.3,130.0 636.3,130.0 636.3,160.0 662.2,160.0 662.2,130.0 688.2,130.0 688.2,160.0 714.2,160.0 714.2,130.0 740.2,130.0 740.2,160.0 766.1,160.0 766.1,130.0 792.1,130.0 792.1,160.0 846.1,160.0 846.1,130.0 870.0,130.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <text x='20.0' y='214.0' font-family='Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold'>MOSI</text>
+  <text x='20.0' y='230.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='start' font-weight='normal'>P9.30</text>
+  <rect x='428.5' y='200.0' width='103.9' height='30.0' fill='#ddf4ff'/>
+  <rect x='584.3' y='200.0' width='51.9' height='30.0' fill='#ddf4ff'/>
+  <polyline points='120.0,230.0 428.5,230.0 428.5,200.0 532.4,200.0 532.4,230.0 584.3,230.0 584.3,200.0 636.3,200.0 636.3,230.0 870.0,230.0' fill='none' stroke='#0969da' stroke-width='1.8'/>
+  <line x1='402.5' y1='124.0' x2='402.5' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='402.5' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>0</text>
+  <line x1='454.5' y1='124.0' x2='454.5' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='454.5' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>1</text>
+  <line x1='506.4' y1='124.0' x2='506.4' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='506.4' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>1</text>
+  <line x1='558.4' y1='124.0' x2='558.4' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='558.4' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>0</text>
+  <line x1='610.3' y1='124.0' x2='610.3' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='610.3' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>1</text>
+  <line x1='662.2' y1='124.0' x2='662.2' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='662.2' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>0</text>
+  <line x1='714.2' y1='124.0' x2='714.2' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='714.2' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>0</text>
+  <line x1='766.1' y1='124.0' x2='766.1' y2='236.0' stroke='#d1d9e0' stroke-width='1' stroke-dasharray='3 3'/>
+  <text x='766.1' y='252.0' font-family='Helvetica, Arial, sans-serif' font-size='13' fill='#1f2328' text-anchor='middle' font-weight='bold'>0</text>
+  <line x1='402.5' y1='120.0' x2='454.5' y2='120.0' stroke='#59636e' stroke-width='1'/>
+  <path d='M402.5,120.0 l5,-3 v6 z' fill='#59636e'/>
+  <path d='M454.5,120.0 l-5,-3 v6 z' fill='#59636e'/>
+  <text x='428.5' y='116.0' font-family='Helvetica, Arial, sans-serif' font-size='11' fill='#59636e' text-anchor='middle' font-weight='normal'>1.00 µs</text>
+  <text x='120.0' y='276.0' font-family='Helvetica, Arial, sans-serif' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal'>MOSI changes on CLK's falling edge and is read on its rising edge (mode 0, MSB first).</text>
+</svg>
