@@ -106,7 +106,7 @@
 
 /*
  * What a route does at action_node on its way. Each PWM generator's
- * talking core takes them: ICSSG0 RTU0 and RTU1 all four, R5F0_0 (its
+ * talking core takes them: ICSSG0 RTU0 and RTU1 all four, R5F0_1 (its
  * EHRPWM) pwm and steps.
  */
 #define AI64_FAB_ACT_NONE  0u

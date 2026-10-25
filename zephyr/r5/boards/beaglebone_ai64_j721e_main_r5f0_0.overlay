@@ -2,7 +2,6 @@
 #include <zephyr/dt-bindings/pinctrl/ti-k3-pinctrl.h>
 #include <freq.h>
 #include <zephyr/dt-bindings/interrupt-controller/ti-vim.h>
-#include <zephyr/dt-bindings/pwm/pwm.h>
 
 /*
  * Carve the bulk chunk region out of R5F0_0 DDR: 64 KiB at 0xa2fef000,
@@ -74,59 +73,6 @@
 		/* P9.30b AE28, shorted to P9.30a */
 		pinmux = <K3_PINMUX(0x00b4, AI64_PIN_OFF, MUX_MODE_7)>;
 	};
-	ai64_epwm4_b: ai64-epwm4-b {
-		/* P9.25b W26 RGMII6_RXC.EHRPWM4_B, mode 6 */
-		pinmux = <K3_PINMUX(0x01a4, PIN_OUTPUT, MUX_MODE_6)>;
-	};
-	ai64_epwm4_off_p9_25a: ai64-epwm4-off-p9-25a {
-		/* P9.25a AC4, shorted to P9.25b */
-		pinmux = <K3_PINMUX(0x0200, AI64_PIN_OFF, MUX_MODE_7)>;
-	};
-};
-
-/*
- * EHRPWM4 output B on P9.25, through Zephyr's EHRPWM driver
- * (ti,am3352-ehrpwm). Its functional clock and power come from the device
- * manager over TI-SCI (dmsc, below): device 87, clock 0, as in the Linux
- * device tree's main_ehrpwm4. The power domain turns the module on at
- * boot. The time-base clock gate is CTRLMMR_EPWM4_CTRL bit 0, at 0x4150 in
- * CTRL_MMR0 (Linux's ehrpwm_tbclk 4), in the partition that kicks at
- * 0x5008. Linux leaves EHRPWM4 alone once install-beagle.sh has taken the
- * stock image's epwm4 overlay out of its boot entry. src/ai64_pwm.c drives
- * it, through the pwms of /zephyr,user.
- */
-/ {
-	main_ctrl_mmr0: syscon@100000 {
-		compatible = "ti,control-module", "syscon";
-		reg = <0x00100000 0x1c000>;
-		ti,unlock-offsets = <0x5008>;
-		#epwm-tbclk-cells = <2>;
-	};
-
-	power-domains {
-		epwm4_pd: epwm4-pd {
-			compatible = "ti,sci-pm-domain";
-			tisci,device-id = <87>;
-			tisci,device-mode = "EXCLUSIVE";
-			#power-domain-cells = <0>;
-		};
-	};
-
-	main_ehrpwm4: pwm@3040000 {
-		compatible = "ti,am3352-ehrpwm";
-		reg = <0x03040000 0x100>;
-		clocks = <&k3_clks 87 0>;
-		tbclk = <&main_ctrl_mmr0 0x4150 0>;
-		power-domains = <&epwm4_pd>;
-		pinctrl-0 = <&ai64_epwm4_b &ai64_epwm4_off_p9_25a>;
-		pinctrl-names = "default";
-		#pwm-cells = <3>;
-	};
-
-	zephyr,user {
-		/* Output B is channel 1. 1 kHz until Linux asks for another. */
-		pwms = <&main_ehrpwm4 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
-	};
 };
 
 /*
@@ -151,11 +97,6 @@
 		ti,host-id = <35>;
 		mboxes = <&ai64_sproxy 61>, <&ai64_sproxy 63>;
 		mbox-names = "rx", "tx";
-
-		k3_clks: clock-controller {
-			compatible = "ti,k2g-sci-clk";
-			#clock-cells = <2>;
-		};
 	};
 };
 
@@ -178,4 +119,26 @@
 /* The board puts the mailbox on VIM 256, which nothing routes to. */
 &mbox1 {
 	interrupts = <0 228 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+};
+
+/*
+ * The links to the other three R5F cores (boards/ai64_ipc.dtsi). This core's
+ * doorbells are NAVSS0_MAILBOX_11 user 1, which arrives on router input 393
+ * (TI-SCI's pend_intr 0); output 197, the next of this host's range, lands
+ * on VIM input 229.
+ */
+#define AI64_IPC_SELF 0
+#include "ai64_ipc.dtsi"
+
+/ {
+	ai64_tisci_ipc: tisci-route-ipc {
+		compatible = "ai64,tisci-irq-route";
+		ir-id = <213>;
+		ir-input = <393>;
+		ir-output = <197>;
+	};
+
+	AI64_IPC_LINK(0, 1)
+	AI64_IPC_LINK(0, 2)
+	AI64_IPC_LINK(0, 3)
 };

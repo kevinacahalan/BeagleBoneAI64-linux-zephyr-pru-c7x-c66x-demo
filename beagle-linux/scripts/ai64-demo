@@ -276,7 +276,9 @@ restart_r5_cores() {
 	done
 	for entry in "${R5_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
-		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr-main_$label/zephyr/$fw")
+		image=$label
+		[[ $label == r5f0_0 ]] && image=r5
+		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr/$image/zephyr/$fw")
 		load_fw "$name" "$fw" "$src"
 	done
 }

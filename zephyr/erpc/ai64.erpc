@@ -1,6 +1,8 @@
 /*
- * Linux calls these Zephyr functions over the R5F0_0 RPMsg channel.
- * Bulk bytes stay in the DDR region from ai64_shm.h. They are not eRPC payload.
+ * Linux calls these Zephyr functions over each R5F core's RPMsg channel.
+ * Any core takes spiWrite, setPwm, and setPwmSteps, and passes them to the
+ * core whose job they are. Bulk bytes stay in the DDR region from
+ * ai64_shm.h. They are not eRPC payload.
  */
 program ai64
 
@@ -10,4 +12,5 @@ interface Ai64Service {
     setPwmSteps(in uint32 stepMs) -> int32
     takeChunk(in uint32 seq, in uint32 length, in uint32 crc) -> uint32
     spiWrite(in string text) -> string
+    status() -> string
 }

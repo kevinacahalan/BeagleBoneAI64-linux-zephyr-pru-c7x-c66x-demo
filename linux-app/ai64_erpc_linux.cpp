@@ -114,6 +114,18 @@ extern "C" int ai64_erpc_spi(const char *text, char *out, size_t outlen)
 	return 0;
 }
 
+extern "C" int ai64_erpc_status(char *out, size_t outlen)
+{
+	char *reply = status();
+
+	if (!reply) {
+		return -1;
+	}
+	snprintf(out, outlen, "%s", reply);
+	erpc_free(reply);
+	return 0;
+}
+
 extern "C" int ai64_erpc_pwm(uint32_t period_ns, uint32_t duty_ns)
 {
 	int32_t rc = setPwm(period_ns, duty_ns);

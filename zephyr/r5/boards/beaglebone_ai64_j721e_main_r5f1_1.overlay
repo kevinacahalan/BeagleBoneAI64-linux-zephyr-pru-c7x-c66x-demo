@@ -46,3 +46,25 @@
 &mbox2 {
 	interrupts = <0 228 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 };
+
+/*
+ * The links to the other three R5F cores (boards/ai64_ipc.dtsi). This core's
+ * doorbells are NAVSS0_MAILBOX_10 user 3, which arrives on router input
+ * 399 (TI-SCI's pend_intr 2); output 293, the next of this host's range,
+ * lands on VIM input 229.
+ */
+#define AI64_IPC_SELF 3
+#include "ai64_ipc.dtsi"
+
+/ {
+	ai64_tisci_ipc: tisci-route-ipc {
+		compatible = "ai64,tisci-irq-route";
+		ir-id = <213>;
+		ir-input = <399>;
+		ir-output = <293>;
+	};
+
+	AI64_IPC_LINK(3, 0)
+	AI64_IPC_LINK(3, 1)
+	AI64_IPC_LINK(3, 2)
+};

@@ -1,17 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Zephyr on a BeagleBone AI-64 main-domain R5F core.
+ * Zephyr on a BeagleBone AI-64 main-domain R5F core: its link to Linux.
  *
  * Linux calls Zephyr functions over eRPC on RPMsg (channel "rpmsg-raw",
- * address 1024). On R5F0_0, setPwm sets EHRPWM4 on P9.25 (ai64_pwm.c) and
- * spiWrite writes SPI7 on header P9. The other cores answer say and report
- * that they have neither.
+ * address 1024), on every core (ai64_service.c). Each core's job runs from
+ * its own file: ai64_spi.c, ai64_pwm.c, ai64_blink.c, or ai64_monitor.c.
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/ipm.h>
-#include <zephyr/drivers/spi.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/cache.h>
@@ -286,56 +284,8 @@ static void rpmsg_thread(void *a, void *b, void *c)
 K_THREAD_DEFINE(rpmsg_tid, 4096, rpmsg_thread, NULL, NULL, NULL, K_PRIO_COOP(8), 0, 0);
 K_THREAD_DEFINE(app_tid, 8192, app_thread, NULL, NULL, NULL, K_PRIO_COOP(7), 0, 0);
 
-int ai64_spi7_write(const void *buf, size_t len)
-{
-#if !AI64_HAS_SPI7
-	ARG_UNUSED(buf);
-	ARG_UNUSED(len);
-	return -ENOTSUP;
-#else
-	static const struct spi_config cfg = {
-		.frequency = 1000000,
-		.operation = SPI_OP_MODE_CONTROLLER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB,
-		.peripheral = 0,
-	};
-	const struct device *spi = DEVICE_DT_GET(DT_NODELABEL(main_spi7));
-	const struct spi_buf txb = {
-		.buf = (void *)buf,
-		.len = len,
-	};
-	const struct spi_buf_set tx = {
-		.buffers = &txb,
-		.count = 1,
-	};
-
-	if (!buf || !len) {
-		return -EINVAL;
-	}
-	if (!device_is_ready(spi)) {
-		LOG_ERR("spi7 not ready");
-		return -ENODEV;
-	}
-	return spi_write(spi, &cfg, &tx);
-#endif
-}
-
-static void ai64_spi_hello(void)
-{
-	static const uint8_t hello[] = {'h', 'e', 'l', 'l', 'o'};
-	int ret = ai64_spi7_write(hello, sizeof(hello));
-
-	if (ret) {
-		LOG_ERR("spi7 hello failed: %d", ret);
-		return;
-	}
-	LOG_INF("spi7 hello wrote %u bytes", (unsigned int)sizeof(hello));
-}
-
 int main(void)
 {
 	LOG_INF("ai64 " AI64_CORE " hello");
-	if (AI64_HAS_SPI7) {
-		ai64_spi_hello();
-	}
 	return 0;
 }

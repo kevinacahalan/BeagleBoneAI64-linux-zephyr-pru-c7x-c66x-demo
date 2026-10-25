@@ -10,7 +10,7 @@
  * (ai64_fabric.h), for any core to read. Four of them: ICSSG0 slice 0
  * makes PWM in software, and a copy of its output A with ICSSG0's eCAP;
  * ICSSG0 slice 1 with the ICSSG's PWM module (pru/pwm/); and Zephyr on
- * R5F0_0 with the SoC's EHRPWM4 on P9.25.
+ * R5F0_1 with the SoC's EHRPWM4 on P9.25.
  *
  * Do not put a loadable ELF section on the DDR addresses. The Zephyr overlay
  * and these macros must stay on the same addresses.
@@ -107,7 +107,7 @@ static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_
 
 /*
  * The generator's status, rewritten about every 10 ms by its talking core:
- * the slice's RTU, or R5F0_0. magic is cleared while it writes. The ask_
+ * the slice's RTU, or R5F0_1. magic is cleared while it writes. The ask_
  * fields are the last request, the run_ fields what the outputs do now.
  * late counts edges the real-time core was late for: a software edge more
  * than AI64_PWM_LATE_NS late, or a compare it rearmed after the time had

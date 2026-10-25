@@ -1,17 +1,20 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * P9.25: EHRPWM4 output B, through Zephyr's EHRPWM driver. Only R5F0_0's
- * overlay has it (the pwms of /zephyr,user); the other cores build none of
- * this.
+ * R5F0_1's job: P9.25, EHRPWM4 output B, through Zephyr's EHRPWM driver.
+ * Only R5F0_1's overlay has it (the pwms of /zephyr,user); the other cores
+ * build none of this.
  *
- * Linux sets it over eRPC (setPwm for a fixed duty, setPwmSteps), and any
- * core with a fabric route's pwm or steps action for r5f0_0. Like the
+ * Linux sets it over eRPC (setPwm for a fixed duty, setPwmSteps), another
+ * R5F core with an AI64_IPC_PWM or AI64_IPC_STEPS request (ai64_jobs.c),
+ * and any core with a fabric route's pwm or steps action for r5f0_1. Like the
  * ICSSG0 slices it starts stepping through AI64_PWM_STEP_HZ and
  * AI64_PWM_STEP_PCT, a step every AI64_PWM_DEFAULT_STEPS_MS, on the GTC's
  * time (ai64_shm.h), so it changes step with them. A delayable work item
  * takes the steps. pwm_set() would ask the device manager for EHRPWM4's
  * clock rate over TI-SCI each time, which takes longer than a 20 kHz
- * period; the rate does not change, so this asks once and sets cycles. About every 10 ms the fabric thread publishes its
+ * period; the rate does not change, so this asks once and sets cycles.
+ *
+ * About every 10 ms the fabric thread publishes its
  * struct ai64_pwm_status (ai64_shm.h) in this node's fabric page, as the
  * ICSSG0 RTUs do for their PWM slices. The EHRPWM counts no periods, so
  * periods stays 0, and late does not apply.
@@ -21,7 +24,10 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 
+#include <stdio.h>
+
 #include "ai64_erpc.h"
+#include "ai64_ipc.h"
 #include "ai64_shm.h"
 
 LOG_MODULE_DECLARE(ai64_r5, LOG_LEVEL_INF);
@@ -218,6 +224,19 @@ void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now)
 	s->ctl_ack = ctl_ack;
 	s->at = now;
 	s->magic = AI64_PWM_MAGIC;
+	k_mutex_unlock(&lock);
+}
+
+void ai64_job_status(char *buf, size_t len)
+{
+	k_mutex_lock(&lock, K_FOREVER);
+	if (steps_ms) {
+		snprintf(buf, len, "P9.25: stepping every %u ms, now %u Hz at %u%% duty", steps_ms,
+			 run_period ? 1000000000u / run_period : 0u,
+			 run_period ? (uint32_t)(((uint64_t)run_duty * 200u / run_period + 1u) / 2u) : 0u);
+	} else {
+		snprintf(buf, len, "P9.25: fixed, period %u ns, duty %u ns", run_period, run_duty);
+	}
 	k_mutex_unlock(&lock);
 }
 

@@ -90,13 +90,15 @@ static void unquote(char *s)
 
 static void print_help(void)
 {
-	printf("commands (each R5F core runs its own Zephyr; R5F0_0 also has P9.25, SPI7, and the bulk buffer):\n");
-	printf("  r5f0_0 say <text>                   R5F0_0 echoes it back (eRPC)\n");
-	printf("  r5f0_0 pwm <period_ns> <duty_ns>    P9.25 hardware PWM (EHRPWM4), fixed\n");
-	printf("  r5f0_0 steps <ms>                   P9.25 steps 10/15/20 kHz x 10-90%%, 0 stops\n");
+	printf("commands (each R5F core runs Zephyr with a job of its own: R5F0_0 SPI7, R5F0_1 P9.25,\n"
+	       "R5F1_0 the P8.18 square wave, R5F1_1 the monitor; any core passes spi, pwm, and steps\n"
+	       "on to the core whose job they are):\n");
+	printf("  r5fX_Y say <text>                   the core echoes it back (eRPC)\n");
+	printf("  r5fX_Y status                       its job's status; r5f1_1 shows all four\n");
+	printf("  r5fX_Y spi [text]                   R5F0_0 writes SPI7\n");
+	printf("  r5fX_Y pwm <period_ns> <duty_ns>    R5F0_1 sets P9.25 (EHRPWM4), fixed\n");
+	printf("  r5fX_Y steps <ms>                   R5F0_1 steps P9.25 10/15/20 kHz x 10-90%%, 0 stops\n");
 	printf("  r5f0_0 chunk <text>                 Linux writes the DDR bulk buffer, R5F0_0 checks it\n");
-	printf("  r5f0_0 spi [text]                   R5F0_0 writes SPI7\n");
-	printf("  r5f0_1|r5f1_0|r5f1_1 say <text>\n");
 	printf("  rtu0 pwm <period_ns> <duty_ns>      P8.11/P8.12 software PWM (ICSSG0 slice 0), and its\n"
 	       "                                      eCAP copy of A on P8.15, fixed\n");
 	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
@@ -307,7 +309,7 @@ static const struct {
 	{ 0x0b8, 0x10003, "P9.12 AE27 PRG0_PWM2_A0" },
 	{ 0x0c0, 0x10003, "P9.15 AD25 PRG0_PWM2_B0" },
 	{ 0x00c, 0x10003, "P8.17 AF22 PRG1_PWM2_A0" },
-	{ 0x1a4, 0x10006, "P9.25 W26 Zephyr EHRPWM4_B" },
+	{ 0x1a4, 0x10006, "P9.25 W26 Zephyr R5F0_1 EHRPWM4_B" },
 	{ 0x200, 0x200007, "P9.25 AC4 held off" },
 	{ 0x230, 0x10006, "P9.28 U2 Zephyr SPI7_CS0" },
 	{ 0x0b0, 0x200007, "P9.28 AF28 held off" },
@@ -317,6 +319,7 @@ static const struct {
 	{ 0x0d4, 0x200007, "P9.31 AB26 held off" },
 	{ 0x01c, 0x1000e, "P8.34 AD22 Zephyr UART2_TXD" },
 	{ 0x014, 0x5000e, "P8.22 AH23 Zephyr UART2_RXD" },
+	{ 0x010, 0x10017, "P8.18 AJ23 Zephyr R5F1_0 GPIO2_4" },
 };
 
 static int pads_main(void)
@@ -337,7 +340,8 @@ static int pads_main(void)
 		bad |= !ok;
 	}
 	if (bad) {
-		printf("Zephyr pads only change once R5F0_0 has booted; the others need the overlay.\n");
+		printf("A Zephyr pad changes once its core has booted: SPI7 and UART2 on R5F0_0, P9.25 on\n"
+		       "R5F0_1, P8.18 on R5F1_0. The others need the overlay.\n");
 	}
 	return bad;
 }
@@ -620,8 +624,8 @@ static const struct {
 	  "hardware PWM: ICSSG0's eCAP0 in APWM mode, a copy of P8.11 (A) that Tx_PRU0 sets" },
 	{ "P9.12 + P9.15", "P9.12", "P9.15", AI64_FAB_G0RTU1, 0, "b006000.rtu",
 	  "hardware PWM: ICSSG0 slice 1, the ICSSG's PWM module toggles the pins on IEP1 compares" },
-	{ "P9.25", "P9.25", NULL, AI64_FAB_R5F0_0, 0, "5c00000.r5f",
-	  "hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_0 (Zephyr's PWM driver)" },
+	{ "P9.25", "P9.25", NULL, AI64_FAB_R5F0_1, 0, "5d00000.r5f",
+	  "hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_1 (Zephyr's PWM driver)" },
 };
 
 #define NPWM (sizeof(pwm_gens) / sizeof(pwm_gens[0]))
@@ -1154,8 +1158,7 @@ static int erpc_line(const char *line)
 		if (sscanf(line + 4, "%u %u", &period, &duty) != 2) {
 			snprintf(shown, sizeof(shown), "%s: pwm wants <period_ns> <duty_ns>", g_who);
 		} else if (ai64_erpc_pwm(period, duty)) {
-			snprintf(shown, sizeof(shown), "%s: pwm: the call failed (only R5F0_0 has P9.25)",
-				 g_who);
+			snprintf(shown, sizeof(shown), "%s: pwm: the call failed", g_who);
 		} else {
 			snprintf(shown, sizeof(shown),
 				 "%s: pwm: P9.25 (EHRPWM4 output B) now fixed at %u ns a period, %u ns high",
@@ -1173,8 +1176,7 @@ static int erpc_line(const char *line)
 		if (sscanf(line + 6, "%u", &ms) != 1) {
 			snprintf(shown, sizeof(shown), "%s: steps wants <ms>, 0 to stop", g_who);
 		} else if (ai64_erpc_pwm_steps(ms)) {
-			snprintf(shown, sizeof(shown), "%s: steps: the call failed (only R5F0_0 has P9.25)",
-				 g_who);
+			snprintf(shown, sizeof(shown), "%s: steps: the call failed", g_who);
 		} else {
 			if (ms) {
 				snprintf(shown, sizeof(shown),
@@ -1192,6 +1194,19 @@ static int erpc_line(const char *line)
 	}
 	if (!strncmp(line, "chunk ", 6)) {
 		return do_chunk(line + 6);
+	}
+	if (!strcmp(line, "status")) {
+		char text[800];
+		char shown[900];
+
+		if (ai64_erpc_status(text, sizeof(text))) {
+			snprintf(shown, sizeof(shown), "%s: status: the call failed", g_who);
+			note_line(shown);
+			return -1;
+		}
+		snprintf(shown, sizeof(shown), "%s: status: %s", g_who, text);
+		note_line(shown);
+		return 0;
 	}
 	if (!strcmp(line, "spi") || !strncmp(line, "spi ", 4)) {
 		char text[512];
@@ -1217,7 +1232,7 @@ static int erpc_line(const char *line)
 		char shown[200];
 
 		snprintf(shown, sizeof(shown),
-			 "%s: commands are say <text> | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]",
+			 "%s: commands are say <text> | status | pwm <period_ns> <duty_ns> | steps <ms> | chunk <text> | spi [text]",
 			 g_who);
 		note_line(shown);
 	}
@@ -1319,8 +1334,7 @@ static int open_out(const char *dir, const char *name)
 /*
  * The windows the linux window talks to: what you type, the FIFO names,
  * and how lines name them. Each window writes its result lines back on a
- * reply FIFO, which the linux window prints as they come. Only R5F0_0 has
- * EHRPWM4, the bulk buffer, and SPI7.
+ * reply FIFO, which the linux window prints as they come.
  */
 static struct target {
 	const char *cmd;
@@ -1435,16 +1449,20 @@ static const struct {
 	{ "r5f0_0", "chunk bulk-hello" },
 	{ "r5f0_0", "spi" },
 	/* The PWM default again: P9.25 stepping, 5 ms a step. */
-	{ "r5f0_0", "steps 5" },
+	{ "r5f0_1", "steps 5" },
 	{ "rtu0", "status" },
 	{ "r5f0_1", "say hello from linux" },
 	{ "r5f1_0", "say hello from linux" },
 	{ "r5f1_1", "say hello from linux" },
+	/* R5F1_0 has no SPI: it passes this to R5F0_0 over ipc_service. */
+	{ "r5f1_0", "spi via r5f1_0" },
+	/* By now the monitor has a second of round trips. */
+	{ "r5f1_1", "status" },
 };
 
 static void usage_hint(void)
 {
-	printf("use r5f0_0 say|pwm|steps|chunk|spi ..., r5f0_1|r5f1_0|r5f1_1 say <text>, "
+	printf("use r5fX_Y say|status|spi|pwm|steps ..., r5f0_0 chunk <text>, "
 	       "rtu0 pwm|steps|sweep|dead|status|<text>, or help\n");
 	fflush(stdout);
 }
@@ -1487,7 +1505,7 @@ static int linux_main(int argc, char **argv)
 		pump(400, 0);
 	}
 
-	printf("linux window ready. commands: r5f0_0 say|pwm|steps|chunk|spi ... | r5f0_1|r5f1_0|r5f1_1 say ... | "
+	printf("linux window ready. commands: r5fX_Y say|status|spi|pwm|steps ... | r5f0_0 chunk ... | "
 	       "rtu0 pwm|steps|sweep|dead|status|<text> | help\n");
 	fflush(stdout);
 

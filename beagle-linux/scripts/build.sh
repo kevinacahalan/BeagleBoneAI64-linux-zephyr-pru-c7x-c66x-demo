@@ -23,9 +23,18 @@ IMAGE_PRU=ai64-pru-cgt
 IMAGE_ZEPHYR=ai64-zephyr-sdk
 IMAGE_DSP=ai64-dsp-cgt
 
-# The R5F cores that run Zephyr, as west board names. Each one gets the same
-# app in zephyr/r5, with its own overlay from zephyr/r5/boards/.
+# The R5F cores that run Zephyr, as west board names. One sysbuild build of
+# zephyr/r5 makes an image for each (zephyr/r5/sysbuild.cmake), each with its
+# own job and overlay from zephyr/r5/boards/. The first is the default image.
 R5_CORES=(main_r5f0_0 main_r5f0_1 main_r5f1_0 main_r5f1_1)
+
+# Where sysbuild puts core $1's ELF: build/zephyr/<image>/zephyr/.
+r5_elf() {
+	local core=${1#main_} image
+	image=$core
+	[[ $1 == "${R5_CORES[0]}" ]] && image=r5
+	echo "build/zephyr/$image/zephyr/ai64_$core.elf"
+}
 
 # AI64_CONTAINER_ENGINE is podman or docker. Unset, use podman when it
 # is installed, otherwise docker. --security-opt label=disable is podman.
@@ -232,27 +241,24 @@ build_erpcgen() {
 }
 
 build_zephyr() {
-	local core
 	build_image "$IMAGE_ZEPHYR" "$ROOT/containers/zephyr/Containerfile"
 	fetch_erpc
-	for core in "${R5_CORES[@]}"; do
-		engine_run \
-			-v "$ROOT:/work" -w /work \
-			-e CORE="$core" \
-			"$IMAGE_ZEPHYR" \
-			bash -c 'set -euo pipefail
-				git config --global --add safe.directory "*"
-				if [[ ! -d .west ]]; then
-					west init -l zephyr
-				fi
-				# west update checks out the manifest revision and drops local
-				# edits. apply-patches.sh reapplies zephyr/patches/ when that
-				# directory has any.
-				west update
-				zephyr/scripts/apply-patches.sh
-				west build -b "beaglebone_ai64/j721e/$CORE" zephyr/r5 \
-					-d "build/zephyr-$CORE" -p always'
-	done
+	engine_run \
+		-v "$ROOT:/work" -w /work \
+		-e CORE="${R5_CORES[0]}" \
+		"$IMAGE_ZEPHYR" \
+		bash -c 'set -euo pipefail
+			git config --global --add safe.directory "*"
+			if [[ ! -d .west ]]; then
+				west init -l zephyr
+			fi
+			# west update checks out the manifest revision and drops local
+			# edits. apply-patches.sh reapplies zephyr/patches/ when that
+			# directory has any.
+			west update
+			zephyr/scripts/apply-patches.sh
+			west build --sysbuild -b "beaglebone_ai64/j721e/$CORE" zephyr/r5 \
+				-d build/zephyr -p always'
 }
 
 # Gather what install-beagle.sh needs into out/ai64-beagle, to copy to the board.
@@ -281,7 +287,7 @@ bundle() {
 		dsp/build/ai64-c7x.elf
 	)
 	for core in "${R5_CORES[@]}"; do
-		files+=("build/zephyr-$core/zephyr/ai64_${core#main_}.elf")
+		files+=("$(r5_elf "$core")")
 	done
 	for f in "${files[@]}"; do
 		if [[ ! -f $ROOT/$f ]]; then

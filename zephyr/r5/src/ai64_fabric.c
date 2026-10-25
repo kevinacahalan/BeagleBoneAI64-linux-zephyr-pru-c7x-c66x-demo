@@ -9,7 +9,7 @@
  * mailboxes, and the spinlocks are in the low 2 GiB it maps as device
  * memory.
  *
- * On R5F0_0 a route's pwm or steps action sets P9.25 (ai64_pwm.c), and the thread
+ * On R5F0_1 a route's pwm or steps action sets P9.25 (ai64_pwm.c), and the thread
  * publishes the PWM's status in this node's page every 10 ms.
  */
 
@@ -46,7 +46,7 @@ LOG_MODULE_REGISTER(ai64_fabric, LOG_LEVEL_INF);
 BUILD_ASSERT(AI64_FAB_NODE >= AI64_FAB_R5F0_0 && AI64_FAB_NODE <= AI64_FAB_R5F1_1,
 	     "an R5F is fabric node 1 to 4");
 
-/* A route's action for this node: only R5F0_0's pwm and steps, for P9.25. */
+/* A route's action for this node: only R5F0_1's pwm and steps, for P9.25. */
 static uint32_t fab_action(struct ai64_fab_msg *m)
 {
 	if (AI64_HAS_PWM && m->action == AI64_FAB_ACT_PWM) {

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Route this core's mailbox interrupt, with a TI-SCI request.
+ * Route this core's mailbox interrupts, with TI-SCI requests.
  *
- * Linux kicks the R5F through a mailbox FIFO. On J721E the mailbox user
+ * Linux kicks the R5F through a mailbox FIFO, and the other R5F cores
+ * through FIFOs of mailbox cluster 7 (boards/ai64_ipc.dtsi). On J721E the mailbox user
  * interrupt reaches the R5F's VIM only through the NAVSS interrupt router,
  * and nothing programs that router for the R5F. This asks the device
  * manager to do it (TISCI_MSG_RM_IRQ_SET), the way Linux's ti,sci-intr does
@@ -23,25 +24,26 @@
 
 LOG_MODULE_DECLARE(ai64_r5, LOG_LEVEL_INF);
 
-#define ROUTE DT_INST(0, ai64_tisci_irq_route)
+#define ROUTE     DT_NODELABEL(ai64_tisci)
+#define IPC_ROUTE DT_NODELABEL(ai64_tisci_ipc)
 
-#if !DT_NODE_EXISTS(ROUTE)
-#error "The board overlay needs an ai64,tisci-irq-route node"
+#if !DT_NODE_EXISTS(ROUTE) || !DT_NODE_EXISTS(IPC_ROUTE)
+#error "The board overlay needs the ai64_tisci and ai64_tisci_ipc routes"
 #endif
 
 #define IRQ_SECONDARY_HOST_INVALID 0xffu
 
 static const struct device *const dmsc = DEVICE_DT_GET(DT_NODELABEL(dmsc));
 
-int ai64_route_mbox_irq(void)
+static int route(uint16_t ir, uint16_t input, uint16_t output)
 {
 	struct tisci_irq_release_req rel = {
 		.valid_params = TISCI_MSG_VALUE_RM_DST_ID_VALID |
 				TISCI_MSG_VALUE_RM_DST_HOST_IRQ_VALID,
-		.src_id = DT_PROP(ROUTE, ir_id),
-		.src_index = DT_PROP(ROUTE, ir_input),
-		.dst_id = DT_PROP(ROUTE, ir_id),
-		.dst_host_irq = DT_PROP(ROUTE, ir_output),
+		.src_id = ir,
+		.src_index = input,
+		.dst_id = ir,
+		.dst_host_irq = output,
 		.secondary_host = IRQ_SECONDARY_HOST_INVALID,
 	};
 	struct tisci_irq_set_req set = {
@@ -72,4 +74,15 @@ int ai64_route_mbox_irq(void)
 	LOG_INF("tisci: mailbox interrupt routed, router %u input %u -> output %u", set.src_id,
 		set.src_index, set.dst_host_irq);
 	return 0;
+}
+
+int ai64_route_mbox_irq(void)
+{
+	return route(DT_PROP(ROUTE, ir_id), DT_PROP(ROUTE, ir_input), DT_PROP(ROUTE, ir_output));
+}
+
+int ai64_route_ipc_irq(void)
+{
+	return route(DT_PROP(IPC_ROUTE, ir_id), DT_PROP(IPC_ROUTE, ir_input),
+		     DT_PROP(IPC_ROUTE, ir_output));
 }

@@ -21,12 +21,14 @@ endif()
 string(TOUPPER "${AI64_CORE}" AI64_CORE_NAME)
 target_compile_definitions(app PRIVATE AI64_CORE="${AI64_CORE}" AI64_CORE_NAME="${AI64_CORE_NAME}")
 
-# Its node number on the fabric (zephyr/include/ai64_fabric.h).
-set(AI64_FAB_NODE_r5f0_0 1)
-set(AI64_FAB_NODE_r5f0_1 2)
-set(AI64_FAB_NODE_r5f1_0 3)
-set(AI64_FAB_NODE_r5f1_1 4)
-target_compile_definitions(app PRIVATE AI64_FAB_NODE=${AI64_FAB_NODE_${AI64_CORE}})
+# Its number among the four R5F cores (src/ai64_ipc.h), and its node on the
+# fabric (zephyr/include/ai64_fabric.h), one more.
+set(AI64_SELF_r5f0_0 0)
+set(AI64_SELF_r5f0_1 1)
+set(AI64_SELF_r5f1_0 2)
+set(AI64_SELF_r5f1_1 3)
+math(EXPR AI64_FAB_NODE "${AI64_SELF_${AI64_CORE}} + 1")
+target_compile_definitions(app PRIVATE AI64_SELF=${AI64_SELF_${AI64_CORE}} AI64_FAB_NODE=${AI64_FAB_NODE})
 
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -47,8 +49,9 @@ target_sources(app PRIVATE
   src/ai64_mpu.c
   src/ai64_tisci.c
   src/ai64_sproxy.c
-  src/ai64_pwm.c
   src/ai64_fabric.c
+  src/ai64_ipc.c
+  src/ai64_jobs.c
   src/ai64_erpc.cpp
   src/erpc_port_zephyr.cpp
   ../erpc/shim/c_ai64_server.cpp
@@ -66,3 +69,9 @@ target_sources(app PRIVATE
   ${ERPC}/setup/erpc_server_setup.cpp
   ${ERPC}/setup/erpc_setup_mbf_dynamic.cpp
 )
+
+# This core's job (Kconfig, set in boards/<board>.conf).
+target_sources_ifdef(CONFIG_AI64_JOB_SPI     app PRIVATE src/ai64_spi.c)
+target_sources_ifdef(CONFIG_AI64_JOB_PWM     app PRIVATE src/ai64_pwm.c)
+target_sources_ifdef(CONFIG_AI64_JOB_BLINK   app PRIVATE src/ai64_blink.c)
+target_sources_ifdef(CONFIG_AI64_JOB_MONITOR app PRIVATE src/ai64_monitor.c)

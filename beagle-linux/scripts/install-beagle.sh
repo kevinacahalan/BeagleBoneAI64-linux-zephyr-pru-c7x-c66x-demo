@@ -69,8 +69,11 @@ for f in ai64-icssg{0,1}-{pru,rtu,txpru}{0,1}.elf; do
 	ICSSG[$f]=$(find_artifact "$f" "pru/build/$f")
 done
 declare -A R5
+# One sysbuild build: the R5F0_0 image is the default one, build/zephyr/r5.
 for core in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
-	R5[$core]=$(find_artifact "ai64_$core.elf" "build/zephyr-main_$core/zephyr/ai64_$core.elf")
+	image=$core
+	[[ $core == r5f0_0 ]] && image=r5
+	R5[$core]=$(find_artifact "ai64_$core.elf" "build/zephyr/$image/zephyr/ai64_$core.elf")
 done
 PRU_KO=$(find_artifact pru_rproc.ko beagle-linux/kernel/pru_rproc/pru_rproc.ko)
 R5_KO=$(find_artifact ti_k3_r5_remoteproc.ko beagle-linux/kernel/k3_r5_rproc/ti_k3_r5_remoteproc.ko)

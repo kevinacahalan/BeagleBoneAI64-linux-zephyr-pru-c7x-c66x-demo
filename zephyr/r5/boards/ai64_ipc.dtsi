@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: MIT
+/*
+ * The R5F cores' links to each other: Zephyr ipc_service, icmsg backend.
+ *
+ * Every core has a link to every other, twelve one-way buffers in all. Core
+ * n is R5F0_0, R5F0_1, R5F1_0, R5F1_1 for n = 0 to 3. The buffer from core
+ * a to core b is 4 KiB at 0xa9080000 + (4a + b) * 4 KiB, inside the 1 MiB
+ * the Linux overlay reserves for the fabric (which uses the first 128 KiB).
+ *
+ * Its doorbell is a FIFO of core b's home mailbox. Only two NAVSS mailbox
+ * clusters have nobody listening after boot: 10 and 11 (the MCU R5F's
+ * firmware, which runs the device manager, listens on cluster 7, and posts
+ * to 5, 6, 8, and 9). Only users 1 to 3 of a cluster reach the interrupt
+ * router. So cores 1 to 3 are users 1 to 3 of cluster 10, on FIFO 4a + b;
+ * core 0 is user 1 of cluster 11, on FIFO 11 + a, since the fabric uses
+ * that cluster's FIFOs 0 to 9 (ai64_fabric.h), without interrupts. Each core
+ * asks the device manager to route its user's interrupt to its VIM input
+ * 229 (src/ai64_tisci.c). A core sends on the other cluster too, but takes
+ * no interrupt from it.
+ *
+ * A board overlay defines AI64_IPC_SELF, includes this file, and adds one
+ * AI64_IPC_LINK(self, peer) for each of the other three cores.
+ */
+
+/*
+ * unbound = "enable": a core that restarts opens its links with a new
+ * session number, and the peer gets an unbound callback and opens the link
+ * again (src/ai64_ipc.c). The buffers are non-cacheable on every core
+ * (src/ai64_mpu.c); dcache-alignment keeps pbuf's indexes on their own
+ * 32-byte lines anyway, which the session handshake needs.
+ */
+#define AI64_IPC_FIFO(a, b) ((b) == 0 ? 11 + (a) : (a) * 4 + (b))
+
+#define AI64_IPC_LINK(self, peer)                                              \
+	ai64_ipc_peer##peer: ipc_peer##peer {                                  \
+		compatible = "zephyr,ipc-icmsg";                               \
+		tx-region = <&ai64_ipc_buf_##self##_##peer>;                   \
+		rx-region = <&ai64_ipc_buf_##peer##_##self>;                   \
+		mboxes = <&ai64_ipc_home##peer AI64_IPC_FIFO(self, peer)>,     \
+			 <&ai64_ipc_home##self AI64_IPC_FIFO(peer, self)>;     \
+		mbox-names = "tx", "rx";                                       \
+		unbound = "enable";                                            \
+		dcache-alignment = <32>;                                       \
+		status = "okay";                                               \
+	};
+
+/*
+ * The cluster this core does not take interrupts from still needs one in
+ * its node; VIM 230 is never routed or enabled.
+ */
+/ {
+	ai64_ipc_home0: mailbox@31f8b000 {
+		compatible = "ti,omap-mailbox";
+		reg = <0x31f8b000 0x200>;
+		interrupts = <0 ((AI64_IPC_SELF) == 0 ? 229 : 230) IRQ_TYPE_LEVEL
+			      IRQ_DEFAULT_PRIORITY>;
+		interrupt-parent = <&vim>;
+		usr-id = <1>;
+		#mbox-cells = <1>;
+	};
+
+	ai64_ipc_home1: ai64_ipc_home2: ai64_ipc_home3: mailbox@31f8a000 {
+		compatible = "ti,omap-mailbox";
+		reg = <0x31f8a000 0x200>;
+		interrupts = <0 ((AI64_IPC_SELF) == 0 ? 230 : 229) IRQ_TYPE_LEVEL
+			      IRQ_DEFAULT_PRIORITY>;
+		interrupt-parent = <&vim>;
+		usr-id = <((AI64_IPC_SELF) == 0 ? 1 : (AI64_IPC_SELF))>;
+		#mbox-cells = <1>;
+	};
+
+	ai64-ipc-buffers {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		ai64_ipc_buf_0_1: memory@a9081000 {
+			compatible = "mmio-sram";
+			reg = <0xa9081000 0x1000>;
+		};
+		ai64_ipc_buf_0_2: memory@a9082000 {
+			compatible = "mmio-sram";
+			reg = <0xa9082000 0x1000>;
+		};
+		ai64_ipc_buf_0_3: memory@a9083000 {
+			compatible = "mmio-sram";
+			reg = <0xa9083000 0x1000>;
+		};
+		ai64_ipc_buf_1_0: memory@a9084000 {
+			compatible = "mmio-sram";
+			reg = <0xa9084000 0x1000>;
+		};
+		ai64_ipc_buf_1_2: memory@a9086000 {
+			compatible = "mmio-sram";
+			reg = <0xa9086000 0x1000>;
+		};
+		ai64_ipc_buf_1_3: memory@a9087000 {
+			compatible = "mmio-sram";
+			reg = <0xa9087000 0x1000>;
+		};
+		ai64_ipc_buf_2_0: memory@a9088000 {
+			compatible = "mmio-sram";
+			reg = <0xa9088000 0x1000>;
+		};
+		ai64_ipc_buf_2_1: memory@a9089000 {
+			compatible = "mmio-sram";
+			reg = <0xa9089000 0x1000>;
+		};
+		ai64_ipc_buf_2_3: memory@a908b000 {
+			compatible = "mmio-sram";
+			reg = <0xa908b000 0x1000>;
+		};
+		ai64_ipc_buf_3_0: memory@a908c000 {
+			compatible = "mmio-sram";
+			reg = <0xa908c000 0x1000>;
+		};
+		ai64_ipc_buf_3_1: memory@a908d000 {
+			compatible = "mmio-sram";
+			reg = <0xa908d000 0x1000>;
+		};
+		ai64_ipc_buf_3_2: memory@a908e000 {
+			compatible = "mmio-sram";
+			reg = <0xa908e000 0x1000>;
+		};
+	};
+};

@@ -1,0 +1,29 @@
+--- a/drivers/timer/ti_dmtimer.c
++++ b/drivers/timer/ti_dmtimer.c
+@@ -123,9 +123,24 @@
+ 
+ 	k_spinlock_key_t key = k_spin_lock(&data->lock);
+ 
+-	/* Setup next match time */
++	/* Setup next match time, on a tick boundary: ticks counts from the
++	 * current tick, not from now, or each wakeup lands as late as the
++	 * time since the boundary, the late part adds up, and the kernel
++	 * then announces two ticks at once and wakes a timeout a tick early.
++	 */
+ 	uint32_t curr_cycle = TI_DM_TIMER_READ(systick_timer_dev, TCRR);
+-	uint32_t next_cycle = curr_cycle + (ticks * CYC_PER_TICK);
++	uint32_t elapsed = (curr_cycle - data->last_cycle) / CYC_PER_TICK;
++
++	if (ticks > MAX_TICKS - elapsed) {
++		ticks = MAX_TICKS - elapsed;
++	}
++
++	uint32_t next_cycle = data->last_cycle + (elapsed + ticks) * CYC_PER_TICK;
++
++	/* A boundary this close may pass before the write lands: take the next. */
++	if ((int32_t)(next_cycle - curr_cycle) < (int32_t)(CYC_PER_TICK / 16)) {
++		next_cycle += CYC_PER_TICK;
++	}
+ 
+ 	TI_DM_TIMER_WRITE(systick_timer_dev, next_cycle, TMAR, COMPARE_VALUE);
+ 

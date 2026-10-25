@@ -13,7 +13,7 @@
  *   stamps it as it passes. With an action, the first PWM generator on the
  *   route runs it when the message reaches it, so any core can change a
  *   PWM: g0rtu0 (ICSSG0 slice 0, software), g0rtu1 (slice 1, the ICSSG
- *   PWM module), or, for pwm and steps, r5f0_0 (EHRPWM4 on P9.25). Prints the
+ *   PWM module), or, for pwm and steps, r5f0_1 (EHRPWM4 on P9.25). Prints the
  *   time each hop took. It works with the viewer running.
  *
  * ai64 fabric reset
@@ -69,7 +69,7 @@ static int acts(uint32_t node, uint32_t action)
 	if (node == AI64_FAB_G0RTU0 || node == AI64_FAB_G0RTU1) {
 		return 1;
 	}
-	return node == AI64_FAB_R5F0_0 &&
+	return node == AI64_FAB_R5F0_1 &&
 	       (action == AI64_FAB_ACT_PWM || action == AI64_FAB_ACT_STEPS);
 }
 
@@ -462,7 +462,7 @@ static int route_main(int argc, char **argv)
 			fprintf(stderr, "%s runs on a PWM generator: the route has to pass g0rtu0 or g0rtu1%s\n",
 				action == AI64_FAB_ACT_PWM ? "pwm" : action == AI64_FAB_ACT_DEAD ? "dead" :
 				action == AI64_FAB_ACT_SWEEP ? "sweep" : "steps",
-				action == AI64_FAB_ACT_PWM || action == AI64_FAB_ACT_STEPS ? ", or r5f0_0" : "");
+				action == AI64_FAB_ACT_PWM || action == AI64_FAB_ACT_STEPS ? ", or r5f0_1" : "");
 			return 2;
 		}
 		act_node = route[h];

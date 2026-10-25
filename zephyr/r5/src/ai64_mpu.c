@@ -22,6 +22,8 @@
  *      Linux writes it
  *   7  the fabric, normal non-cacheable: every demo core's inbox
  *      (ai64_fabric.h)
+ *   8  the R5F cores' ipc_service buffers, normal non-cacheable
+ *      (boards/ai64_ipc.dtsi)
  *
  * It runs at the EARLY init level, before soc_early_init_hook() invalidates
  * and enables both caches (CONFIG_CACHE_MANAGEMENT), so the regions are in
@@ -40,6 +42,9 @@
 /* The core's carveout starts at the vring region (zephyr,ipc_shm). */
 #define CARVEOUT_BASE  DT_REG_ADDR(DT_CHOSEN(zephyr_ipc_shm))
 #define CARVEOUT_SIZE  0x01000000u
+
+/* The sixteen 4 KiB ipc_service buffer slots, 64 KiB (boards/ai64_ipc.dtsi). */
+#define IPC_BASE       0xa9080000u
 
 /* DRACR: AP = full access, plus TEX/C/B. */
 #define ACC_FULL       (3u << 8)
@@ -80,6 +85,9 @@ static int ai64_mpu_init(void)
 	BUILD_ASSERT((AI64_FAB_ADDR & (AI64_FAB_SIZE - 1u)) == 0u &&
 		     AI64_FAB_SIZE == 0x20000u, "the fabric is one 128 KiB region");
 	mpu_set(7, AI64_FAB_ADDR, 17, ATTR_NORMAL_NC);
+	BUILD_ASSERT(DT_REG_ADDR(DT_NODELABEL(ai64_ipc_buf_0_1)) - 0x1000u == IPC_BASE,
+		     "the ipc_service buffers start at IPC_BASE");
+	mpu_set(8, IPC_BASE, 16, ATTR_NORMAL_NC);
 	barrier_dsync_fence_full();
 	barrier_isync_fence_full();
 	return 0;

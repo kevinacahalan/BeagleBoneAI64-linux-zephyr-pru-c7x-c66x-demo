@@ -1,0 +1,12 @@
+--- a/drivers/pwm/pwm_ti_am3352_ehrpwm.c
++++ b/drivers/pwm/pwm_ti_am3352_ehrpwm.c
+@@ -392,6 +392,9 @@
+ 	if (data->symmetric) {
+ 		period_cycles /= 2;
+ 		pulse_cycles /= 2;
++	} else {
++		/* counting up, the counter runs 0 to TBPRD: TBPRD + 1 counts a period */
++		period_cycles -= 1;
+ 	}
+ 
+ 	/* write period cycles */
