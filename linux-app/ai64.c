@@ -70,12 +70,18 @@
  *   Joins the fabric, where every core talks to every other one, and shows
  *   it (ai64_fabric.c).
  *
+ * ai64 pipe [seconds|once] | start [seconds] | stop
+ *   The pipeline from P8.31 to P9.25 through ICSSG0, R5F0_0's UDMA, the
+ *   C66x's FFT, and the C7x's MMA: starts it and trains its layer, or
+ *   shows each stage's numbers (ai64_pipe.c).
+ *
  * ai64 linux <dir>
  *   Sends the startup script, then reads commands such as r5f0_0 pwm and
  *   rtu0 steps.
  */
 
 int fabric_main(int argc, char **argv);
+int pipe_main(int argc, char **argv);
 
 /* An erpc or peer window writes its result lines to this path too. */
 static char g_reply_path[512];
@@ -111,6 +117,9 @@ static void print_help(void)
 	       "                                      eCAP copy of A on P8.15, fixed\n");
 	printf("  rtu0 steps <ms> | sweep <ms> | dead <ns> | status\n");
 	printf("  rtu0 <text>                         RTU0 echoes it back (RPMsg)\n");
+	printf("  pipe [start [seconds] | stop]       the pipeline P8.31 -> ICSSG0 -> UDMA -> C66x FFT ->\n"
+	       "                                      C7x MMA -> P9.25: its numbers, or train and start\n"
+	       "                                      it, or stop it (needs P9.15 jumpered to P8.31)\n");
 	printf("  (P9.12/P9.15, ICSSG0 slice 1's hardware PWM, has no RPMsg: ai64 fabric route g0rtu1 pwm ...)\n");
 	printf("  help\n");
 	printf("  quit\n");
@@ -135,6 +144,9 @@ static void print_usage(const char *prog)
 	printf("  fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]\n");
 	printf("                            send one message along those cores and back\n");
 	printf("  fabric reset              free the tally's spinlock and zero the tally\n");
+	printf("  pipe start [seconds]      start the pipeline P8.31 -> ICSSG0 -> UDMA -> C66x FFT ->\n"
+	       "                            C7x MMA -> P9.25, training its layer on that many seconds\n");
+	printf("  pipe [seconds|once] | stop  the pipeline's numbers (the pipe window), or stop it\n");
 	printf("\n");
 	printf("In the linux window, ");
 	print_help();
@@ -317,6 +329,8 @@ static const struct {
 	{ 0x0f8, 0x10004, "P8.15 AB29 PRG0_ECAP0_IN_APWM_OUT" },
 	{ 0x0b8, 0x10003, "P9.12 AE27 PRG0_PWM2_A0" },
 	{ 0x0c0, 0x10003, "P9.15 AD25 PRG0_PWM2_B0" },
+	{ 0x100, 0x54001, "P8.31 AE29 PRG0_PRU1_GPI0, the pipeline's input" },
+	{ 0x084, 0x200007, "P8.31 AJ25 held off" },
 	{ 0x00c, 0x10003, "P8.17 AF22 PRG1_PWM2_A0" },
 	{ 0x1a4, 0x10006, "P9.25 W26 Zephyr R5F0_1 EHRPWM4_B" },
 	{ 0x200, 0x200007, "P9.25 AC4 held off" },
@@ -1711,7 +1725,7 @@ static const struct {
 static void usage_hint(void)
 {
 	printf("use r5fX_Y say|status|spi|pwm|steps ..., r5f0_0 chunk <text>|dma [rows], "
-	       "rtu0 pwm|steps|sweep|dead|status|<text>, or help\n");
+	       "rtu0 pwm|steps|sweep|dead|status|<text>, pipe [start|stop], or help\n");
 	fflush(stdout);
 }
 
@@ -1753,8 +1767,24 @@ static int linux_main(int argc, char **argv)
 		pump(400, 0);
 	}
 
+	/*
+	 * Last, the pipeline: P8.31, jumpered to P9.15, to P9.25, through
+	 * ICSSG0, R5F0_0's UDMA, the C66x, and the C7x (ai64_pipe.c). Without
+	 * the jumper it finds no windows to train on, and P9.25 keeps stepping.
+	 */
+	{
+		char *av[] = { argv[0], "pipe", "start", "3", NULL };
+
+		printf("Linux: the pipeline, P8.31 to P9.25 (ai64 pipe start)\n");
+		fflush(stdout);
+		pump(0, 0);
+		if (pipe_main(4, av)) {
+			printf("  the pipeline did not start; P9.25 keeps its own steps\n");
+		}
+	}
+
 	printf("linux window ready. commands: r5fX_Y say|status|spi|pwm|steps ... | r5f0_0 chunk|dma ... | "
-	       "rtu0 pwm|steps|sweep|dead|status|<text> | help\n");
+	       "rtu0 pwm|steps|sweep|dead|status|<text> | pipe [start|stop] | help\n");
 	fflush(stdout);
 
 	for (;;) {
@@ -1787,6 +1817,20 @@ static int linux_main(int argc, char **argv)
 			print_help();
 			continue;
 		}
+		if (!strncmp(input, "pipe", 4) && (input[4] == ' ' || !input[4])) {
+			char *av[5] = { argv[0], "pipe", "once", NULL, NULL };
+			int ac = 3;
+
+			if (input[4]) {
+				av[2] = strtok(input + 5, " ");
+				av[3] = av[2] ? strtok(NULL, " ") : NULL;
+				ac = av[3] ? 4 : 3;
+				av[2] = av[2] ? av[2] : "once";
+			}
+			pipe_main(ac, av);
+			fflush(stdout);
+			continue;
+		}
 		msg = strchr(input, ' ');
 		if (!msg) {
 			usage_hint();
@@ -1809,7 +1853,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|pwm|sched|pads|trace|bench|dsp|mma|shutdown|fabric|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|pwm|sched|pads|trace|bench|dsp|mma|shutdown|fabric|pipe|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1848,6 +1892,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "fabric")) {
 		return fabric_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "pipe")) {
+		return pipe_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

@@ -5,12 +5,12 @@
 #   ai64-demo                 (re)start the four main-domain R5F cores, the
 #                             twelve ICSSG cores, and the DSPs with their
 #                             firmware, then one merged console
-#   ai64-demo --tmux          same start, in tmux session ai64 (twelve windows)
+#   ai64-demo --tmux          same start, in tmux session ai64 (thirteen windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
-# [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], or [Fabric].
+# [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], [Fabric], or [Pipe].
 
 set -euo pipefail
 
@@ -438,7 +438,7 @@ viewer_pids() {
 		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
 		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
 		case ${argv[1]} in
-		peer|erpc|pwm|sched|trace|fabric|linux)
+		peer|erpc|pwm|sched|trace|fabric|pipe|linux)
 			echo "$pid"
 			;;
 		esac
@@ -467,6 +467,9 @@ if [[ $ATTACH -eq 0 ]]; then
 		echo "Run install-beagle.sh and reboot. Starting the cores without it would corrupt Linux's memory." >&2
 		exit 1
 	fi
+	# The pipeline (ai64 pipe) runs only once the linux window starts it
+	# again: no stage passes windows on while the cores come up.
+	as_root "$BIN" pipe stop >/dev/null
 	# Not the kernels' default names (j7-main-r5f0_0-fw and so on), so
 	# nothing boots the R5F cores until this script does.
 	restart_r5_cores
@@ -542,6 +545,8 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	done
 	tmux new-window -d -t "$SESSION" -n fabric
 	tmux send-keys -t "$SESSION:fabric" "$BIN fabric" C-m
+	tmux new-window -d -t "$SESSION" -n pipe
+	tmux send-keys -t "$SESSION:pipe" "$BIN pipe" C-m
 	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
 	tmux send-keys -t "$SESSION:linux" "$BIN linux $RUN" C-m
 	tmux select-window -t "$SESSION:linux"
@@ -553,6 +558,7 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	echo "  pwm    the PWM generators' fabric pages"
 	echo "  sched  ICSSG1's registers, read only"
 	echo "  fabric ddr"
+	echo "  pipe   the pipeline's numbers, P8.31 to P9.25"
 	if [[ -t 0 && -t 1 ]]; then
 		exec tmux attach -t "$SESSION"
 	fi
@@ -601,6 +607,7 @@ for entry in "${DSP_CORES[@]}"; do
 	spawn_prefixed "[${tag/c7x/C7x}]" "$RUN/$label.out" "$BIN" trace "$name"
 done
 spawn_prefixed '[Fabric]' "$RUN/fabric.out" "$BIN" fabric lines
+spawn_prefixed '[Pipe]' "$RUN/pipe.out" "$BIN" pipe lines
 
 rm -f "$RUN/linux.out"
 mkfifo "$RUN/linux.out"

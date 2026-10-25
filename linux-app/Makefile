@@ -29,8 +29,8 @@ ERPC_SRCS = \
 
 all: ai64
 
-ai64: ai64.o ai64_fabric.o $(ERPC_SRCS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ ai64.o ai64_fabric.o $(ERPC_SRCS)
+ai64: ai64.o ai64_fabric.o ai64_pipe.o $(ERPC_SRCS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ ai64.o ai64_fabric.o ai64_pipe.o $(ERPC_SRCS) -lm
 
 ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h $(ROOT)/dsp/include/ai64_dsp_job.h
 	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ ai64.c
@@ -38,5 +38,8 @@ ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h $(ROOT)/dsp/i
 ai64_fabric.o: ai64_fabric.c $(ROOT)/zephyr/include/ai64_fabric.h
 	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_fabric.c
 
+ai64_pipe.o: ai64_pipe.c $(ROOT)/zephyr/include/ai64_pipe.h $(ROOT)/zephyr/include/ai64_shm.h
+	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_pipe.c
+
 clean:
-	rm -f ai64 ai64.o ai64_fabric.o
+	rm -f ai64 ai64.o ai64_fabric.o ai64_pipe.o
