@@ -31,11 +31,13 @@
 	/*
 	 * Main SPI7. Linux leaves it disabled, and the board firmware keeps
 	 * its power domain on. The driver polls, so there is no interrupt.
+	 * Its functional clock is 50 MHz: with 48 here, the driver's divider
+	 * of 48 for 1 MHz gave a 0.96 us clock on a logic analyzer.
 	 */
 	main_spi7: spi@2170000 {
 		compatible = "ti,omap-mcspi";
 		reg = <0x02170000 0x400>;
-		clock-frequency = <DT_FREQ_M(48)>;
+		clock-frequency = <DT_FREQ_M(50)>;
 		ti,spi-num-cs = <1>;
 		ti,d1-miso-d0-mosi;
 		#address-cells = <1>;
