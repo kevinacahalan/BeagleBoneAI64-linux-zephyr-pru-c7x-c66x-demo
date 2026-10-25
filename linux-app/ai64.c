@@ -669,6 +669,8 @@ static void pwm_program(const volatile struct ai64_pwm_status *s)
 			printf("%s%u", i ? ", " : "", pct[i]);
 		}
 		printf("%% duty, %u ms a step\n", s->steps_ms);
+	} else if (s->ask_period_ns == 0) {
+		printf("  following the pipeline: the class the C7x finds on P8.31 (ai64 pipe)\n");
 	} else if (s->sweep_ms) {
 		printf("  sweeping: the duty from its least to its most and back every %u ms\n",
 		       s->sweep_ms);

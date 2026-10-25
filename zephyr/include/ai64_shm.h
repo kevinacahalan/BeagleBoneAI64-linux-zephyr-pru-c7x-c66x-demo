@@ -109,6 +109,8 @@ static inline uint32_t ai64_pwm_step_at(uint64_t gtc, uint32_t steps_ms, uint32_
  * The generator's status, rewritten about every 10 ms by its talking core:
  * the slice's RTU, or R5F0_1. magic is cleared while it writes. The ask_
  * fields are the last request, the run_ fields what the outputs do now.
+ * ask_period_ns 0 means no request: the pipeline holds the output
+ * (P9.25, ai64_pipe.h).
  * late counts edges the real-time core was late for: a software edge more
  * than AI64_PWM_LATE_NS late, or a compare it rearmed after the time had
  * passed. late_max_ns is the latest software edge since start.

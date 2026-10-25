@@ -240,8 +240,8 @@ void ai64_pwm_publish(volatile struct ai64_pwm_status *s, uint32_t now)
 	s->unit = 4;
 	s->channel = out.channel;
 	s->rpmsg = 1;
-	s->ask_period_ns = ask_period;
-	s->ask_duty_ns = ask_duty;
+	s->ask_period_ns = following ? 0 : ask_period;
+	s->ask_duty_ns = following ? 0 : ask_duty;
 	s->ask_dead_ns = 0;
 	s->sweep_ms = 0;
 	s->steps_ms = steps_ms;

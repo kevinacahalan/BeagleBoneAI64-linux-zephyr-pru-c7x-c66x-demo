@@ -360,6 +360,24 @@ static void take(struct snap *s)
 	s->t = mono_s();
 }
 
+/*
+ * A stage, or the score, that started its numbers again since the last
+ * snapshot (new weights do that) counts from zero, not from the snapshot.
+ */
+static void rebase(struct snap *was, const struct snap *s)
+{
+	uint32_t i;
+
+	for (i = 0; i < AI64_PIPE_STAGES; i++) {
+		if (s->st[i].windows < was->st[i].windows) {
+			memset(&was->st[i], 0, sizeof(was->st[i]));
+		}
+	}
+	if (s->right < was->right || s->wrong < was->wrong || s->mixed < was->mixed) {
+		was->right = was->wrong = was->mixed = 0;
+	}
+}
+
 static void draw(const struct snap *s, const struct snap *was)
 {
 	double dt = s->t - was->t;
@@ -452,6 +470,7 @@ static int view_main(int argc, char **argv)
 	for (;;) {
 		sleep(once ? 1 : every);
 		take(&now);
+		rebase(&was, &now);
 		if (lines) {
 			line(&now, &was);
 			was = now;
