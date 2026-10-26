@@ -3,10 +3,10 @@
 A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its heterogeneous cores:
 
 - **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo.
-- **Zephyr** runs on all four main-domain Cortex-R5F cores, R5F0_0, R5F0_1, R5F1_0, and R5F1_1 (cluster 0 or 1, core 0 or 1): one app, which one `west build --sysbuild` makes into an image per core, each with a job of its own ([One Zephyr app, four cores](#one-zephyr-app-four-cores)). R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA; R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4, which the pipeline below takes over once it runs; R5F1_0 makes a square wave on P8.18 from a kernel timer; R5F1_1 watches the other three. They call each other through Zephyr's `ipc_service`, so any core takes a request for SPI or the PWM and passes it on to the one whose job it is. Each answers function calls from Linux too (eRPC over RPMsg). Their drivers get clocks, power, and interrupt routes from the board's device manager over TI-SCI, which a small polled mailbox driver carries on these cores ([Zephyr and the device manager](#zephyr-and-the-device-manager-ti-sci)).
-- **ICSSG0 makes PWM three ways** ([PWM, three ways](#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which slice 0's Tx_PRU only gives a period and duty, copying slice 0's A to P8.15. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
+- **Zephyr** runs on all four main-domain Cortex-R5F cores, R5F0_0, R5F0_1, R5F1_0, and R5F1_1 (R5F, then the cluster, then the core): one app, which one `west build --sysbuild` makes into an image per core, each with a job of its own ([One Zephyr app, four cores](#one-zephyr-app-four-cores)). R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA; R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4, which the pipeline below takes over once it runs; R5F1_0 makes a square wave on P8.18 from a kernel timer; R5F1_1 watches the other three. They call each other through Zephyr's `ipc_service`, so any core takes a request for SPI or the PWM and passes it on to the one whose job it is. Each answers function calls from Linux too (eRPC over RPMsg). Their drivers get clocks, power, and interrupt routes from the board's device manager over TI-SCI, which a small polled mailbox driver carries on these cores ([Zephyr and the device manager](#zephyr-and-the-device-manager-ti-sci)).
+- **ICSSG0 makes PWM three ways** ([PWM, three ways](#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which copies slice 0's A onto P8.15, given only a period and duty by slice 0's Tx_PRU. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
 - **ICSSG1 runs a port of TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler)** on all six of its cores: IEP0 compares start a task on each core in turn, 4 ns apart, and each task sets a header pin high or low ([The multicore scheduler](#icssg1-the-multicore-scheduler)).
-- **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, 250 times one A72 core ([The C7x's MMA](#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
+- **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, about 250 times as fast as one A72 core ([The C7x's MMA](#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
 - **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into the L2 SRAM of one C66x or the other, in turn; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](#every-core-to-every-other-the-fabric)).
 - **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies, read from shared memory twice a second ([The web page](#the-web-page)).
@@ -131,11 +131,9 @@ flowchart LR
   p <-->|"slice RAM only"| rt["each slice's Tx_PRU and PRU"]
 ```
 
-Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
+Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them. The MCU-domain R5F cores are left alone: they run the board's device manager.
 
-The MCU-domain R5F cores are left alone: they run the board's device manager.
-
-It runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration in `yocto/` builds the demo into an image of its own, which has been built and tested on the board. Both images run Linux 6.18, but different kernels: BeagleBoard's on Debian, TI's on Yocto ([Two 6.18 kernels](#two-618-kernels)).
+The demo runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration in `yocto/` builds the demo into an image of its own, which has been built and tested on the board. Both images run Linux 6.18, but different kernels: BeagleBoard's on Debian, TI's on Yocto ([Two 6.18 kernels](#two-618-kernels)).
 
 ## What you need
 
@@ -231,9 +229,9 @@ ai64-demo --tmux
 - It restarts the four R5F cores, the twelve ICSSG cores, and the DSPs with the installed firmware, then opens a tmux session with fourteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `sched`, `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, and `web`, which serves [the web page](#the-web-page) on port 8064. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
-tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
+tmux keys: Ctrl+b then w lists the windows to pick from; Ctrl+b then n and p go to the next and previous; Ctrl+b then 0–9 goes straight to one of the first ten. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
 
-To stop the demo, run `tmux kill-session -t ai64`. Typing `quit` in the `linux` window only ends that window.
+To stop the demo, run `tmux kill-session -t ai64`. That closes the windows; the cores keep running until the next `ai64-demo` restarts them, or the board reboots. Typing `quit` in the `linux` window only ends that window.
 
 Without tmux, plain `ai64-demo` prints all fourteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
 
@@ -245,7 +243,18 @@ Without tmux, plain `ai64-demo` prints all fourteen windows on one console inste
 
 ## What you should see
 
-On startup the `linux` window runs a short script: it pings RTU0; asks Zephyr on R5F0_0 to `say` something, check a `chunk` of the bulk buffer, and write `spi`; asks R5F0_1 to start P9.25's `steps`; asks RTU0 for its `status`; asks Zephyr on each other R5F core to `say` something; asks R5F1_0, which has no SPI, to write `spi`, which it passes to R5F0_0; asks the monitor, R5F1_1, for every core's `status`; has R5F0_0 `dma` a layer's input into the C7x for its MMA; and last starts the pipeline, training the C7x's layer on 3 s of P8.31 and handing P9.25 to it. Each `Linux -> X` line is a command Linux sent, and the indented lines under it are the answers, which also show in that core's own window. A passing run, one block per window:
+On startup the `linux` window runs a short script. In order, it:
+
+1. pings RTU0;
+2. asks Zephyr on R5F0_0 to `say` something, check a `chunk` of the bulk buffer, and write `spi`;
+3. asks R5F0_1 to start P9.25's `steps`, and RTU0 for its `status`;
+4. asks Zephyr on each other R5F core to `say` something;
+5. asks R5F1_0, which has no SPI, to write `spi`, which it passes to R5F0_0;
+6. asks the monitor, R5F1_1, for every core's `status`;
+7. has R5F0_0 `dma` a layer's input into the C7x for its MMA;
+8. starts the pipeline, training the C7x's layer on 3 s of P8.31 and handing P9.25 to it.
+
+Each `Linux -> X` line is a command Linux sent, and the indented lines under it are the answers, which also show in that core's own window. A passing run, one block per window:
 
 ```
 == linux
@@ -350,10 +359,10 @@ ICSSG1 multicore scheduler: IEP0 period 100 ns, +4 ns a tick (the 250 MHz core c
   Tx_PRU0  IEP0 CMP6  at    24 ns  sets P8.17 high  task manager on
   P8.17 (PWM2_0's initial state) read high 79% of 100000 samples, 41664 changes seen
 
-== c66x0 (c66x1 is the same, with DNUM 1, and no pipeline)
+== c66x0 (c66x1 is the same, with DNUM 1 and the odd windows)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d80815480
 hello from the c66x, DNUM 0
-pipeline: FFT stage up
+pipeline: FFT stage up, even windows
 c66x up 10 s
 c66x up 20 s
 
@@ -370,7 +379,7 @@ c7x up 20 s
 - **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about 1.5 ms behind the input; [The pipeline](#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
-The `fabric` window, the latency of every core to every other, is in [The fabric](#every-core-to-every-other-the-fabric). The `/dev/rpmsg` numbers can differ on your board. `sched` reads P8.17's state over the bus, far slower than the tasks change it, so its share is a rough one; [The multicore scheduler](#icssg1-the-multicore-scheduler) has what the schedule does.
+The `fabric` window, the latency of every core to every other, is in [The fabric](#every-core-to-every-other-the-fabric). The `/dev/rpmsg` numbers in the window headers can differ on your board. `sched` reads P8.17's state over the bus, far slower than the tasks change it, so its share is a rough one; [The multicore scheduler](#icssg1-the-multicore-scheduler) has what the schedule does.
 
 The other three R5F cores have no console UART. Each logs into its remoteproc trace buffer instead:
 
@@ -409,7 +418,7 @@ $ ai64 trace b104000.rtu
 ICSSG1 RTU0 up: its task, on IEP0 CMP4, sets P8.17 low
 ```
 
-`N` in `remoteprocN` is the core's number in `/sys/class/remoteproc`; `cat /sys/class/remoteproc/remoteprocN/name` shows which core it is ([The ICSSG firmware](#the-icssg-firmware) lists the twelve ICSSG cores' names).
+`ai64 trace` takes the core's remoteproc name. The R5F cores are `5c00000.r5f` (R5F0_0), `5d00000.r5f` (R5F0_1), `5e00000.r5f` (R5F1_0), and `5f00000.r5f` (R5F1_1); [The ICSSG firmware](#the-icssg-firmware) and [The DSPs](#the-dsps-trace-and-jobs) list the others' names. `grep . /sys/class/remoteproc/*/name` lists every core the kernel knows.
 
 ### Commands
 
@@ -439,7 +448,20 @@ Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple o
 
 `ai64-demo` without `--tmux` prints all fourteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[Sched]`, `[C66x0]`, `[C66x1]`, `[C7x]`, `[Fabric]`, `[Pipe]`, or `[Web]`; the pipe window there is one line every 10 s. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 pwm once` and `sudo ai64 sched once` print one sample of the `pwm` and `sched` windows, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 mma [rows] [runs]` runs the int8 layer on the C7x's MMA and in plain C ([how](#the-c7xs-matrix-multiply-accelerator)), `sudo ai64 pipe [once|start|stop]` shows, trains and starts, or stops the pipeline ([how](#the-pipeline-p831-to-p925)), `sudo ai64 web [port]` serves [the web page](#the-web-page), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
+`ai64` has more subcommands, which you run in a shell on the board:
+
+| Command | What it does |
+| --- | --- |
+| `sudo ai64 pads` | checks the pin mux of every demo pin |
+| `ai64 trace <remoteproc-name>` | follows a core's trace log, for example `ai64 trace 5d00000.r5f` or `ai64 trace b034000.pru` |
+| `sudo ai64 pwm once`, `sudo ai64 sched once` | prints one sample of the `pwm` or `sched` window |
+| `ai64 bench <rpmsg-dev>` | times eRPC calls to one R5F core ([R5F caches](#r5f-caches)) |
+| `sudo ai64 dsp <remoteproc-name>` | runs FIR jobs on a DSP and checks them against the A72 ([how](#linux-to-the-dsps-fir-jobs)) |
+| `sudo ai64 mma [rows] [runs]` | runs the int8 layer on the C7x's MMA and in plain C ([how](#the-c7xs-matrix-multiply-accelerator)) |
+| `sudo ai64 pipe [once\|start\|stop]` | shows the pipeline, trains and starts it, or stops it ([how](#the-pipeline-p831-to-p925)) |
+| `sudo ai64 web [port]` | serves [the web page](#the-web-page) |
+| `sudo ai64 shutdown <remoteproc-name>` | asks a core to go idle, before Linux stops it ([why](#restarting-the-c7x)) |
+| `sudo ai64 fabric route <node>... [action]` | sends a message along the cores you name and prints each hop's time; the action is `pwm <period_ns> <duty_ns>`, `steps <ms>`, `sweep <ms>`, or `dead <ns>` ([routes](#every-core-to-every-other-the-fabric)) |
 
 ### The web page
 
@@ -489,7 +511,7 @@ This capture was taken with P9.25 on its own steps, as after `pipe stop`; once t
 
 That is what a half bridge's gate drive needs: the two switches are never on together. The software slice's edges wander by a few tens of ns, the time PRU0 takes to see IEP0 pass an edge time; the hardware slice's edges are exact to the 4 ns IEP count. Over the 96 periods of one 20 kHz, 25% step at 250 MS/s, slice 0's A was high 12,476 to 12,524 ns and its dead band 988 to 1,020 ns; slice 1's were 12,496 to 12,500 ns and 1,000 to 1,004 ns, within the analyzer's 4 ns sample.
 
-P9.25's period was 8 ns long at every step, 50,008 ns at 20 kHz, in this capture: one count of EHRPWM4's 125 MHz clock. Zephyr's EHRPWM driver wrote the period's count to TBPRD, but counting up the EHRPWM's period is TBPRD + 1 counts. `zephyr/patches/` now fixes that, and P9.25's period matches the ICSSG0 generators' to within 0.04 ns at all three frequencies.
+In an earlier capture P9.25's period was 8 ns too long at every step, 50,008 ns at 20 kHz: one count of EHRPWM4's 125 MHz clock. Zephyr's EHRPWM driver wrote the period's count to TBPRD, but counting up the EHRPWM's period is TBPRD + 1 counts. `zephyr/patches/` now fixes that, and P9.25's period matches the ICSSG0 generators' to within 0.04 ns at all three frequencies.
 
 **The pipeline.** P9.25 takes each of the input's steps 1.18 to 1.75 ms after P9.12 does, 1.47 ms in the middle, and makes no step the input did not.
 
@@ -515,11 +537,26 @@ An earlier capture showed a 0.96 µs clock: the devicetree said SPI7's clock was
 
 Before `zephyr/patches/` fixed Zephyr's DMTimer system timer, one half period in 17 was a whole tick, 94 µs, short: the driver set each next timeout from the moment it ran, not from the tick, so each wakeup was a few µs late, and the lateness added up until the kernel counted two ticks at once.
 
-The test bench the demo was developed on: the BeagleBone AI-64 under a screw-terminal breakout on headers P8 and P9, 5 V from a bench supply, Ethernet, logic analyzer probes on the demo's pins, and an SD card mux in the microSD slot (teal, right) so the PC can reflash the card. To run the demo you need only the board, a microSD card, a 5 V supply, and a network link.
-
-![The BeagleBone AI-64 on the test bench, with a screw-terminal breakout, a bench power supply, logic analyzer probes, and an SD card mux](media/test-bench.jpg)
-
 `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
+
+## The test bench
+
+The demo was developed on a bench that the PC runs on its own. Going from a build to a freshly written card, a power cycle, a booted board, and a logic analyzer capture needs nobody at the board, except to move a probe:
+
+| Job | Hardware | What the PC does with it |
+| --- | --- | --- |
+| Power | A USB relay module switching a bench supply's 5 V into P9.05 and P9.06, the board's 5 V input on the header | turns the board off and on |
+| microSD | An SDWire3 SD card mux in the board's microSD slot | moves the card to the PC to write an image and read it back, then back to the board |
+| Boot console | An FTDI TTL-232R-3V3 cable on the 3-pin debug header | follows U-Boot and the kernel through each boot |
+| Zephyr console | A Raspberry Pi Debug Probe's UART on P8.34 and P8.22 | reads R5F0_0's log |
+| Network | Ethernet | SSH: copies the bundle in, and runs the demo and the tests |
+| Signals | A Saleae Logic Pro 8, wired to the demo's pins through a screw-terminal breakout on P8 and P9 | starts captures and exports them through Logic 2's automation server |
+
+A reflash is: relay off, mux to the PC, write the image and compare the card against it, add the login to `sysconf.txt`, mux to the board, relay on, then watch the console until the login prompt, the first boot's two automatic reboots included. Every signal figure in this README is a Saleae capture that the PC started, of the demo running.
+
+![The BeagleBone AI-64 under the screw-terminal breakout, with the SD card mux in its microSD slot (teal, right), the bench supply behind, and the Saleae under the board](media/test-bench.jpg)
+
+None of this is needed to run the demo: the board, a microSD card, a 5 V supply, and a network link are enough ([What you need](#what-you-need)).
 
 ## How it works
 
@@ -550,7 +587,7 @@ Linux still loads and starts each core with remoteproc, and `ai64-demo` still re
 The buffers are in the 1 MiB of DDR the Linux overlay reserves at `0xa9000000`, past the fabric, and every core's MPU maps them non-cacheable. The doorbells needed some care:
 
 - **Which mailboxes.** After boot, the MCU R5F's firmware, which runs the device manager, listens on mailbox cluster 7 and leaves messages in clusters 5, 6, 8, and 9. Writing doorbells into cluster 7 stopped the device manager answering anyone, until a power cycle. Clusters 10 and 11 have nobody listening; the fabric polls cluster 11's FIFOs 0 to 9.
-- **Which users.** Only users 1 to 3 of a cluster reach the interrupt router (TI-SCI's `pend_intr` 0 to 2). So R5F0_1, R5F1_0, and R5F1_1 are users 1 to 3 of cluster 10, and R5F0_0 is user 1 of cluster 11, on its FIFOs 12 to 14. Each core routes its user to VIM 229, as for Linux's doorbell above:
+- **Which users.** Only users 1 to 3 of a cluster reach the interrupt router (TI-SCI's `pend_intr` 0 to 2). So R5F0_1, R5F1_0, and R5F1_1 are users 1 to 3 of cluster 10, and R5F0_0 is user 1 of cluster 11, on its FIFOs 12 to 14. Each core routes its user to VIM 229, the way it routes Linux's doorbell ([below](#linux-to-zephyr-the-mailbox-interrupt)):
 
 | Core | Doorbells | Router 213 input | Router output | VIM input |
 | --- | --- | --- | --- | --- |
@@ -991,7 +1028,7 @@ PRU1 writes each chunk twice: into this half window's slot, and into the second 
 
 **C66x 0 and 1: the spectrum** (`dsp/c66x/ai64_c66x_pipe.c`). Both run the same image, and `DNUM` says which windows are theirs. Each polls the doorbell in its own L2, a cached load, since L1D snoops what the UDMA writes. Each sample becomes 1 or −1, times a Hann window, and goes through a radix-2 float FFT. Feature 0 is the DC, about twice the duty less one; features 1 to 62 are the first 62 bins, 977 Hz apart, as amplitudes. 10, 15, and 20 kHz fall in bins 10, 15, and 20, and a duty other than 50% puts harmonics at their multiples. The FFT first ran its butterflies a group at a time, and took 325 µs: the first stages are 1024 groups of one butterfly, too short for the compiler to pipeline. Each stage as one loop over its 1024 butterflies, from one pair of arrays into the other so that no butterfly waits on another, takes 89.
 
-**The C7x: the class** (`dsp/c7x/ai64_c7x_pipe.c`). The C66x cores write each window's features into a ring of 16 rows in the C7x's L2 SRAM, in a page the C7x maps non-cacheable, then one past the window's number, each in its own word, so every word has one writer. When either moves on, the C7x runs the whole ring through the int8 layer of `ai64 mma` on its MMA: a block of 16 rows takes the MMA the time one would, 0.8 µs. Each of the first 15 outputs is a class's score; for each new window, in order, the best on its row is its class. It writes each verdict into a ring in DDR, rings FIFO 15 of R5F0_1's mailbox (cluster 10), and copies the features into a log in DDR for training.
+**The C7x: the class** (`dsp/c7x/ai64_c7x_pipe.c`). The C66x cores write each window's features into a ring of 16 rows in the C7x's L2 SRAM, in a page the C7x maps non-cacheable, and then the window's number plus one into a word of their own, so every word has one writer. When either word moves on, the C7x runs the whole ring through the int8 layer of `ai64 mma` on its MMA: a block of 16 rows takes the MMA the time one would, 0.8 µs. Each of the first 15 outputs is a class's score; for each new window, in order, the best on its row is its class. It writes each verdict into a ring in DDR, rings FIFO 15 of R5F0_1's mailbox (cluster 10), and copies the features into a log in DDR for training.
 
 **R5F0_1: P9.25** (`zephyr/r5/src/ai64_pipe_pwm.c`). It sets P9.25 to the class's frequency and duty, and changes it only when two windows in a row agree. A window that falls across a step change can match neither step: half a window of 20 kHz at 90% and half of 10 kHz at 10% have the spectrum of 10 kHz at 90% or 10%, and a DC in between, so the layer calls it 10 kHz at 90%. On the Saleae that was a 1 ms blip at three of every 106 step changes. A margin on the score did not catch it, since the layer is not unsure of it; two windows straddle each change, but one is mostly the old step and the other mostly the new, and they do not agree; so waiting for the next one does, for 512 µs more of delay. R5F0_1 takes every window in order, so two in a row really are neighbours. A `pwm` or `steps` request for P9.25 from anyone else takes it back from the pipeline, until the next `pipe start`.
 
@@ -1005,7 +1042,10 @@ PRU1 writes each chunk twice: into this half window's slot, and into the second 
 | The window slots and the doorbell | C66x 0's L2 SRAM, `0x4d80830000`, and C66x 1's, `0x4d81830000` (both local `0x00830000`) | R5F0_0's UDMA |
 | The feature rows, and each C66x's newest window | the C7x's L2 SRAM, `0x64810000` | C66x 0 (even rows), C66x 1 (odd rows) |
 | The weights and outputs | the C7x's L2 SRAM, `0x64811000` | the C7x |
-| The control record, each stage's numbers, the score, the results, the weights, the feature log | DDR, `0xa9090000`, in the fabric's reserved 1 MiB | each its own: Linux, every stage, R5F0_1, the C7x, Linux, the C7x |
+| The control record, and the weights | DDR, `0xa9090000`, in the fabric's reserved 1 MiB | Linux |
+| Each stage's numbers | the same block | that stage |
+| The results, and the feature log | the same block | the C7x |
+| The score | the same block | R5F0_1 |
 
 To use it for something else, change the ends: PRU1 can sample any of its GPI pins, a sensor's data, or an ADC's bitstream, the C66x cores' features can be any 64 numbers, and the layer any 64 × 64 one. Every stage restarts its numbers when Linux hands over new weights.
 
