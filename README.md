@@ -7,7 +7,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **ICSSG0 makes PWM three ways** ([PWM, three ways](#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which slice 0's Tx_PRU only gives a period and duty, copying slice 0's A to P8.15. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
 - **ICSSG1 runs a port of TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler)** on all six of its cores: IEP0 compares start a task on each core in turn, 4 ns apart, and each task sets a header pin high or low ([The multicore scheduler](#icssg1-the-multicore-scheduler)).
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, 250 times one A72 core ([The C7x's MMA](#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
-- **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window; R5F0_0's UDMA moves the window into C66x 0's L2 SRAM; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 2.2 ms later.
+- **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into the L2 SRAM of one C66x or the other, in turn; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](#every-core-to-every-other-the-fabric)).
 
 The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/multicore_scheduler/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1 keeps TI's design, where every core runs a task.
@@ -279,10 +279,10 @@ Linux -> R5F1_1 (Zephyr): status
 Linux -> R5F0_0 (Zephyr): dma
   R5F0_0: dma: its UDMA copied 16384 bytes from DDR to the C7x's L2 in 33.7 us (486 MB/s; the R5F reading them itself: 5466.3 us), then the C7x's MMA ran the layer: 2536 cycles, 3.6 us round trip; all match the A72
 Linux: the pipeline, P8.31 to P9.25 (ai64 pipe start)
-pipeline: P8.31 -> ICSSG0 PRU1 and RTU1 -> R5F0_0's UDMA -> C66x 0's FFT -> C7x's MMA -> R5F0_1 -> P9.25
+pipeline: P8.31 -> ICSSG0 PRU1 and RTU1 -> R5F0_0's UDMA -> C66x 0 and 1's FFT -> C7x's MMA -> R5F0_1 -> P9.25
 training: 3.0 s of windows of P8.31, each labelled with the step the input was on
-  2273 windows, 150 to 155 a class; 675 across a step left out
-  the int8 layer, checked here on the same windows: 2273 of 2273 right (100.0%), shift 9
+  4528 windows, 300 to 309 a class; 1344 across a step left out
+  the int8 layer, checked here on the same windows: 4528 of 4528 right (100.0%), shift 9
 the C7x has the weights; R5F0_1 sets P9.25 to each window's class (ai64 pipe shows the score)
 linux window ready. commands: r5fX_Y say|status|spi|pwm|steps ... | r5f0_0 chunk|dma ... | rtu0 pwm|steps|sweep|dead|status|<text> | pipe [start|stop] | help
 
@@ -329,13 +329,14 @@ P9.25          hardware PWM: the SoC's EHRPWM4, output B, set by Zephyr on R5F0_
 
 == pipe (every 10 s, each stage of the pipeline and R5F0_1's score)
 pipeline (running, P9.25 follows): stage                        windows/s   latency mean/max us  work mean/max us  lost   err
-  ICSSG0 RTU1  stamps the window                976.6        0.0 /      8.0       2.3 /    22.0     0     0
-  R5F0_0       UDMA into C66x L2                976.6       23.1 /     80.3      11.8 /    29.1     0     0
-  C66x 0       FFT, 64 features                 976.6      110.2 /    167.3      88.7 /    89.2     0     0
-  C7x          MMA layer, class                 976.6      113.2 /    342.2       0.8 /     1.4     0     0
-  R5F0_1       P9.25                            976.6      126.7 /    358.2       4.1 /    11.7     0     0
-  newest window 22995: 15 kHz 90%, score 51 against 46; P9.25 holds 15 kHz 90%, set 2442 times (2489 classes waited for a second window)
-  score: 7532 right, 0 wrong (100.00%), 2234 across a step, in 10.0 s; since training 9193 right, 0 wrong
+  ICSSG0 RTU1  stamps the window               1953.1        0.0 /      8.0       2.3 /    21.9     0     0
+  R5F0_0       UDMA into C66x L2               1953.1       22.0 /     82.1      10.8 /    69.3     0     0
+  C66x 0       FFT, even windows                976.5      109.0 /    168.1      88.5 /    90.7     0     0
+  C66x 1       FFT, odd windows                 976.6      109.0 /    164.2      88.5 /    90.8     0     0
+  C7x          MMA layer, class                1953.1      112.0 /    329.0       0.8 /     1.5     0     0
+  R5F0_1       P9.25                           1953.1      125.5 /    355.9       3.7 /    70.7     0     0
+  newest window 299187: 20 kHz 75%, score 54 against 44; P9.25 holds 20 kHz 75%, set 28433 times (29477 classes waited for a second window)
+  score: 15063 right, 0 wrong (100.00%), 4468 across a step, in 10.0 s; since training 214122 right, 0 wrong
 
 == sched (ICSSG1's schedule every 10 s)
 sched window ready, ICSSG1's schedule every 10 s
@@ -365,7 +366,7 @@ c7x up 20 s
 - **The `pwm` window** shows what each generator's own core says it is running, read from shared memory. It does not measure the pins. Each generator starts as two lines: its pins, then whether it is software or hardware PWM and what makes the edges. The values are a snapshot of whichever step the generator was on at that moment, so they change every 10 s. `periods/s` averages the three frequencies over the 10 s, so it reads about 15000.
 - **A and B** on each ICSSG0 slice form a complementary pair: B is high while A is low, except for 1000 ns either side of A's pulse, where both are low (the dead band, which keeps a half bridge's two switches from ever being on together). So B's high time is the period less A's, less two dead bands, less the 40 ns that A starts into each period. [Probe the pins](#probe-the-pins) draws it.
 - **The R5F round trips** are R5F1_1 pinging each other core over `ipc_service` every 100 ms: a request into the peer's buffer and a mailbox doorbell, through the peer's icmsg work queue and its request thread, and the reply back the same way, about 80 µs. The `dma` line's copy is R5F0_0's UDMA moving 16 KiB; the R5F's own time for the same bytes is that slow because it reads them through an uncached mapping, which is how it shares the buffer with Linux.
-- **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 976.6 windows a second, 2 MHz over 2048 samples, and P9.25 has its class about 127 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about two windows behind the input; [The pipeline](#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
+- **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about 1.5 ms behind the input; [The pipeline](#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
 The `fabric` window, the latency of every core to every other, is in [The fabric](#every-core-to-every-other-the-fabric). The `/dev/rpmsg` numbers can differ on your board. `sched` reads P8.17's state over the bus, far slower than the tasks change it, so its share is a rough one; [The multicore scheduler](#icssg1-the-multicore-scheduler) has what the schedule does.
@@ -446,7 +447,7 @@ All signals are 3.3 V; set a logic analyzer's threshold for 3.3 V logic.
 | Signal | Header pins | What you should see |
 | --- | --- | --- |
 | SPI7, Zephyr on R5F0_0 | P9.28 CS, P9.31 CLK, P9.30 MOSI | `hello` at 1 MHz, mode 0, MSB first, once at startup and again for each `spi` |
-| Hardware PWM, EHRPWM4 output B, set by Zephyr on R5F0_1 | P9.25 | the steps below, one output; once the pipeline runs, the steps it hears on P8.31, about 2.2 ms behind P9.12 |
+| Hardware PWM, EHRPWM4 output B, set by Zephyr on R5F0_1 | P9.25 | the steps below, one output; once the pipeline runs, the steps it hears on P8.31, about 1.5 ms behind P9.12 |
 | The pipeline's input, sampled by ICSSG0 PRU1 | P8.31, jumpered from P9.15 | the same as P9.15 |
 | Square wave, GPIO2, Zephyr on R5F1_0 | P8.18 | 1 kHz: a kernel timer toggles it every 500 µs |
 | Software PWM, ICSSG0 slice 0 | P8.11 A, P8.12 B | the steps below on A; B the complement of A with dead band |
@@ -459,7 +460,7 @@ The pictures here are logic analyzer captures of the board running the demo, sta
 
 ![Captured: each period's duty on P8.11, P8.15, P9.12, and P9.25 through one 75 ms pass of the steps, and a 300 µs zoom on one step change](media/pwm-steps.svg)
 
-This capture was taken with P9.25 on its own steps, as after `pipe stop`; once the pipeline runs, P9.25 plays the steps back about 2.2 ms late instead (below).
+This capture was taken with P9.25 on its own steps, as after `pipe stop`; once the pipeline runs, P9.25 plays the steps back about 1.5 ms late instead (below).
 
 **The steps.** All four PWM generators run the same 15-step program, 5 ms a step, 75 ms in all, then over again: 10 kHz at 10, 25, 50, 75, and 90% duty, then 15 kHz at the same five, then 20 kHz. The program keeps the GTC's time, the SoC's 200 MHz counter: step `n` runs while `GTC / 5 ms` counts `n` modulo 15. Every generator works out from the GTC which step it is on, so all four change step together, however far apart they were started. Each takes a new step at the end of one of its own periods, and their periods are not in phase with each other, so they do not change at the same instant. In the capture above, the three ICSSG0 generators change within 34 µs of each other, and P9.25 from 63 µs before them to 71 µs after: Zephyr sets its step from a 100 µs kernel tick, and the EHRPWM takes it at the end of its period. The 15 kHz period is 66,664 ns, the nearest multiple of 4 ns, on the ICSSG0 slices.
 
@@ -476,11 +477,11 @@ That is what a half bridge's gate drive needs: the two switches are never on tog
 
 P9.25's period was 8 ns long at every step, 50,008 ns at 20 kHz, in this capture: one count of EHRPWM4's 125 MHz clock. Zephyr's EHRPWM driver wrote the period's count to TBPRD, but counting up the EHRPWM's period is TBPRD + 1 counts. `zephyr/patches/` now fixes that, and P9.25's period matches the ICSSG0 generators' to within 0.04 ns at all three frequencies.
 
-**The pipeline.** P9.25 takes each of the input's steps 1.7 to 2.7 ms after P9.12 does, 2.2 ms in the middle, and makes no step the input did not.
+**The pipeline.** P9.25 takes each of the input's steps 1.18 to 1.75 ms after P9.12 does, 1.47 ms in the middle, and makes no step the input did not.
 
-![Captured: each period's duty on P9.12, P8.31, and P9.25 through one pass of the steps, P9.25 1.7 to 2.7 ms behind; and a 4 ms zoom on one step change](media/pipe.svg)
+![Captured: each period's duty on P9.12, P8.31, and P9.25 through one pass of the steps, P9.25 1.18 to 1.75 ms behind; and a 4 ms zoom on one step change](media/pipe.svg)
 
-Most of the delay is the windows: a 1.024 ms window has to be mostly the new step before it names it, and P9.25 waits for the window after that to agree. The cores take about 127 µs of it, from a window's last sample to R5F0_1 having its class; the EHRPWM then starts the new period and duty at the end of its current period. P8.31 is B, so its duty runs the other way from P9.12's.
+Most of the delay is the windows: a 1.024 ms window has to be mostly the new step before it names it, and P9.25 waits for the next window, 512 µs on, to agree. With windows end to end, the next was a whole window on, and P9.25 was 1.7 to 2.8 ms behind. The cores take about 127 µs of it, from a window's last sample to R5F0_1 having its class; the EHRPWM then starts the new period and duty at the end of its current period. P8.31 is B, so its duty runs the other way from P9.12's.
 
 **P8.17** changes every 4 ns, the ICSSG core clock, so it needs an analyzer at 500 MS/s or more to resolve; built with `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000` ([The multicore scheduler](#icssg1-the-multicore-scheduler)) it is slow enough for any.
 
@@ -832,7 +833,7 @@ The patched `ti_k3_r5_remoteproc` (below) stops a core by holding it in reset, w
 
 ### The DSPs: trace and jobs
 
-Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. Besides its own mailbox ([why](#restarting-the-c7x)), a DSP only touches what the [fabric](#every-core-to-every-other-the-fabric) and the [pipeline](#the-pipeline-p831-to-p925) use: C66x 0 takes the pipeline's FFT, and the C7x its classifier. The C66x images set up no cache; the C7x image turns on its MMU and caches first ([below](#the-c7x-mmu-and-caches)).
+Each DSP runs a small image from `dsp/`. It fills in a resource table with one entry, a trace buffer, writes `hello` there, and then logs one line every 10 seconds, timed with the core's cycle counter. When the buffer fills up, the log starts again after the hello line. Besides its own mailbox ([why](#restarting-the-c7x)), a DSP only touches what the [fabric](#every-core-to-every-other-the-fabric) and the [pipeline](#the-pipeline-p831-to-p925) use: the two C66x cores take turns at the pipeline's FFT, and the C7x is its classifier. The C66x images set up no cache; the C7x image turns on its MMU and caches first ([below](#the-c7x-mmu-and-caches)).
 
 | Core | remoteproc | Image | Where it runs | Boot address |
 | --- | --- | --- | --- | --- |
@@ -939,11 +940,13 @@ The pipeline is the demo's cores working on one stream of data together, the way
 
 ```mermaid
 flowchart LR
-  in["P8.31<br/>jumpered from P9.15"] -->|"GPI shift register<br/>2 MHz"| pru1["ICSSG0 PRU1<br/>2048-sample windows"]
+  in["P8.31<br/>jumpered from P9.15"] -->|"GPI shift register<br/>2 MHz"| pru1["ICSSG0 PRU1<br/>2048-sample windows,<br/>one every 1024"]
   pru1 -->|"shared RAM"| rtu1["ICSSG0 RTU1<br/>GTC stamp"]
   rtu1 -->|"mailbox<br/>cluster 11 FIFO 15"| r500["R5F0_0"]
-  r500 -->|"UDMA: the window,<br/>then its doorbell"| c66["C66x 0<br/>FFT, 64 features"]
-  c66 -->|"its L2 SRAM"| c7x["C7x<br/>MMA: a class"]
+  r500 -->|"UDMA: even windows,<br/>then a doorbell"| c660["C66x 0<br/>FFT, 64 features"]
+  r500 -->|"UDMA: odd windows,<br/>then a doorbell"| c661["C66x 1<br/>FFT, 64 features"]
+  c660 -->|"its L2 SRAM"| c7x["C7x<br/>MMA: a class"]
+  c661 -->|"its L2 SRAM"| c7x
   c7x -->|"mailbox<br/>cluster 10 FIFO 15"| r501["R5F0_1"]
   r501 -->|"EHRPWM4"| out["P9.25"]
   lx["Linux, ai64 pipe"] -.->|"starts it, trains the layer,<br/>reads the numbers"| c7x
@@ -953,40 +956,44 @@ The input is ICSSG0 slice 1's output B, P9.15, by a jumper wire: it steps throug
 
 | Stage | Core | What it does with each window | Time, window end to done |
 | --- | --- | --- | --- |
-| Sample | ICSSG0 PRU1 | its GPI shift register takes P8.31 at 2 MHz; PRU1 packs 16 samples at a time into a 2048-sample window (1.024 ms) in ICSSG0's shared RAM | |
+| Sample | ICSSG0 PRU1 | its GPI shift register takes P8.31 at 2 MHz; PRU1 packs 16 samples at a time into 2048-sample windows (1.024 ms) in ICSSG0's shared RAM, each starting half a window after the last | |
 | Stamp | ICSSG0 RTU1 | stamps the window with the GTC, rings R5F0_0's mailbox | within one 8 µs chunk |
-| Move | R5F0_0 | its UDMA copies the window into C66x 0's L2 SRAM, then the doorbell | 23 µs (12 µs of it the copy) |
-| Spectrum | C66x 0 | a 2048-point FFT; 64 int8 features into the C7x's L2 SRAM | 110 µs (89 µs of it the FFT) |
-| Classify | C7x | the features through an int8 layer on the MMA; rings R5F0_1's mailbox | 113 µs (0.8 µs of it the MMA) |
-| Act | R5F0_1 | sets P9.25 to the class, once two windows agree; keeps score | 127 µs |
+| Move | R5F0_0 | its UDMA copies the window into the L2 SRAM of C66x 0 (even windows) or C66x 1 (odd), then the doorbell | 22 µs (11 µs of it the copy) |
+| Spectrum | C66x 0 or 1 | a 2048-point FFT; 64 int8 features into the C7x's L2 SRAM | 109 µs (89 µs of it the FFT) |
+| Classify | C7x | the features through an int8 layer on the MMA; rings R5F0_1's mailbox; logs the features | 112 µs (0.8 µs of it the MMA) |
+| Act | R5F0_1 | sets P9.25 to the class, once two windows agree; keeps score | 126 µs |
 
-The times are the `pipe` window's means; at 976.6 windows a second each stage has the whole 1.024 ms before the next window comes. Over every run on the bench it has named every window inside a step right: 25,000 and more a run, none wrong.
+The times are the `pipe` window's means. At 1953 windows a second each stage has 512 µs before the next window comes, and each C66x, with every other window, 1.024 ms: time for Linux's FIR jobs too. Over every run on the bench it has named every window inside a step right: 50,000 and more a run, none wrong.
+
+**Why the windows overlap.** A window names a step only once most of it is that step, and P9.25 waits for a second window to agree, so the delay is about a window and a half from wherever the step falls. With a new window every half window, the second one comes 512 µs after the first instead of 1.024 ms: P9.25 follows 1.5 ms behind instead of 2.2. That doubles the FFTs, so the two C66x cores share them, and each does what C66x 0 did alone before.
 
 **ICSSG0 PRU1: the GPI shift register.** In 28-bit shift mode (`GPCFG1`), a PRU's R31 is a shift register that takes `PRG0_PRU1_GPI0` on a clock divided from the 250 MHz core clock, here by 12.5 and by 10: 2 MHz. Bit 0 is the newest sample, and bit 28, Cnt_16, goes high every 16 samples. The hardware times every sample, so PRU1 keeps running its PWM compares (`pru/pwm/`) and only takes a chunk where Cnt_16 rises: R31's low 16 bits, read in the same load. The guide says Cnt_16 clears itself and also sets system event 2 in ICSSG0's INTC; polling that event took six chunks per real one, since it latches again while the bit is still high for its whole sample. So the PRU watches the bit's rising edge instead.
 
+PRU1 writes each chunk twice: into this half window's slot, and into the second half of the slot before. So when 64 chunks are in, the slot before holds a whole window, the newest, in one piece, and R5F0_0 can copy it in one burst. Window *w* is halves *w* and *w* + 1.
+
 **ICSSG0 RTU1: the stamp.** A read of the GTC from a PRU stalls it for a few hundred ns, longer than a PWM edge can wait, so PRU1 only counts chunks. RTU1, the slice's talking core, reads the GTC when it sees a new window, and works back from the chunk PRU1 is on now, 8 µs a chunk: the stamp is right to within a chunk however late RTU1 comes round. Then it rings FIFO 15 of R5F0_0's mailbox (cluster 11, which the fabric and `ipc_service` share; FIFO 15 is free).
 
-**R5F0_0: the move.** The mailbox interrupt wakes a thread (`zephyr/r5/src/ai64_pipe_dma.c`), which copies every window since the last into a ring of four slots in C66x 0's L2 SRAM. One UDMA descriptor does a window: the samples and stamp, then the doorbell ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
+**R5F0_0: the move.** The mailbox interrupt wakes a thread (`zephyr/r5/src/ai64_pipe_dma.c`), which copies every window since the last into a ring of four slots in a C66x's L2 SRAM: the even windows to C66x 0's, the odd ones to C66x 1's. One UDMA descriptor does a window: the samples and stamp, then the doorbell ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
 
-**C66x 0: the spectrum** (`dsp/c66x/ai64_c66x_pipe.c`). It polls the doorbell in its own L2, a cached load, since L1D snoops what the UDMA writes. Each sample becomes 1 or −1, times a Hann window, and goes through a radix-2 float FFT. Feature 0 is the DC, about twice the duty less one; features 1 to 62 are the first 62 bins, 977 Hz apart, as amplitudes. 10, 15, and 20 kHz fall in bins 10, 15, and 20, and a duty other than 50% puts harmonics at their multiples. The FFT first ran its butterflies a group at a time, and took 325 µs: the first stages are 1024 groups of one butterfly, too short for the compiler to pipeline. Each stage as one loop over its 1024 butterflies, from one pair of arrays into the other so that no butterfly waits on another, takes 89.
+**C66x 0 and 1: the spectrum** (`dsp/c66x/ai64_c66x_pipe.c`). Both run the same image, and `DNUM` says which windows are theirs. Each polls the doorbell in its own L2, a cached load, since L1D snoops what the UDMA writes. Each sample becomes 1 or −1, times a Hann window, and goes through a radix-2 float FFT. Feature 0 is the DC, about twice the duty less one; features 1 to 62 are the first 62 bins, 977 Hz apart, as amplitudes. 10, 15, and 20 kHz fall in bins 10, 15, and 20, and a duty other than 50% puts harmonics at their multiples. The FFT first ran its butterflies a group at a time, and took 325 µs: the first stages are 1024 groups of one butterfly, too short for the compiler to pipeline. Each stage as one loop over its 1024 butterflies, from one pair of arrays into the other so that no butterfly waits on another, takes 89.
 
-**The C7x: the class** (`dsp/c7x/ai64_c7x_pipe.c`). The C66x writes each window's features into a ring of 16 rows in the C7x's L2 SRAM, in a page the C7x maps non-cacheable, then a count. On a new count the C7x runs the whole ring through the int8 layer of `ai64 mma` on its MMA: a block of 16 rows takes the MMA the time one would, 0.8 µs. Each of the first 15 outputs is a class's score; the best on the newest window's row is the class. It writes its verdict into a ring in DDR, and rings FIFO 15 of R5F0_1's mailbox (cluster 10).
+**The C7x: the class** (`dsp/c7x/ai64_c7x_pipe.c`). The C66x cores write each window's features into a ring of 16 rows in the C7x's L2 SRAM, in a page the C7x maps non-cacheable, then one past the window's number, each in its own word, so every word has one writer. When either moves on, the C7x runs the whole ring through the int8 layer of `ai64 mma` on its MMA: a block of 16 rows takes the MMA the time one would, 0.8 µs. Each of the first 15 outputs is a class's score; for each new window, in order, the best on its row is its class. It writes each verdict into a ring in DDR, rings FIFO 15 of R5F0_1's mailbox (cluster 10), and copies the features into a log in DDR for training.
 
-**R5F0_1: P9.25** (`zephyr/r5/src/ai64_pipe_pwm.c`). It sets P9.25 to the class's frequency and duty, and changes it only when two windows in a row agree. A window that falls across a step change can match neither step: half a window of 20 kHz at 90% and half of 10 kHz at 10% have the spectrum of 10 kHz at 90% or 10%, and a DC in between, so the layer calls it 10 kHz at 90%. On the Saleae that was a 1 ms blip at three of every 106 step changes. A margin on the score did not catch it, since the layer is not unsure of it; only one window can straddle a change, though, so waiting for the next one does, for a window more of delay. A `pwm` or `steps` request for P9.25 from anyone else takes it back from the pipeline, until the next `pipe start`.
+**R5F0_1: P9.25** (`zephyr/r5/src/ai64_pipe_pwm.c`). It sets P9.25 to the class's frequency and duty, and changes it only when two windows in a row agree. A window that falls across a step change can match neither step: half a window of 20 kHz at 90% and half of 10 kHz at 10% have the spectrum of 10 kHz at 90% or 10%, and a DC in between, so the layer calls it 10 kHz at 90%. On the Saleae that was a 1 ms blip at three of every 106 step changes. A margin on the score did not catch it, since the layer is not unsure of it; two windows straddle each change, but one is mostly the old step and the other mostly the new, and they do not agree; so waiting for the next one does, for 512 µs more of delay. R5F0_1 takes every window in order, so two in a row really are neighbours. A `pwm` or `steps` request for P9.25 from anyone else takes it back from the pipeline, until the next `pipe start`.
 
-**Training.** `ai64 pipe start` has R5F0_0 pass windows on, reads the C66x's log of every window's features from DDR for 3 s, and labels each with the step the input was on from its GTC stamp, leaving out the ones across a step. The weights are each class's mean features, scaled to the same length, as int8: a window's score for a class is then how well its features line up with that class's. It checks the layer on the same windows in the layer's own int8 arithmetic, picks the shift that keeps the best score under 100, hands the weights to the C7x through DDR, and has R5F0_1 follow. 2,273 windows, 150 a class, train it to 100%.
+**Training.** `ai64 pipe start` has R5F0_0 pass windows on, reads the C7x's log of every window's features from DDR for 3 s, and labels each with the step the input was on from its GTC stamp, leaving out the ones across a step. The weights are each class's mean features, scaled to the same length, as int8: a window's score for a class is then how well its features line up with that class's. It checks the layer on the same windows in the layer's own int8 arithmetic, picks the shift that keeps the best score under 100, hands the weights to the C7x through DDR, and has R5F0_1 follow. 4,528 windows, 300 a class, train it to 100%.
 
 **Where it lives.**
 
 | What | Where | Written by |
 | --- | --- | --- |
 | The window ring, 16 slots of 512 bytes, and PRU1's counts | ICSSG0 shared RAM, `0x0b010000` | PRU1 (samples), RTU1 (stamps) |
-| The window slots and the doorbell | C66x 0's L2 SRAM, `0x4d80830000` (its local `0x00830000`) | R5F0_0's UDMA |
-| The feature rows and their count | the C7x's L2 SRAM, `0x64810000` | C66x 0 |
+| The window slots and the doorbell | C66x 0's L2 SRAM, `0x4d80830000`, and C66x 1's, `0x4d81830000` (both local `0x00830000`) | R5F0_0's UDMA |
+| The feature rows, and each C66x's newest window | the C7x's L2 SRAM, `0x64810000` | C66x 0 (even rows), C66x 1 (odd rows) |
 | The weights and outputs | the C7x's L2 SRAM, `0x64811000` | the C7x |
-| The control record, each stage's numbers, the score, the results, the weights, the feature log | DDR, `0xa9090000`, in the fabric's reserved 1 MiB | each its own: Linux, every stage, R5F0_1, the C7x, Linux, C66x 0 |
+| The control record, each stage's numbers, the score, the results, the weights, the feature log | DDR, `0xa9090000`, in the fabric's reserved 1 MiB | each its own: Linux, every stage, R5F0_1, the C7x, Linux, the C7x |
 
-To use it for something else, change the ends: PRU1 can sample any of its GPI pins, a sensor's data, or an ADC's bitstream, the C66x's features can be any 64 numbers, and the layer any 64 × 64 one. Every stage restarts its numbers when Linux hands over new weights.
+To use it for something else, change the ends: PRU1 can sample any of its GPI pins, a sensor's data, or an ADC's bitstream, the C66x cores' features can be any 64 numbers, and the layer any 64 × 64 one. Every stage restarts its numbers when Linux hands over new weights.
 
 ### Restarting the C7x
 

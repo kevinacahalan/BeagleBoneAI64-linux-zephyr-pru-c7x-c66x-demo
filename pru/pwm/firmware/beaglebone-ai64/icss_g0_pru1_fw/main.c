@@ -29,10 +29,12 @@
  * 500 ns, so it takes a chunk where the bit rises: R31's low 16 bits, read
  * in the same load, are the 16 samples since the last. (ICSSG0's INTC
  * latches the bit as system event 2, but cleared it latches again while
- * the bit is still high.) A window of 128 such chunks goes into a slot of
- * the ring in shared RAM, and RTU1 takes it from there. The hardware times
- * every sample, so this costs the PWM no edge: a chunk is two local loads
- * and two stores, once every 8 us.
+ * the bit is still high.) Each chunk goes into two slots of the ring in
+ * shared RAM: the first half of this half-window's slot, and the second
+ * half of the one before. So once 64 chunks are in, the slot before holds
+ * a whole window of 128, the newest, and RTU1 takes it from there. The
+ * hardware times every sample, so this costs the PWM no edge: a chunk is
+ * two local loads and three stores, once every 8 us.
  */
 
 #include <stdint.h>
@@ -137,9 +139,16 @@ void main(void)
 	/* What the next period runs, taken at B's rise. */
 	uint32_t n_period = 0, n_duty = 0, n_dead = 0, n_seen = 0;
 	uint32_t periods = 0, a_high = 0, b_high = 0;
-	/* The sampler: where the next chunk goes, and the counts. */
-	volatile uint16_t *chunk = (volatile uint16_t *)AI64_PIPE_SMEM_LOCAL;
-	uint32_t c = 0, slot = 0, chunks = 0, wins = 0, cnt16 = R31_CNT16;
+	/*
+	 * The sampler: where the next chunk goes, in this half's slot and in
+	 * the second half of the slot before (at the start, the ring's last,
+	 * which is written whole again before it is a window), and the counts.
+	 */
+	volatile uint16_t *first = (volatile uint16_t *)AI64_PIPE_SMEM_LOCAL;
+	volatile uint16_t *second = (volatile uint16_t *)(AI64_PIPE_SMEM_LOCAL +
+							  (AI64_PIPE_SLOTS - 1u) * AI64_PIPE_SLOT_SIZE) +
+				    AI64_PIPE_HOP_CHUNKS;
+	uint32_t c = 0, slot = 0, chunks = 0, halves = 0, cnt16 = R31_CNT16;
 
 	trace_init();
 
@@ -156,7 +165,7 @@ void main(void)
 	out->magic = PWM_OUT_MAGIC;
 	trace_puts("ICSSG0 PRU1 up: ICSSG PWM2_0 on IEP1, A on P9.12, B on P9.15\n");
 	sampler_init();
-	trace_puts("sampling P8.31 at 2 MHz, 2048 a window\n");
+	trace_puts("sampling P8.31 at 2 MHz, 2048 a window, a window every 1024\n");
 
 	while (!read_next(&seen, &period, &duty, &dead)) {
 	}
@@ -202,15 +211,19 @@ void main(void)
 
 		/* cnt16 starts set, so a chunk already up when the loop starts is skipped. */
 		if ((r & ~cnt16) & R31_CNT16) {
-			chunk[c] = (uint16_t)r;
+			first[c] = (uint16_t)r;
+			second[c] = (uint16_t)r;
 			chunks++;
 			PIPE_PRU->chunks = chunks;
-			if (++c == AI64_PIPE_CHUNKS) {
+			if (++c == AI64_PIPE_HOP_CHUNKS) {
 				c = 0;
-				wins++;
-				PIPE_PRU->wins = wins;
+				/* The first half only starts window 0. */
+				if (++halves > 1u) {
+					PIPE_PRU->wins = halves - 1u;
+				}
 				slot = slot + 1u == AI64_PIPE_SLOTS ? 0u : slot + 1u;
-				chunk = (volatile uint16_t *)(AI64_PIPE_SMEM_LOCAL +
+				second = first + AI64_PIPE_HOP_CHUNKS;
+				first = (volatile uint16_t *)(AI64_PIPE_SMEM_LOCAL +
 							      slot * AI64_PIPE_SLOT_SIZE);
 			}
 		}

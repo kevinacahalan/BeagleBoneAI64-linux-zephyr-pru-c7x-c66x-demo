@@ -5,14 +5,16 @@
  *
  * The C7x writes its verdict into the result ring in DDR, then rings FIFO
  * 15 of this core's home mailbox (cluster 10, user 1) with the window's
- * number. While Linux asks it to follow, the thread holds P9.25 on the
+ * number; the thread takes every window from the last it took to that
+ * one, in order. While Linux asks it to follow, it holds P9.25 on the
  * class's frequency and duty (ai64_pwm_class()), changing it only when the
- * class changes, and only to a class two windows in a row agree on. Only
- * one window can fall across a step change, and it can match a third class:
- * half a window of 20 kHz at 90% and half of 10 kHz at 10% have the spectrum
- * of 10 kHz at 90% or 10%, and a DC in between. The window after it is the
- * new step's alone. So P9.25 follows a window later, about 1 ms, and makes
- * no step the input did not. A pwm or steps request from anyone else ends that, until
+ * class changes, and only to a class two windows in a row agree on. A
+ * window that falls across a step change can match a third class: half a
+ * window of 20 kHz at 90% and half of 10 kHz at 10% have the spectrum of
+ * 10 kHz at 90% or 10%, and a DC in between. The windows overlap by half,
+ * so two fall across each change, but one is mostly the old step and the
+ * other mostly the new, and they do not agree. So P9.25 makes no step the
+ * input did not. A pwm or steps request from anyone else ends that, until
  * Linux starts the pipeline again. Either way it keeps score: the input
  * steps on the GTC's time, so each window's tag says which class it should
  * have been, unless a step change falls inside it. New weights start the
@@ -78,38 +80,94 @@ static void score_reset(volatile struct ai64_pipe_score *sc)
 	sc->magic = AI64_PIPE_MAGIC;
 }
 
-static void stage_reset(volatile struct ai64_pipe_stage *st)
+/* P9.25 is on a class this set; let go of it (someone else set it) until a new start. */
+static bool following, let_go;
+static uint32_t last_cls = UINT32_MAX, weights;
+
+/* Window w, whose verdict the C7x has written; agreed: the window before had its class. */
+static void one(volatile struct ai64_pipe_stage *st, volatile struct ai64_pipe_score *sc,
+		uint32_t w, bool in_order)
 {
-	st->magic = 0;
-	st->windows = 0;
-	st->dropped = 0;
-	st->last = 0;
-	st->lat_sum = 0;
-	st->lat_min = UINT32_MAX;
-	st->lat_max = 0;
-	st->lat_last = 0;
-	st->work_sum = 0;
-	st->work_max = 0;
-	st->errors = 0;
-	st->magic = AI64_PIPE_MAGIC;
+	volatile struct ai64_pipe_result *r = &PIPE->result[w % AI64_PIPE_RESULTS];
+	uint32_t t0 = gtc_lo(), t1, cls;
+	uint64_t t_end;
+	int32_t truth;
+	bool agreed;
+
+	if (r->win != w) {
+		st->errors++;
+		return;
+	}
+	cls = r->cls;
+	agreed = in_order && cls == last_cls;
+	last_cls = cls;
+	t_end = ((uint64_t)r->t_end_hi << 32) | r->t_end_lo;
+
+	if (PIPE->ctl.weights_seq != weights) {
+		weights = PIPE->ctl.weights_seq;
+		score_reset(sc);
+		ai64_pipe_stage_reset(st);
+		let_go = false;
+	}
+	if (following && !ai64_pwm_following()) {
+		LOG_INF("pipe: P9.25 was set by hand; the pipeline lets go of it");
+		following = false;
+		let_go = true;
+		sc->cls = UINT32_MAX;
+	}
+	if (PIPE->ctl.magic == AI64_PIPE_MAGIC && PIPE->ctl.follow && !let_go) {
+		if (cls == sc->cls) {
+			/* Nothing to do. */
+		} else if (!agreed) {
+			sc->waits++;
+		} else if (cls < AI64_PIPE_CLASSES) {
+			if (ai64_pwm_class(cls) == 0) {
+				following = true;
+				sc->cls = cls;
+				sc->changes++;
+			} else {
+				st->errors++;
+			}
+		}
+	} else if (following) {
+		/* Linux stopped it: back to the program, in step with the others. */
+		following = false;
+		sc->cls = UINT32_MAX;
+		(void)ai64_pwm_steps("the pipeline", AI64_PWM_DEFAULT_STEPS_MS);
+	} else if (!PIPE->ctl.follow) {
+		let_go = false;
+	}
+
+	t1 = gtc_lo();
+
+	truth = ai64_pipe_truth(t_end, PIPE->ctl.steps_ms, MARGIN_GTC);
+	if (truth < 0 || cls >= AI64_PIPE_CLASSES) {
+		sc->mixed++;
+	} else {
+		if ((uint32_t)truth == cls) {
+			sc->right++;
+		} else {
+			sc->wrong++;
+		}
+		sc->confusion[truth][cls]++;
+	}
+	ai64_pipe_stage_count(st, w, t1 - (uint32_t)t_end, t1 - t0);
 }
 
 static void pipe_thread(void *a, void *b, void *c)
 {
 	volatile struct ai64_pipe_stage *st = &PIPE->stage[AI64_PIPE_PWM];
 	volatile struct ai64_pipe_score *sc = &PIPE->score;
-	uint32_t w, last = UINT32_MAX, weights = PIPE->ctl.weights_seq, t0, t1, lat;
-	/* P9.25 is on a class this set; let go of it (someone else set it) until a new start. */
-	bool following = false, let_go = false, agreed;
-	uint32_t last_cls = UINT32_MAX;
-	int32_t truth;
+	uint32_t next = 0, end;
+	bool started = false;
 	int ret;
 
 	ARG_UNUSED(a);
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
 
-	stage_reset(st);
+	weights = PIPE->ctl.weights_seq;
+	ai64_pipe_stage_reset(st);
 	score_reset(sc);
 	sc->cls = UINT32_MAX;
 	ret = mbox_register_callback(mbox, AI64_PIPE_FIFO, rung, NULL);
@@ -121,89 +179,25 @@ static void pipe_thread(void *a, void *b, void *c)
 	LOG_INF("pipe: P9.25 from the C7x's classes, on its doorbell");
 
 	for (;;) {
-		volatile struct ai64_pipe_result *r;
-		uint32_t cls;
-		uint64_t t_end;
+		bool in_order = true;
 
 		k_sem_take(&bell, K_FOREVER);
-		t0 = gtc_lo();
-		w = (uint32_t)atomic_get(&newest) - 1u;
-		r = &PIPE->result[w % AI64_PIPE_RESULTS];
-		if (r->win != w) {
-			st->errors++;
-			continue;
-		}
-		cls = r->cls;
-		agreed = w == last + 1u && cls == last_cls;
-		last_cls = cls;
-		t_end = ((uint64_t)r->t_end_hi << 32) | r->t_end_lo;
-		if (last != UINT32_MAX && w - last > 1u && w - last < 0x80000000u) {
-			st->dropped += w - last - 1u;
-		}
-		last = w;
-
-		if (PIPE->ctl.weights_seq != weights) {
-			weights = PIPE->ctl.weights_seq;
-			score_reset(sc);
-			stage_reset(st);
-			let_go = false;
-		}
-		if (following && !ai64_pwm_following()) {
-			LOG_INF("pipe: P9.25 was set by hand; the pipeline lets go of it");
-			following = false;
-			let_go = true;
-			sc->cls = UINT32_MAX;
-		}
-		if (PIPE->ctl.magic == AI64_PIPE_MAGIC && PIPE->ctl.follow && !let_go) {
-			if (cls == sc->cls) {
-				/* Nothing to do. */
-			} else if (!agreed) {
-				sc->waits++;
-			} else if (cls < AI64_PIPE_CLASSES) {
-				if (ai64_pwm_class(cls) == 0) {
-					following = true;
-					sc->cls = cls;
-					sc->changes++;
-				} else {
-					st->errors++;
-				}
+		end = (uint32_t)atomic_get(&newest);
+		/*
+		 * The first window, or a jump: a stage started again, or the
+		 * ring no longer holds them. Start from the newest.
+		 */
+		if (!started || (int32_t)(end - next) <= 0 || end - next > AI64_PIPE_RESULTS) {
+			if (started && end - next < AI64_PIPE_RESYNC) {
+				st->dropped += end - next - 1u;
 			}
-		} else if (following) {
-			/* Linux stopped it: back to the program, in step with the others. */
-			following = false;
-			sc->cls = UINT32_MAX;
-			(void)ai64_pwm_steps("the pipeline", AI64_PWM_DEFAULT_STEPS_MS);
-		} else if (!PIPE->ctl.follow) {
-			let_go = false;
+			next = end - 1u;
+			started = true;
+			in_order = false;
 		}
-		t1 = gtc_lo();
-
-		truth = ai64_pipe_truth(t_end, PIPE->ctl.steps_ms, MARGIN_GTC);
-		if (truth < 0 || cls >= AI64_PIPE_CLASSES) {
-			sc->mixed++;
-		} else {
-			if ((uint32_t)truth == cls) {
-				sc->right++;
-			} else {
-				sc->wrong++;
-			}
-			sc->confusion[truth][cls]++;
-		}
-
-		lat = t1 - (uint32_t)t_end;
-		st->windows++;
-		st->last = w;
-		st->lat_last = lat;
-		st->lat_sum += lat;
-		if (lat < st->lat_min) {
-			st->lat_min = lat;
-		}
-		if (lat > st->lat_max) {
-			st->lat_max = lat;
-		}
-		st->work_sum += t1 - t0;
-		if (t1 - t0 > st->work_max) {
-			st->work_max = t1 - t0;
+		for (; next != end; next++) {
+			one(st, sc, next, in_order);
+			in_order = true;
 		}
 	}
 }

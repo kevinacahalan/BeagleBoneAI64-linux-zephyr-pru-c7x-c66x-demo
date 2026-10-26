@@ -91,7 +91,7 @@
 
 `pru/build/` — generated ICSSG images, `ai64-icssg<ICSSG>-<pru|rtu|txpru><slice>.elf`, and their maps.
 
-`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. Both are fabric nodes; the C66x maps the GTC through an MPAX window, and C66x 0 is the pipeline's FFT stage (`ai64_c66x_pipe.c`). `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`), runs an int8 layer on its Matrix Multiply Accelerator (`ai64_c7x_mma.c`), and with it is the pipeline's classifier (`ai64_c7x_pipe.c`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
+`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. Both are fabric nodes; the C66x maps the GTC through an MPAX window, and both C66x cores take turns as the pipeline's FFT stage (`ai64_c66x_pipe.c`). `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`), runs an int8 layer on its Matrix Multiply Accelerator (`ai64_c7x_mma.c`), and with it is the pipeline's classifier (`ai64_c7x_pipe.c`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
 
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 

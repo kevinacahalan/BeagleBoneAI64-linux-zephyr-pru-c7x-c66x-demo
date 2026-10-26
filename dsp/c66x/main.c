@@ -5,8 +5,8 @@
  * jobs Linux hands it (ai64_dsp_job.h). Everything lives in the core's own
  * L2 SRAM, the job block included, so it needs no cache setup. It is also
  * a fabric node (ai64_fabric.h): it answers and sends pings, passes tours
- * and routes on, and adds to the spinlock tally. C66x 0 is also the
- * pipeline's FFT stage (ai64_c66x_pipe.c).
+ * and routes on, and adds to the spinlock tally. Both cores are also the
+ * pipeline's FFT stage, a window each in turn (ai64_c66x_pipe.c).
  */
 
 #include <stdint.h>
@@ -88,10 +88,9 @@ int main(void)
 	job_init();
 	fabric_map();
 	fab_init(AI64_FAB_C66X0 + DNUM);
-	if (DNUM == 0) {
-		ai64_c66x_pipe_init(gtc_lo);
-		trace_puts("pipeline: FFT stage up\n");
-	}
+	ai64_c66x_pipe_init(gtc_lo);
+	trace_puts(DNUM ? "pipeline: FFT stage up, odd windows\n" :
+		   "pipeline: FFT stage up, even windows\n");
 
 	/* Any write starts TSCL counting. */
 	TSCL = 0;
@@ -100,9 +99,7 @@ int main(void)
 		if (job_poll() && ++jobs == 1u) {
 			trace_puts("first job done\n");
 		}
-		if (DNUM == 0) {
-			(void)ai64_c66x_pipe_poll();
-		}
+		(void)ai64_c66x_pipe_poll();
 		fab_poll();
 		if (mbox_shutdown_requested(MBOX_BASE, 2u * DNUM + 1u, 2u * DNUM)) {
 			trace_puts("c66x shutting down\n");

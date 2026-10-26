@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * Linux and the pipeline (zephyr/include/ai64_pipe.h): P8.31 in, P9.25 out,
- * through ICSSG0, R5F0_0's UDMA, the C66x, and the C7x's MMA. Linux is not
+ * through ICSSG0, R5F0_0's UDMA, both C66x cores, and the C7x's MMA. Linux is not
  * in the path; it starts the pipeline, trains its layer, and reads its
  * numbers.
  *
  * ai64 pipe start [seconds]
- *   Has R5F0_0 pass windows on, logs the C66x's features for that many
+ *   Has R5F0_0 pass windows on, logs the C7x's features for that many
  *   seconds (3), and trains the C7x's layer on them: the input steps on
  *   the GTC's time, so each window's tag gives its class. The weights are
  *   each class's mean features, scaled to one length (so the layer scores
@@ -54,7 +54,8 @@ static const uint32_t step_pct[AI64_PWM_STEPS] = AI64_PWM_STEP_PCT;
 static const char *const stage_name[AI64_PIPE_STAGES] = {
 	"ICSSG0 RTU1  stamps the window",
 	"R5F0_0       UDMA into C66x L2",
-	"C66x 0       FFT, 64 features",
+	"C66x 0       FFT, even windows",
+	"C66x 1       FFT, odd windows",
 	"C7x          MMA layer, class",
 	"R5F0_1       P9.25",
 };
@@ -168,7 +169,7 @@ static struct {
 	uint32_t cls;
 } g_set[TRAIN_MAX];
 
-/* Collect labelled windows from the C66x's log for secs seconds. */
+/* Collect labelled windows from the C7x's log for secs seconds. */
 static uint32_t collect(double secs, uint32_t *mixed, uint32_t *lost)
 {
 	uint32_t n = 0, at = g_pipe->log_n, now, i;
@@ -286,13 +287,13 @@ static int start_main(int argc, char **argv)
 	g_pipe->ctl.magic = AI64_PIPE_MAGIC;
 	__sync_synchronize();
 	g_pipe->ctl.run = 1;
-	printf("pipeline: P8.31 -> ICSSG0 PRU1 and RTU1 -> R5F0_0's UDMA -> C66x 0's FFT -> "
+	printf("pipeline: P8.31 -> ICSSG0 PRU1 and RTU1 -> R5F0_0's UDMA -> C66x 0 and 1's FFT -> "
 	       "C7x's MMA -> R5F0_1 -> P9.25\n");
 	printf("training: %.1f s of windows of P8.31, each labelled with the step the input was on\n",
 	       secs);
 	n = collect(secs, &mixed, &lost);
 	if (n == 0) {
-		fprintf(stderr, "no windows came: the C66x logged nothing (%u across a step)\n", mixed);
+		fprintf(stderr, "no windows came: the C7x logged nothing (%u across a step)\n", mixed);
 		return 1;
 	}
 	if (train(n, &shift, count)) {

@@ -179,27 +179,9 @@ static uint32_t fab_action(struct ai64_fab_msg *m);
 
 static uint32_t pipe_seen, pipe_synced, pipe_weights;
 
-static void pipe_reset(void)
-{
-	volatile struct ai64_pipe_stage *st = &PIPE->stage[AI64_PIPE_RTU];
-
-	st->magic = 0;
-	st->windows = 0;
-	st->dropped = 0;
-	st->last = 0;
-	st->lat_sum = 0;
-	st->lat_min = 0xffffffffu;
-	st->lat_max = 0;
-	st->lat_last = 0;
-	st->work_sum = 0;
-	st->work_max = 0;
-	st->errors = 0;
-	st->magic = AI64_PIPE_MAGIC;
-}
-
 static void pipe_init(void)
 {
-	pipe_reset();
+	ai64_pipe_stage_reset(&PIPE->stage[AI64_PIPE_RTU]);
 	pipe_seen = 0;
 	pipe_synced = 0;
 	pipe_weights = PIPE->ctl.weights_seq;
@@ -207,8 +189,8 @@ static void pipe_init(void)
 
 /*
  * The windows PRU1 filled since the last look: each one's end is where its
- * last chunk came, counted back from the chunk PRU1 is on now, at 8 us a
- * chunk. So the stamp is within a chunk of the truth however late this
+ * last chunk came (window w is halves w and w + 1), counted back from the
+ * chunk PRU1 is on now, at 8 us a chunk. So the stamp is within a chunk of the truth however late this
  * core comes round.
  */
 static void pipe_poll(void)
@@ -235,13 +217,14 @@ static void pipe_poll(void)
 	} while (GTC_HI() != hi);
 	chunks = pru->chunks;
 	now = ((uint64_t)hi << 32) | lo;
-	if (wins - pipe_seen > AI64_PIPE_SLOTS) {
-		st->dropped += wins - pipe_seen - AI64_PIPE_SLOTS;
-		pipe_seen = wins - AI64_PIPE_SLOTS;
+	/* PRU1 starts on window w's slot again once window w + 15 is in. */
+	if (wins - pipe_seen > AI64_PIPE_SLOTS - 1u) {
+		st->dropped += wins - pipe_seen - (AI64_PIPE_SLOTS - 1u);
+		pipe_seen = wins - (AI64_PIPE_SLOTS - 1u);
 	}
 	for (w = pipe_seen; w != wins; w++) {
 		volatile struct ai64_pipe_slot *sl = PIPE_SLOT(w);
-		uint64_t end = now - (uint64_t)(chunks - (w + 1u) * AI64_PIPE_CHUNKS) * AI64_PIPE_CHUNK_GTC;
+		uint64_t end = now - (uint64_t)(chunks - (w + 2u) * AI64_PIPE_HOP_CHUNKS) * AI64_PIPE_CHUNK_GTC;
 
 		sl->tag.win = w;
 		sl->tag.t_end_lo = (uint32_t)end;
@@ -256,7 +239,7 @@ static void pipe_poll(void)
 	}
 	if (PIPE->ctl.weights_seq != pipe_weights) {
 		pipe_weights = PIPE->ctl.weights_seq;
-		pipe_reset();
+		ai64_pipe_stage_reset(st);
 	}
 	work = AI64_FAB_NOW() - lo;
 	st->windows = wins;

@@ -72,7 +72,7 @@
  *
  * ai64 pipe [seconds|once] | start [seconds] | stop
  *   The pipeline from P8.31 to P9.25 through ICSSG0, R5F0_0's UDMA, the
- *   C66x's FFT, and the C7x's MMA: starts it and trains its layer, or
+ *   C66x cores' FFT, and the C7x's MMA: starts it and trains its layer, or
  *   shows each stage's numbers (ai64_pipe.c).
  *
  * ai64 linux <dir>
@@ -1771,7 +1771,7 @@ static int linux_main(int argc, char **argv)
 
 	/*
 	 * Last, the pipeline: P8.31, jumpered to P9.15, to P9.25, through
-	 * ICSSG0, R5F0_0's UDMA, the C66x, and the C7x (ai64_pipe.c). Without
+	 * ICSSG0, R5F0_0's UDMA, both C66x cores, and the C7x (ai64_pipe.c). Without
 	 * the jumper it finds no windows to train on, and P9.25 keeps stepping.
 	 */
 	{

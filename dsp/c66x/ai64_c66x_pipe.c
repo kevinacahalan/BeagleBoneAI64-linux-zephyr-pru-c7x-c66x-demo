@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * C66x 0's stage of the pipeline (ai64_pipe.h): a window of P8.31 samples
- * in, 64 int8 features out.
+ * The C66x cores' stage of the pipeline (ai64_pipe.h): a window of P8.31
+ * samples in, 64 int8 features out. C66x 0 takes the even windows, C66x 1
+ * the odd ones, so each has one every 1.024 ms.
  *
  * R5F0_0's UDMA puts each window into this core's L2 SRAM, then writes
- * the count of windows it has brought; L1D snoops both writes, so polling
- * the count costs a cached load. For each window:
+ * one past its number; L1D snoops both writes, so polling that word costs
+ * a cached load. For each window:
  *
  *   - the 2048 samples, 1 for high and -1 for low, times a Hann window,
  *     go through a 2048-point complex FFT in single-precision float, radix
@@ -14,7 +15,7 @@
  *     other: no butterfly then depends on another, and the compiler
  *     pipelines the loop. Short loops of the stages' own groups (a stage
  *     has 1024 groups of one butterfly at the start) took 325 us a window;
- *     this takes
+ *     this takes 89 us.
  *   - feature 0 is the DC, the windowed mean in -1 to 1, as -127 to 127:
  *     it is about 2 x duty - 1. Features 1 to 62 are bins 1 to 62
  *     (977 Hz each, up to 60 kHz), as amplitudes, 100 for a full-scale
@@ -23,8 +24,8 @@
  * The bins line up with the input's frequencies: 10, 15, and 20 kHz are
  * bins 10.2, 15.4, and 20.5, and a duty that is not 50% puts harmonics
  * at their multiples. The features go into the C7x's L2 SRAM, the row of
- * the window's number % 16, with the window's tag, and then the count of
- * windows written; and into the log in DDR, for Linux to train on.
+ * the window's number % 16, with the window's tag, and then one past the
+ * window's number, in this core's word. The C7x logs them for Linux.
  */
 
 #include <stdint.h>
@@ -55,31 +56,17 @@ static float tw_c[N / 2], tw_s[N / 2];
 static float hann[N];
 static uint16_t rev[N];
 static float hann_sum;
-static uint32_t seen, weights;
+/* One past the newest window taken; this core's number (DNUM). */
+static uint32_t seen, weights, core;
 
 static uint32_t (*now)(void);
-
-static void stage_reset(volatile struct ai64_pipe_stage *st)
-{
-	st->magic = 0;
-	st->windows = 0;
-	st->dropped = 0;
-	st->last = 0;
-	st->lat_sum = 0;
-	st->lat_min = 0xffffffffu;
-	st->lat_max = 0;
-	st->lat_last = 0;
-	st->work_sum = 0;
-	st->work_max = 0;
-	st->errors = 0;
-	st->magic = AI64_PIPE_MAGIC;
-}
 
 void ai64_c66x_pipe_init(uint32_t (*gtc_lo)(void))
 {
 	uint32_t n, b, r;
 
 	now = gtc_lo;
+	core = DNUM;
 	hann_sum = 0.0f;
 	for (n = 0; n < N; n++) {
 		hann[n] = (float)(0.5 - 0.5 * cos(2.0 * 3.14159265358979323846 * n / N));
@@ -96,7 +83,7 @@ void ai64_c66x_pipe_init(uint32_t (*gtc_lo)(void))
 	/* Windows from before this core started are not this run's. */
 	seen = IN->ready;
 	weights = PIPE->ctl.weights_seq;
-	stage_reset(&PIPE->stage[AI64_PIPE_FFT]);
+	ai64_pipe_stage_reset(&PIPE->stage[AI64_PIPE_FFT(core)]);
 }
 
 /*
@@ -169,9 +156,8 @@ static void features(const volatile uint16_t *chunk, int8_t *f)
 
 static void one(volatile struct ai64_pipe_stage *st, uint32_t w)
 {
-	volatile struct ai64_pipe_slot *sl = &IN->slot[w % AI64_PIPE_IN_SLOTS];
-	uint32_t row = w % AI64_PIPE_ROWS, t0 = now(), t1, i, lat;
-	volatile struct ai64_pipe_log *log;
+	volatile struct ai64_pipe_slot *sl = &IN->slot[AI64_PIPE_IN_SLOT(w)];
+	uint32_t row = w % AI64_PIPE_ROWS, t0 = now(), t1, i;
 	int8_t f[AI64_PIPE_FEATURES];
 	struct ai64_pipe_tag tag;
 
@@ -194,38 +180,13 @@ static void one(volatile struct ai64_pipe_stage *st, uint32_t w)
 	OUT->tag[row].t_end_hi = tag.t_end_hi;
 	OUT->tag[row].t_rtu = tag.t_rtu;
 	_mfence();
-	OUT->feat_seq = w + 1u;
+	OUT->feat_seq[core] = w + 1u;
 
-	log = &PIPE->log[PIPE->log_n % AI64_PIPE_LOG_N];
-	log->tag.win = tag.win;
-	log->tag.t_end_lo = tag.t_end_lo;
-	log->tag.t_end_hi = tag.t_end_hi;
-	log->tag.t_rtu = tag.t_rtu;
-	for (i = 0; i < AI64_PIPE_FEATURES; i++) {
-		log->f[i] = f[i];
-	}
-	_mfence();
-	PIPE->log_n = PIPE->log_n + 1u;
 	if (PIPE->ctl.weights_seq != weights) {
 		weights = PIPE->ctl.weights_seq;
-		stage_reset(st);
+		ai64_pipe_stage_reset(st);
 	}
-
-	lat = t1 - tag.t_end_lo;
-	st->windows++;
-	st->last = w;
-	st->lat_last = lat;
-	st->lat_sum += lat;
-	if (lat < st->lat_min) {
-		st->lat_min = lat;
-	}
-	if (lat > st->lat_max) {
-		st->lat_max = lat;
-	}
-	st->work_sum += t1 - t0;
-	if (t1 - t0 > st->work_max) {
-		st->work_max = t1 - t0;
-	}
+	ai64_pipe_stage_count(st, w, t1 - tag.t_end_lo, t1 - t0);
 }
 
 int ai64_c66x_pipe_poll(void)
@@ -236,20 +197,23 @@ int ai64_c66x_pipe_poll(void)
 	if (ready == seen) {
 		return 0;
 	}
-	st = &PIPE->stage[AI64_PIPE_FFT];
+	st = &PIPE->stage[AI64_PIPE_FFT(core)];
 	/*
-	 * So far on that the slots no longer hold the windows: this core fell
+	 * So far on that the slots no longer hold this core's windows: it fell
 	 * behind, and lost them. Further on, or back: R5F0_0 started again (or
-	 * this core did, and the count is from the last run).
+	 * this core did, and the word is from the last run).
 	 */
-	if (ready - seen > AI64_PIPE_IN_SLOTS) {
+	if (ready - seen > 2u * AI64_PIPE_IN_SLOTS) {
 		if (ready - seen < AI64_PIPE_RESYNC) {
-			st->dropped += ready - seen - 1u;
+			st->dropped += (ready - seen - 1u) / 2u;
 		}
 		seen = ready - 1u;
 	}
+	/* The windows between are the other core's. */
 	for (; seen != ready; seen++) {
-		one(st, seen);
+		if (seen % 2u == core) {
+			one(st, seen);
+		}
 	}
 	return 1;
 }

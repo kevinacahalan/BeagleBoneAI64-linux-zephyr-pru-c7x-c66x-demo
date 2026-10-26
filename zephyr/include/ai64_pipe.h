@@ -5,18 +5,21 @@
  *
  *   ICSSG0 PRU1   samples P8.31 at 2 MHz with its GPI shift register, and
  *                 packs the samples into windows of 2048 (1.024 ms) in
- *                 ICSSG0's shared RAM.
+ *                 ICSSG0's shared RAM. The windows overlap by half: a new
+ *                 one ends every 1024 samples (512 us).
  *   ICSSG0 RTU1   stamps each window with the GTC and rings R5F0_0's
  *                 mailbox.
- *   R5F0_0        copies the window with its UDMA channel into C66x 0's L2
- *                 SRAM; the same descriptor's second TR then writes the
- *                 count of windows copied, the C66x's doorbell.
- *   C66x 0        windows the samples, takes a 2048-point FFT, and writes 64
+ *   R5F0_0        copies the window with its UDMA channel into the L2 SRAM
+ *                 of C66x 0 (even windows) or C66x 1 (odd ones); the same
+ *                 descriptor's second TR then writes the count of windows
+ *                 copied, that C66x's doorbell.
+ *   C66x 0 and 1  window the samples, take a 2048-point FFT, and write 64
  *                 int8 features (the spectrum's first 63 bins, and the DC)
- *                 into the C7x's L2 SRAM, and into a log Linux reads.
+ *                 into the C7x's L2 SRAM. Each has a window every 1.024 ms.
  *   C7x           runs the features through an int8 layer on its Matrix
- *                 Multiply Accelerator, one output per class, and rings
- *                 R5F0_1's mailbox with the best.
+ *                 Multiply Accelerator, one output per class, rings
+ *                 R5F0_1's mailbox with the best, and logs the features
+ *                 for Linux.
  *   R5F0_1        sets P9.25 to the class's frequency and duty, once two
  *                 windows in a row agree on it.
  *
@@ -24,7 +27,7 @@
  * it steps through the 15 frequency and duty pairs of AI64_PWM_STEP_HZ x
  * AI64_PWM_STEP_PCT (ai64_shm.h), a class each, on the GTC's time. So
  * R5F0_1 knows what each window should have been, and keeps score; and
- * P9.25 shows the pattern again, about two windows (2.2 ms) late.
+ * P9.25 shows the pattern again, about 1.5 ms late.
  *
  * Linux (`ai64 pipe`) only starts it, trains the layer, and reads the
  * numbers: the ctl record, the weights, and the feature log are in DDR at
@@ -48,6 +51,9 @@
 #define AI64_PIPE_CHUNKS     (AI64_PIPE_WIN / 16u)     /* 16-bit chunks a window */
 #define AI64_PIPE_WIN_GTC    (AI64_PIPE_WIN * (AI64_GTC_HZ / AI64_PIPE_SAMPLE_HZ))
 #define AI64_PIPE_CHUNK_GTC  (16u * (AI64_GTC_HZ / AI64_PIPE_SAMPLE_HZ))
+/* From one window's end to the next's: half a window. */
+#define AI64_PIPE_HOP        (AI64_PIPE_WIN / 2u)
+#define AI64_PIPE_HOP_CHUNKS (AI64_PIPE_HOP / 16u)
 
 #define AI64_PIPE_CLASSES    (AI64_PWM_STEP_FREQS * AI64_PWM_STEPS)
 /* A count that jumps this far is a stage that started again, not lost
@@ -59,6 +65,9 @@
  * ICSSG0's shared RAM (local 0x10000, SoC 0x0b010000): a ring of window
  * slots, then PRU1's and RTU1's records. PRU1 writes a slot's chunks, in
  * time order, each with its newest sample in bit 0; RTU1 writes its tag.
+ * Window w is halves w and w + 1 of PRU1's samples: PRU1 writes each half
+ * twice, into the second half of one slot and the first half of the next,
+ * so every slot holds a whole window, and a copy of it is one burst.
  */
 #define AI64_PIPE_SMEM_LOCAL 0x00010000u
 #define AI64_PIPE_SMEM_SOC   0x0B010000u
@@ -86,7 +95,7 @@ struct ai64_pipe_slot {
 struct ai64_pipe_pru {
 	uint32_t magic;
 	uint32_t chunks;       /* 16-sample chunks taken */
-	uint32_t wins;         /* windows filled */
+	uint32_t wins;         /* windows filled: halves taken, less one */
 	uint32_t gpcfg;        /* ICSSG_GPCFG1_REG, as PRU1 left it */
 };
 
@@ -101,25 +110,27 @@ struct ai64_pipe_pru {
 #define AI64_PIPE_MBOX_MSG(base) ((base) + 0x40u + 4u * AI64_PIPE_FIFO)
 
 /*
- * C66x 0's L2 SRAM, the 32 KiB below its job block (c66x/c66x.cmd): the
- * windows R5F0_0's DMA brings, AI64_PIPE_IN_SLOTS deep, and the doorbell,
- * the number of windows it has brought.
+ * Each C66x's L2 SRAM, the 32 KiB below its job block (c66x/c66x.cmd): the
+ * windows R5F0_0's DMA brings, AI64_PIPE_IN_SLOTS deep, and the doorbell.
+ * C66x n gets the windows w with w % 2 == n, in slot (w / 2) % IN_SLOTS.
  */
 #define AI64_PIPE_C66X_LOCAL 0x00830000u
-#define AI64_PIPE_C66X_PHYS  0x4D80830000ull
+#define AI64_PIPE_C66X_PHYS(n) (0x4D80830000ull + 0x01000000ull * (n))
 #define AI64_PIPE_IN_SLOTS   4u
+#define AI64_PIPE_IN_SLOT(w) (((w) / 2u) % AI64_PIPE_IN_SLOTS)
 
 struct ai64_pipe_c66x_in {
-	uint32_t ready;                               /* 0x000 */
+	uint32_t ready;                               /* 0x000: one past the newest window brought */
 	uint32_t pad[15];
 	struct ai64_pipe_slot slot[AI64_PIPE_IN_SLOTS]; /* 0x040 */
 };
 
 /*
  * The C7x's L2 SRAM, past its job block. The first 4 KiB, which the C7x
- * maps non-cacheable (c7x/ai64_c7x_mmu.c), take the C66x's output: a
+ * maps non-cacheable (c7x/ai64_c7x_mmu.c), take the C66x cores' output: a
  * ring of the last 16 windows' features, the MMA's input rows, their tags,
- * and how many windows it has written. The C7x keeps the weights and the
+ * and from each C66x, one past the newest window it wrote. The two write
+ * alternate rows. The C7x keeps the weights and the
  * outputs in the cached pages after it.
  */
 #define AI64_PIPE_C7X_ADDR   0x64810000u
@@ -127,8 +138,8 @@ struct ai64_pipe_c66x_in {
 #define AI64_PIPE_ROWS       16u
 
 struct ai64_pipe_c7x_in {
-	uint32_t feat_seq;                            /* 0x000: windows written */
-	uint32_t pad[15];
+	uint32_t feat_seq[2];                         /* 0x000: C66x 0's, C66x 1's */
+	uint32_t pad[14];
 	struct ai64_pipe_tag tag[AI64_PIPE_ROWS];     /* 0x040: t_rtu is t_feat here */
 	uint32_t pad2[(0x400u - 0x140u) / 4u];
 	int8_t a[AI64_PIPE_ROWS][AI64_PIPE_FEATURES]; /* 0x400 */
@@ -174,12 +185,12 @@ struct ai64_pipe_stage {
 	uint32_t pad[5];
 };
 
-#define AI64_PIPE_RTU   0u /* ICSSG0 RTU1 */
-#define AI64_PIPE_DMA   1u /* R5F0_0 */
-#define AI64_PIPE_FFT   2u /* C66x 0 */
-#define AI64_PIPE_MMA   3u /* C7x */
-#define AI64_PIPE_PWM   4u /* R5F0_1 */
-#define AI64_PIPE_STAGES 5u
+#define AI64_PIPE_RTU    0u /* ICSSG0 RTU1 */
+#define AI64_PIPE_DMA    1u /* R5F0_0 */
+#define AI64_PIPE_FFT(n) (2u + (n)) /* C66x n */
+#define AI64_PIPE_MMA    4u /* C7x */
+#define AI64_PIPE_PWM    5u /* R5F0_1 */
+#define AI64_PIPE_STAGES 6u
 
 /* The C7x's verdict on one window, for R5F0_1. */
 struct ai64_pipe_result {
@@ -208,7 +219,7 @@ struct ai64_pipe_score {
 	uint32_t confusion[AI64_PIPE_CLASSES][AI64_PIPE_CLASSES]; /* [truth][class] */
 };
 
-/* The C66x's log of every window's features, for training. */
+/* The C7x's log of every window's features, for training. */
 struct ai64_pipe_log {
 	struct ai64_pipe_tag tag;
 	int8_t f[AI64_PIPE_FEATURES];
@@ -219,16 +230,53 @@ struct ai64_pipe_log {
 struct ai64_pipe {
 	struct ai64_pipe_ctl ctl;                         /* 0x0000 Linux */
 	struct ai64_pipe_stage stage[AI64_PIPE_STAGES];   /* 0x0040 each its own */
-	uint32_t pad0[(0x200u - 0x180u) / 4u];
+	uint32_t pad0[(0x200u - 0x40u - AI64_PIPE_STAGES * sizeof(struct ai64_pipe_stage)) / 4u];
 	struct ai64_pipe_score score;                     /* 0x0200 R5F0_1 */
 	uint32_t pad1[(0x800u - 0x200u - sizeof(struct ai64_pipe_score)) / 4u];
 	struct ai64_pipe_result result[AI64_PIPE_RESULTS]; /* 0x0800 C7x */
 	uint32_t pad2[(0x1000u - 0x800u - AI64_PIPE_RESULTS * sizeof(struct ai64_pipe_result)) / 4u];
 	int8_t weights[AI64_PIPE_FEATURES][AI64_PIPE_FEATURES]; /* 0x1000 Linux */
-	uint32_t log_n;                                   /* 0x2000 C66x: entries written */
+	uint32_t log_n;                                   /* 0x2000 C7x: entries written */
 	uint32_t pad3[15];
-	struct ai64_pipe_log log[AI64_PIPE_LOG_N];        /* 0x2040 C66x */
+	struct ai64_pipe_log log[AI64_PIPE_LOG_N];        /* 0x2040 C7x */
 };
+
+/* A stage starts its numbers again: at its start, and on new weights. */
+static inline void ai64_pipe_stage_reset(volatile struct ai64_pipe_stage *st)
+{
+	st->magic = 0;
+	st->windows = 0;
+	st->dropped = 0;
+	st->last = 0;
+	st->lat_sum = 0;
+	st->lat_min = 0xffffffffu;
+	st->lat_max = 0;
+	st->lat_last = 0;
+	st->work_sum = 0;
+	st->work_max = 0;
+	st->errors = 0;
+	st->magic = AI64_PIPE_MAGIC;
+}
+
+/* A window passed on: lat and work as the stage measured them. */
+static inline void ai64_pipe_stage_count(volatile struct ai64_pipe_stage *st, uint32_t w,
+					 uint32_t lat, uint32_t work)
+{
+	st->windows++;
+	st->last = w;
+	st->lat_last = lat;
+	st->lat_sum += lat;
+	if (lat < st->lat_min) {
+		st->lat_min = lat;
+	}
+	if (lat > st->lat_max) {
+		st->lat_max = lat;
+	}
+	st->work_sum += work;
+	if (work > st->work_max) {
+		st->work_max = work;
+	}
+}
 
 #ifndef PRU_CORE
 /*

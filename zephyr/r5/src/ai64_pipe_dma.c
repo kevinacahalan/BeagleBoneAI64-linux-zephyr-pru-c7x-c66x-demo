@@ -1,16 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * R5F0_0's stage of the pipeline (ai64_pipe.h): every window of P8.31
- * samples, from ICSSG0's shared RAM into C66x 0's L2 SRAM, with the UDMA.
+ * samples, from ICSSG0's shared RAM into a C66x's L2 SRAM, with the UDMA:
+ * the even windows to C66x 0, the odd ones to C66x 1. A window ends every
+ * 512 us, and an FFT takes about 90 us, so either core alone would keep
+ * up; splitting them leaves each the time for Linux's FIR jobs as well.
  *
  * ICSSG0 RTU1 rings FIFO 15 of this core's home mailbox (cluster 11, user
  * 1) with each window's number, while Linux has the pipeline running. The
  * interrupt only wakes the thread, which copies every window from the last
  * it copied to the newest, as long as the ring still holds them. Each copy
- * is one UDMA descriptor: the window's chunks and tag into slot (window %
- * AI64_PIPE_IN_SLOTS), then the count of windows copied into the C66x's
- * doorbell word, which the UDMA writes only once the chunks have landed
- * (ai64_dma_copy_bell()). The C66x polls that word in its own L2.
+ * is one UDMA descriptor: the window's chunks and tag into slot
+ * AI64_PIPE_IN_SLOT(window), then one past the window's number into that
+ * C66x's doorbell word, which the UDMA writes only once the chunks have
+ * landed (ai64_dma_copy_bell()). The C66x polls that word in its own L2.
  */
 
 #include <zephyr/kernel.h>
@@ -52,31 +55,15 @@ static void rung(const struct device *dev, mbox_channel_id_t channel, void *user
 	k_sem_give(&bell);
 }
 
-static void stage_reset(volatile struct ai64_pipe_stage *st)
-{
-	st->magic = 0;
-	st->windows = 0;
-	st->dropped = 0;
-	st->last = 0;
-	st->lat_sum = 0;
-	st->lat_min = UINT32_MAX;
-	st->lat_max = 0;
-	st->lat_last = 0;
-	st->work_sum = 0;
-	st->work_max = 0;
-	st->errors = 0;
-	st->magic = AI64_PIPE_MAGIC;
-}
-
 /* Copy window w on; 0, or a negative errno. */
 static int pass_on(volatile struct ai64_pipe_stage *st, uint32_t w)
 {
 	static uint32_t weights;
-	uint32_t slot = w % AI64_PIPE_IN_SLOTS;
-	uint64_t dst = AI64_PIPE_C66X_PHYS + offsetof(struct ai64_pipe_c66x_in, slot) +
-		       slot * sizeof(struct ai64_pipe_slot);
+	uint64_t c66x = AI64_PIPE_C66X_PHYS(w % 2u);
+	uint64_t dst = c66x + offsetof(struct ai64_pipe_c66x_in, slot) +
+		       AI64_PIPE_IN_SLOT(w) * sizeof(struct ai64_pipe_slot);
 	uint64_t src = AI64_PIPE_SMEM_SOC + (w % AI64_PIPE_SLOTS) * AI64_PIPE_SLOT_SIZE;
-	uint32_t t_end, t0, t1, lat, work;
+	uint32_t t_end, t0, t1;
 	int ret;
 
 	/* PRU1 has gone round the ring past it, or RTU1 has not stamped it. */
@@ -87,7 +74,7 @@ static int pass_on(volatile struct ai64_pipe_stage *st, uint32_t w)
 	t_end = SMEM_TAG(w)->t_end_lo;
 	t0 = gtc_lo();
 	ret = ai64_dma_copy_bell(dst, src, AI64_PIPE_SLOT_COPY,
-				 AI64_PIPE_C66X_PHYS + offsetof(struct ai64_pipe_c66x_in, ready),
+				 c66x + offsetof(struct ai64_pipe_c66x_in, ready),
 				 w + 1u, NULL);
 	t1 = gtc_lo();
 	if (ret) {
@@ -96,24 +83,9 @@ static int pass_on(volatile struct ai64_pipe_stage *st, uint32_t w)
 	}
 	if (PIPE->ctl.weights_seq != weights) {
 		weights = PIPE->ctl.weights_seq;
-		stage_reset(st);
+		ai64_pipe_stage_reset(st);
 	}
-	lat = t1 - t_end;
-	work = t1 - t0;
-	st->windows++;
-	st->last = w;
-	st->lat_last = lat;
-	st->lat_sum += lat;
-	if (lat < st->lat_min) {
-		st->lat_min = lat;
-	}
-	if (lat > st->lat_max) {
-		st->lat_max = lat;
-	}
-	st->work_sum += work;
-	if (work > st->work_max) {
-		st->work_max = work;
-	}
+	ai64_pipe_stage_count(st, w, t1 - t_end, t1 - t0);
 	return 0;
 }
 
@@ -128,14 +100,14 @@ static void pipe_thread(void *a, void *b, void *c)
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
 
-	stage_reset(st);
+	ai64_pipe_stage_reset(st);
 	ret = mbox_register_callback(mbox, AI64_PIPE_FIFO, rung, NULL);
 	ret = ret ? ret : mbox_set_enabled(mbox, AI64_PIPE_FIFO, true);
 	if (ret) {
 		LOG_ERR("pipe: mailbox FIFO %u: %d", AI64_PIPE_FIFO, ret);
 		return;
 	}
-	LOG_INF("pipe: windows from ICSSG0 to C66x 0's L2 by UDMA, on RTU1's doorbell");
+	LOG_INF("pipe: windows from ICSSG0 to the C66x cores' L2 by UDMA, on RTU1's doorbell");
 
 	for (;;) {
 		k_sem_take(&bell, K_FOREVER);
@@ -144,7 +116,7 @@ static void pipe_thread(void *a, void *b, void *c)
 		 * The first window, after a stop, or after PRU1 started again:
 		 * start from the newest.
 		 */
-		if (!started || (int32_t)(end - next) <= 0 || end - next > AI64_PIPE_SLOTS) {
+		if (!started || (int32_t)(end - next) <= 0 || end - next > AI64_PIPE_SLOTS - 1u) {
 			next = end - 1u;
 			started = true;
 		}
