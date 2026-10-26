@@ -59,7 +59,7 @@
 
 `LICENSE` — MIT, plus the files that keep their own license.
 
-`linux-app/` — the `ai64` userspace program: `ai64.c`, `ai64_fabric.c` for `ai64 fabric`, Linux's node on the fabric, and `ai64_pipe.c` for `ai64 pipe`, which trains the pipeline's layer and shows its numbers. `linux-app/ai64` is a build product.
+`linux-app/` — the `ai64` userspace program: `ai64.c`, `ai64_fabric.c` for `ai64 fabric`, Linux's node on the fabric, and `ai64_pipe.c` for `ai64 pipe`, which trains the pipeline's layer and shows its numbers, and `ai64_web.c` for `ai64 web`, which serves the live page `web/index.html` (built in by `ai64_web_page.S`). `linux-app/ai64` is a build product.
 
 `beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
 

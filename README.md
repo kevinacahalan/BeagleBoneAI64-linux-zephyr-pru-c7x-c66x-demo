@@ -9,6 +9,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, 250 times one A72 core ([The C7x's MMA](#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](#r5f0_0s-dma-the-udma)).
 - **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into the L2 SRAM of one C66x or the other, in turn; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](#every-core-to-every-other-the-fabric)).
+- **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies, read from shared memory twice a second ([The web page](#the-web-page)).
 
 The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/multicore_scheduler/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1 keeps TI's design, where every core runs a task.
 
@@ -227,14 +228,14 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts the four R5F cores, the twelve ICSSG cores, and the DSPs with the installed firmware, then opens a tmux session with thirteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `sched`, `c66x0`, `c66x1`, `c7x`, `fabric`, and `pipe`. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
+- It restarts the four R5F cores, the twelve ICSSG cores, and the DSPs with the installed firmware, then opens a tmux session with fourteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `sched`, `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, and `web`, which serves [the web page](#the-web-page) on port 8064. Before it stops each R5F and DSP, it asks the core to go idle ([why](#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: switch windows with Ctrl+b then 0–9, or Ctrl+b then n and p for next and previous, or Ctrl+b then w for a list. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
 
 To stop the demo, run `tmux kill-session -t ai64`. Typing `quit` in the `linux` window only ends that window.
 
-Without tmux, plain `ai64-demo` prints all thirteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
+Without tmux, plain `ai64-demo` prints all fourteen windows on one console instead. There, `quit` or Ctrl+C stops the whole demo.
 
 ### After you change the code
 
@@ -436,9 +437,22 @@ Type these in the linux window. The R5F commands start with the core's name, `r5
 
 Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple of 4 ns, one IEP count, and every edge stays at least 400 ns from the next on the same pin, so A's high time runs from 400 ns to the period less 440 ns and twice the dead band; the RTU clamps what it is asked for. All four generators start stepping, 5 ms a step; a fixed `pwm` request stops the steps, and `steps <ms>` starts them again. On P9.25, either one also takes the pin back from the pipeline, until the next `pipe start`. The eCAP on P8.15 has no requests of its own: it follows slice 0. Slice 1, the hardware PWM on P9.12 and P9.15, has no RPMsg: `sudo ai64 fabric route g0rtu1 pwm <period_ns> <duty_ns>` (or `steps`, `sweep`, or `dead`) reaches it through the fabric instead, and so can any core on the route.
 
-`ai64-demo` without `--tmux` prints all thirteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[Sched]`, `[C66x0]`, `[C66x1]`, `[C7x]`, `[Fabric]`, or `[Pipe]`; the pipe window there is one line every 10 s. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+`ai64-demo` without `--tmux` prints all fourteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[Sched]`, `[C66x0]`, `[C66x1]`, `[C7x]`, `[Fabric]`, `[Pipe]`, or `[Web]`; the pipe window there is one line every 10 s. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
-`ai64` has a few more subcommands for checking a board: `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 pwm once` and `sudo ai64 sched once` print one sample of the `pwm` and `sched` windows, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 mma [rows] [runs]` runs the int8 layer on the C7x's MMA and in plain C ([how](#the-c7xs-matrix-multiply-accelerator)), `sudo ai64 pipe [once|start|stop]` shows, trains and starts, or stops the pipeline ([how](#the-pipeline-p831-to-p925)), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
+`ai64` has a few more subcommands for checking a board: `sudo ai64 pads` checks the pin mux of every demo pin, `ai64 trace <remoteproc-name>` follows any core's trace log (`ai64 trace 5d00000.r5f`, `ai64 trace b034000.pru`, and so on), `sudo ai64 pwm once` and `sudo ai64 sched once` print one sample of the `pwm` and `sched` windows, `ai64 bench <rpmsg-dev>` times eRPC calls to one R5F core, `sudo ai64 dsp <remoteproc-name>` offloads FIR jobs to a DSP ([how](#linux-to-the-dsps-fir-jobs)), `sudo ai64 mma [rows] [runs]` runs the int8 layer on the C7x's MMA and in plain C ([how](#the-c7xs-matrix-multiply-accelerator)), `sudo ai64 pipe [once|start|stop]` shows, trains and starts, or stops the pipeline ([how](#the-pipeline-p831-to-p925)), `sudo ai64 web [port]` serves [the web page](#the-web-page), `sudo ai64 shutdown <remoteproc-name>` asks a core to go idle before Linux stops it, and `sudo ai64 fabric route <node>... [pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]` sends a message along any cores you name and prints each hop's time ([routes](#every-core-to-every-other-the-fabric)).
+
+### The web page
+
+While the demo runs, open `http://<board>:8064/` in a browser on the same network; the `web` window prints the board's addresses. The page is one file, `linux-app/web/index.html`, built into `ai64`, and asks the board for `/status.json` twice a second. It shows:
+
+- **Cores**: each of the 19 demo cores' remoteproc state and firmware, what its job is, what it reports doing, and whether it beats on the fabric.
+- **The pipeline**: windows a second, the time from a window's last sample to P9.25 set, the score since training, what P9.25 runs; each stage's rate, latency, and work; that latency over the last 2 minutes; and the confusion matrix.
+- **The PWM generators**: what each runs now, and what it was asked for: steps, a sweep, a fixed period, or the pipeline.
+- **The fabric**: the one-way latency of every path, and each node's starts, pings, and tally.
+
+![The web page, served by the board while the demo runs](media/web.png)
+
+`sudo ai64 web [port]` serves it on its own. It only reads: sysfs, and the shared memory the cores publish to, mapped read only. It joins no link and takes no lock, so it changes nothing the demo does. The numbers it sends are the cores' own running totals, and the page works out the rates, over about 3 s. It needs no internet, and it has no password: anyone on the board's network can see it, and no one can change anything through it.
 
 ## Probe the pins
 

@@ -1,0 +1,606 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  The page ai64 web serves (linux-app/ai64_web.c). It asks the board for
+  /status.json twice a second: the cores' own running totals, read from
+  shared memory. Everything per second here is the page's own difference
+  between two of those, about 3 s apart. No external files: the board may
+  have no internet.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-64 Demo Status</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f3f0;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #dddcd7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #7a7973;
+  --accent: #2a78d6;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --muted-dot: #b4b3ad;
+  --seq-0: #f0efec;
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #6da7ec;
+  --seq-4: #3987e5;
+  --seq-5: #256abf;
+  --seq-6: #184f95;
+  --seq-7: #0d366b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-2: #232321;
+    --border: #383835;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #8d8c84;
+    --accent: #3987e5;
+    --muted-dot: #5c5b56;
+    --seq-0: #2a2a28;
+    --seq-1: #0d366b;
+    --seq-2: #104281;
+    --seq-3: #184f95;
+    --seq-4: #1c5cab;
+    --seq-5: #2a78d6;
+    --seq-6: #5598e7;
+    --seq-7: #9ec5f4;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211;
+  --surface: #1a1a19;
+  --surface-2: #232321;
+  --border: #383835;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --ink-3: #8d8c84;
+  --accent: #3987e5;
+  --muted-dot: #5c5b56;
+  --seq-0: #2a2a28;
+  --seq-1: #0d366b;
+  --seq-2: #104281;
+  --seq-3: #184f95;
+  --seq-4: #1c5cab;
+  --seq-5: #2a78d6;
+  --seq-6: #5598e7;
+  --seq-7: #9ec5f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 18px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 16px; margin: 0 0 4px; }
+.sub { color: var(--ink-2); }
+.small { font-size: 12px; color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; }
+.live { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted-dot); display: inline-block; flex: none; }
+.dot.good { background: var(--good); }
+.dot.warning { background: var(--warning); }
+.dot.critical { background: var(--critical); }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
+.section-head .sub { font-size: 13px; }
+.group { margin-bottom: 14px; }
+.group:last-child { margin-bottom: 0; }
+.group-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin-bottom: 6px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; background: var(--surface); min-width: 0; }
+.card-top { display: flex; align-items: center; gap: 8px; }
+.card-name { font-weight: 600; }
+.chip { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.card-role { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
+.card-metric { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.card-foot { margin-top: 4px; font-size: 11.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.tile { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.tile-label { font-size: 12px; color: var(--ink-2); }
+.tile-value { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.tile-note { font-size: 12px; color: var(--ink-3); }
+.chain { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.stage { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; position: relative; }
+.stage-core { font-weight: 600; font-size: 13px; }
+.stage-job { font-size: 12px; color: var(--ink-2); min-height: 2.6em; }
+.stage-rate { font-size: 18px; font-weight: 600; margin-top: 4px; }
+.stage-line { font-size: 12px; color: var(--ink-2); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.panel-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+.panel-sub { font-size: 12px; color: var(--ink-3); margin-bottom: 8px; }
+svg { display: block; max-width: 100%; height: auto; }
+svg text { fill: var(--ink-2); font: 11px system-ui, sans-serif; }
+.axis { stroke: var(--border); }
+.line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+td.r, th.r { text-align: right; }
+.scroll { overflow-x: auto; }
+details { margin-top: 8px; font-size: 13px; }
+summary { cursor: pointer; color: var(--ink-2); }
+.legend { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+.legend i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+  max-width: 280px;
+}
+.banner { display: none; background: var(--surface-2); border-left: 3px solid var(--critical); padding: 8px 12px; border-radius: 6px; margin-bottom: 14px; }
+@media (max-width: 900px) {
+  .chain { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .two { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .chain { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>BeagleBone AI-64 demo</h1>
+    <span class="sub">what every core is doing, read live from shared memory</span>
+    <span class="live"><span class="dot" id="live-dot"></span><span id="live-text">connecting</span></span>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <section>
+    <div class="section-head">
+      <h2>Cores</h2>
+      <span class="sub">The 19 demo cores: their remoteproc state, their firmware, and what each one publishes.</span>
+    </div>
+    <div id="cores"></div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>The pipeline: P8.31 to P9.25</h2>
+      <span class="sub" id="pipe-state"></span>
+    </div>
+    <div class="tiles" id="pipe-tiles"></div>
+    <div class="chain" id="pipe-chain"></div>
+    <div class="two">
+      <div>
+        <div class="panel-title">Window end to P9.25 set, mean</div>
+        <div class="panel-sub">R5F0_1's latency from each window's last sample, the last 2 minutes. On the pin, P9.25 takes a step about 1.5 ms after the input does: the windows themselves, then this.</div>
+        <div id="lat-chart"></div>
+      </div>
+      <div>
+        <div class="panel-title">Each window: the step the input was on, and the class found</div>
+        <div class="panel-sub">Since training. Rows are the input's step, columns the C7x's class; every window off the diagonal is wrong.</div>
+        <div id="confusion"></div>
+        <details><summary>As a table</summary><div class="scroll" id="confusion-table"></div></details>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>PWM generators</h2>
+      <span class="sub">Each generator's status record, which its core rewrites about every 10 ms.</span>
+    </div>
+    <div class="scroll"><table id="pwm"></table></div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>The fabric</h2>
+      <span class="sub">Every node pings every other through shared memory and the mailboxes, every 10 ms.</span>
+    </div>
+    <div class="two">
+      <div>
+        <div class="panel-title">One-way latency, sender to receiver</div>
+        <div class="panel-sub">Mean over the last 3 s, from the ping's send to the receiver reading it. Linux joins only while <code>ai64 fabric</code> runs.</div>
+        <div id="fabric-matrix"></div>
+        <details><summary>As a table</summary><div class="scroll" id="fabric-table"></div></details>
+      </div>
+      <div>
+        <div class="panel-title">Nodes</div>
+        <div class="panel-sub">Starts since power-up, pings answered a second, and the spinlock tally's count.</div>
+        <div class="scroll"><table id="nodes"></table></div>
+      </div>
+    </div>
+  </section>
+  <div class="small">Served by <code>ai64 web</code> on the board; it only reads. The numbers are the cores' own running totals; rates are over about 3 s.</div>
+</main>
+<div id="tip"></div>
+<script>
+"use strict";
+
+const HZ = [10000, 15000, 20000];
+const PCT = [10, 25, 50, 75, 90];
+const CLASSES = 15;
+const NODE_NAMES = ["linux", "r5f0_0", "r5f0_1", "r5f1_0", "r5f1_1", "c66x0", "c66x1", "c7x", "g0rtu0", "g0rtu1"];
+// Pipeline stage records, as ai64_pipe.h numbers them.
+const ST = { RTU: 0, DMA: 1, FFT0: 2, FFT1: 3, MMA: 4, PWM: 5 };
+const PWM_GENS = [
+  { pins: "P8.11, P8.12", how: "software: ICSSG0 PRU0 writes R30 on IEP0's time" },
+  { pins: "P8.15", how: "ICSSG0 eCAP0, a copy of P8.11 that Tx_PRU0 sets" },
+  { pins: "P9.12, P9.15", how: "ICSSG0 slice 1, the ICSSG's PWM module, on IEP1 compares" },
+  { pins: "P9.25", how: "the SoC's EHRPWM4, set by Zephyr on R5F0_1" },
+];
+
+// Each card: the remoteproc, its fabric node if it is one, and what it shows.
+const GROUPS = [
+  { title: "Zephyr on the main-domain R5F cores", cores: [
+    { rp: "5c00000.r5f", name: "R5F0_0", node: 1, role: "SPI7 and the UDMA; moves the pipeline's windows", show: s => stageLine(s, ST.DMA, "windows moved") },
+    { rp: "5d00000.r5f", name: "R5F0_1", node: 2, role: "EHRPWM4 on P9.25; the pipeline's last stage", show: s => pwmLine(s.cur.pwm[3]) },
+    { rp: "5e00000.r5f", name: "R5F1_0", node: 3, role: "a square wave on P8.18" },
+    { rp: "5f00000.r5f", name: "R5F1_1", node: 4, role: "watches the other three over ipc_service" },
+  ]},
+  { title: "ICSSG0: the PWM slices, and the pipeline's sampler", cores: [
+    { rp: "b034000.pru", name: "PRU0", role: "slice 0: PWM in software on P8.11, P8.12", show: s => pwmLine(s.cur.pwm[0]) },
+    { rp: "b00a000.txpru", name: "Tx_PRU0", role: "slice 0: the modulator, and eCAP0 on P8.15", show: s => pwmLine(s.cur.pwm[1]) },
+    { rp: "b004000.rtu", name: "RTU0", node: 8, role: "slice 0 talks: RPMsg to Linux, the fabric" },
+    { rp: "b038000.pru", name: "PRU1", role: "slice 1: the ICSSG PWM module on P9.12, P9.15; samples P8.31 at 2 MHz", show: s => pwmLine(s.cur.pwm[2]) },
+    { rp: "b00c000.txpru", name: "Tx_PRU1", role: "slice 1: the modulator" },
+    { rp: "b006000.rtu", name: "RTU1", node: 9, role: "slice 1 talks; stamps the pipeline's windows", show: s => stageLine(s, ST.RTU, "windows stamped") },
+  ]},
+  { title: "ICSSG1: TI's multicore scheduler, a task each on IEP0's time", cores: [
+    { rp: "b134000.pru", name: "PRU0", role: "sets the scheduler up; its task sets P8.17 high" },
+    { rp: "b138000.pru", name: "PRU1", role: "its task sets P8.17 low" },
+    { rp: "b104000.rtu", name: "RTU0", role: "its task sets P8.17 low" },
+    { rp: "b106000.rtu", name: "RTU1", role: "its task sets P8.17 high" },
+    { rp: "b10a000.txpru", name: "Tx_PRU0", role: "its task sets P8.17 high" },
+    { rp: "b10c000.txpru", name: "Tx_PRU1", role: "its task sets P8.17 low" },
+  ]},
+  { title: "The DSPs", cores: [
+    { rp: "4d80800000.dsp", name: "C66x 0", node: 5, role: "FIR jobs; the pipeline's FFT, even windows", show: s => stageLine(s, ST.FFT0, "FFTs") },
+    { rp: "4d81800000.dsp", name: "C66x 1", node: 6, role: "FIR jobs; the pipeline's FFT, odd windows", show: s => stageLine(s, ST.FFT1, "FFTs") },
+    { rp: "64800000.dsp", name: "C7x", node: 7, role: "FIR and MMA layer jobs; classifies each window", show: s => stageLine(s, ST.MMA, "windows classified") },
+  ]},
+];
+
+const PIPE_STAGES = [
+  { st: ST.RTU, core: "ICSSG0 PRU1 + RTU1", job: "sample P8.31, stamp the window" },
+  { st: ST.DMA, core: "R5F0_0", job: "UDMA into a C66x's L2" },
+  { st: ST.FFT0, core: "C66x 0", job: "FFT, 64 features: even windows" },
+  { st: ST.FFT1, core: "C66x 1", job: "FFT, 64 features: odd windows" },
+  { st: ST.MMA, core: "C7x", job: "MMA layer: the class" },
+  { st: ST.PWM, core: "R5F0_1", job: "P9.25 to the class" },
+];
+
+const $ = id => document.getElementById(id);
+const u32 = x => x >>> 0;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (v, d = 0) => Number.isFinite(v) ? v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : "–";
+const className = c => c >= 0 && c < CLASSES ? `${HZ[Math.floor(c / 5)] / 1000} kHz ${PCT[c % 5]}%` : "none";
+const shortClass = c => `${HZ[Math.floor(c / 5)] / 1000}k ${PCT[c % 5]}%`;
+
+// Snapshots of the last few seconds; rates compare the newest with one about 3 s older.
+let history = [];
+let latSeries = [];
+let lastOk = 0;
+
+function ticksUs(t, hz) { return t * 1e6 / hz; }
+
+function rates(s, st) {
+  const a = s.cur.pipe.stages[st], b = s.ref.pipe.stages[st];
+  const n = u32(a[1] - b[1]);
+  const lat = n ? ticksUs(u32(a[4] - b[4]) / n, s.cur.gtc_hz) : NaN;
+  const work = n ? ticksUs(u32(a[7] - b[7]) / n, s.cur.gtc_hz) : NaN;
+  // A stage that started its numbers again since ref has no rate yet.
+  const reset = a[1] < b[1];
+  return { ok: a[0] === 1, perS: reset ? NaN : n / s.dt, lat: reset ? NaN : lat, work: reset ? NaN : work,
+           lost: a[2], err: a[9], latMax: ticksUs(a[6], s.cur.gtc_hz) };
+}
+
+function stageLine(s, st, what) {
+  const r = rates(s, st);
+  if (!r.ok) return "pipeline stage not started";
+  if (!s.cur.pipe.run) return "pipeline stopped";
+  return `<span class="num">${fmt(r.perS)}</span> ${what}/s, <span class="num">${fmt(r.work, 1)}</span> µs each`;
+}
+
+function pwmMode(p) {
+  if (!p.ok) return "no status";
+  if (p.ask_period === 0 && p.engine === 2) return "following the pipeline";
+  if (p.steps_ms) return `steps every ${p.steps_ms} ms`;
+  if (p.sweep_ms) return `sweeps every ${p.sweep_ms} ms`;
+  return "fixed";
+}
+
+function pwmLine(p) {
+  if (!p || !p.ok || !p.period) return "no PWM status";
+  return `now <span class="num">${fmt(1e6 / p.period, 1)}</span> kHz, <span class="num">${fmt(100 * p.duty / p.period, 0)}</span>%; ${pwmMode(p)}`;
+}
+
+function stateDot(state) {
+  if (state === "running" || state === "attached") return ["good", state];
+  if (state === "crashed") return ["critical", state];
+  if (state === "offline") return ["", state];
+  return ["warning", state || "missing"];
+}
+
+function heartbeat(s, node) {
+  const f = s.cur.fabric[node];
+  if (!f || !f.up) return { cls: "", text: "not on the fabric" };
+  // The server reads the GTC before the pages, so a node may have beaten since: signed.
+  const ageMs = Math.max(0, ((Number(BigInt(s.cur.gtc) & 0xffffffffn) - f.beat) | 0) * 1000 / s.cur.gtc_hz);
+  if (ageMs < 100) return { cls: "good", text: "on the fabric, beating" };
+  return { cls: "critical", text: `fabric heartbeat ${ageMs > 1e4 ? "lost" : fmt(ageMs, 0) + " ms ago"}` };
+}
+
+function drawCores(s) {
+  const rp = {};
+  for (const r of s.cur.rproc) rp[r.name] = r;
+  let html = "";
+  for (const g of GROUPS) {
+    html += `<div class="group"><div class="group-title">${esc(g.title)}</div><div class="cards">`;
+    for (const c of g.cores) {
+      const r = rp[c.rp] || {};
+      const [cls, label] = stateDot(r.state);
+      let metric = c.show && r.state === "running" ? c.show(s) : "";
+      let foot = r.fw ? esc(r.fw) : esc(c.rp);
+      if (c.node !== undefined && r.state === "running") {
+        const hb = heartbeat(s, c.node);
+        foot += ` · <span class="dot ${hb.cls}" style="width:7px;height:7px"></span> ${hb.text}`;
+      }
+      html += `<div class="card"><div class="card-top"><span class="card-name">${esc(c.name)}</span>` +
+              `<span class="chip"><span class="dot ${cls}"></span>${esc(label)}</span></div>` +
+              `<div class="card-role">${esc(c.role)}</div>` +
+              (metric ? `<div class="card-metric">${metric}</div>` : "") +
+              `<div class="card-foot">${foot}</div></div>`;
+    }
+    html += "</div></div>";
+  }
+  $("cores").innerHTML = html;
+}
+
+function drawPipe(s) {
+  const p = s.cur.pipe, ref = s.ref.pipe;
+  const state = !p.ok ? "Not started since the cores came up: ai64 pipe start, or the demo's linux window, starts it."
+    : `${p.run ? "Running" : "Stopped"}; ${p.follow ? "P9.25 follows the classes" : "P9.25 steps on its own"}. The input steps every ${p.steps_ms} ms.`;
+  $("pipe-state").textContent = state;
+
+  const out = rates(s, ST.PWM);
+  const sc = p.score, rsc = ref.score;
+  const right = sc.right, wrong = sc.wrong;
+  const pct = right + wrong ? 100 * right / (right + wrong) : NaN;
+  const dRight = sc.right >= rsc.right ? sc.right - rsc.right : sc.right;
+  const dWrong = sc.wrong >= rsc.wrong ? sc.wrong - rsc.wrong : sc.wrong;
+  const p925 = s.cur.pwm[3];
+  $("pipe-tiles").innerHTML = [
+    tile("Windows a second", fmt(out.perS), "2048 samples each, a new one every 512 µs"),
+    tile("Window end to P9.25 set", `${fmt(out.lat)} µs`, `mean over 3 s; the most ${fmt(out.latMax)} µs`),
+    tile("Right since training", Number.isFinite(pct) ? `${fmt(pct, 2)}%` : "–",
+         `${fmt(right)} right, ${fmt(wrong)} wrong; ${fmt(dRight / s.dt)} a second, ${fmt(dWrong)} wrong in 3 s`),
+    tile("P9.25 now", p925 && p925.ok && p925.period ? className(classOf(p925)) : "–",
+         p.follow ? `the C7x's newest: ${className(p.newest.cls)}, score ${p.newest.score} against ${p.newest.second}` : "on its own steps"),
+  ].join("");
+
+  let chain = "";
+  for (const d of PIPE_STAGES) {
+    const r = rates(s, d.st);
+    chain += `<div class="stage"><div class="stage-core">${esc(d.core)}</div><div class="stage-job">${esc(d.job)}</div>` +
+             `<div class="stage-rate num">${fmt(r.perS)}<span class="small"> /s</span></div>` +
+             `<div class="stage-line num">done ${fmt(r.lat)} µs after the window</div>` +
+             `<div class="stage-line num">work ${fmt(r.work, 1)} µs</div>` +
+             `<div class="stage-line num">${fmt(r.lost)} lost, ${fmt(r.err)} errors</div></div>`;
+  }
+  $("pipe-chain").innerHTML = chain;
+  drawConfusion(sc.confusion);
+}
+
+// The class the generator runs: the nearest of the 15.
+function classOf(p) {
+  const hz = 1e9 / p.period, d = 100 * p.duty / p.period;
+  let best = 0, err = Infinity;
+  for (let c = 0; c < CLASSES; c++) {
+    const e = Math.abs(HZ[Math.floor(c / 5)] - hz) / 1000 + Math.abs(PCT[c % 5] - d);
+    if (e < err) { err = e; best = c; }
+  }
+  return best;
+}
+
+function tile(label, value, note) {
+  return `<div class="tile"><div class="tile-label">${esc(label)}</div><div class="tile-value num">${esc(value)}</div><div class="tile-note">${esc(note)}</div></div>`;
+}
+
+// Sequential blue, light (few) to dark (many); zero is the neutral step.
+function seq(v, max) {
+  if (!(v > 0) || !(max > 0)) return "var(--seq-0)";
+  const k = 1 + Math.min(6, Math.floor(6.999 * Math.log1p(v) / Math.log1p(max)));
+  return `var(--seq-${k})`;
+}
+
+function heatmap(el, rows, cols, value, label, tipText, max, unit) {
+  const cell = 22, gap = 2, left = 70, top = 66;
+  const w = left + cols.length * (cell + gap) + 40, h = top + rows.length * (cell + gap) + 4;
+  let svg = `<svg viewBox="0 0 ${w} ${h}" width="${w}" role="img" aria-label="${esc(label)}">`;
+  cols.forEach((c, j) => {
+    const x = left + j * (cell + gap) + cell / 2;
+    svg += `<text transform="translate(${x + 4},${top - 6}) rotate(-60)">${esc(c)}</text>`;
+  });
+  rows.forEach((r, i) => {
+    const y = top + i * (cell + gap);
+    svg += `<text x="${left - 6}" y="${y + cell / 2 + 4}" text-anchor="end">${esc(r)}</text>`;
+    cols.forEach((c, j) => {
+      const v = value(i, j);
+      const x = left + j * (cell + gap);
+      svg += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="3" fill="${v === null ? "transparent" : seq(v, max)}"` +
+             (v === null ? "" : ` data-tip="${esc(tipText(i, j, v))}"`) + `/>`;
+    });
+  });
+  svg += "</svg>";
+  el.innerHTML = svg + `<div class="legend">fewer <i style="background:var(--seq-1)"></i><i style="background:var(--seq-3)"></i><i style="background:var(--seq-5)"></i><i style="background:var(--seq-7)"></i> more ${esc(unit)}; <i style="background:var(--seq-0)"></i> none</div>`;
+}
+
+function drawConfusion(m) {
+  const labels = Array.from({ length: CLASSES }, (_, c) => shortClass(c));
+  let max = 0;
+  for (const row of m) for (const v of row) max = Math.max(max, v);
+  heatmap($("confusion"), labels, labels, (i, j) => m[i][j], "confusion matrix",
+    (i, j, v) => `input ${className(i)}, class ${className(j)}: ${fmt(v)} windows${i === j ? "" : (v ? " (wrong)" : "")}`, max, "windows");
+  let t = "<table><tr><th>input \\ class</th>" + labels.map(l => `<th class="r">${esc(l)}</th>`).join("") + "</tr>";
+  m.forEach((row, i) => { t += `<tr><th>${esc(labels[i])}</th>` + row.map(v => `<td class="r num">${fmt(v)}</td>`).join("") + "</tr>"; });
+  $("confusion-table").innerHTML = t + "</table>";
+}
+
+function drawLatency() {
+  const el = $("lat-chart");
+  const W = 560, H = 190, L = 44, R = 10, T = 10, B = 26;
+  const pts = latSeries.filter(p => Number.isFinite(p.v));
+  if (pts.length < 2) { el.innerHTML = `<div class="small">Waiting for the pipeline to run.</div>`; return; }
+  const t1 = pts[pts.length - 1].t, t0 = t1 - 120;
+  let top = Math.max(...pts.map(p => p.v));
+  const step = top > 400 ? 200 : top > 200 ? 100 : 50;
+  top = Math.ceil(top / step) * step || step;
+  const X = t => L + (W - L - R) * (t - t0) / 120, Y = v => T + (H - T - B) * (1 - v / top);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" role="img" aria-label="window end to P9.25 set, mean, microseconds, last 2 minutes">`;
+  for (let v = 0; v <= top; v += step) {
+    svg += `<line class="axis" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`;
+  }
+  for (let k = 0; k <= 4; k++) {
+    const t = t0 + k * 30;
+    svg += `<text x="${X(t)}" y="${H - 8}" text-anchor="middle">${k === 4 ? "now" : `−${120 - k * 30} s`}</text>`;
+  }
+  const d = pts.filter(p => p.t >= t0).map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("");
+  svg += `<path class="line" d="${d}"/>`;
+  svg += `<line id="lat-cross" class="axis" y1="${T}" y2="${H - B}" style="display:none"/><circle id="lat-dot" r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" style="display:none"/>`;
+  svg += `<rect id="lat-hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/></svg>`;
+  el.innerHTML = svg + `<div class="small">µs, each point the mean over half a second</div>`;
+  const hit = $("lat-hit"), svgEl = el.querySelector("svg");
+  hit.addEventListener("mousemove", ev => {
+    const pt = svgEl.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const p = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+    const t = t0 + (p.x - L) * 120 / (W - L - R);
+    let best = pts[0];
+    for (const q of pts) if (Math.abs(q.t - t) < Math.abs(best.t - t)) best = q;
+    const cross = $("lat-cross"), dot = $("lat-dot");
+    cross.setAttribute("x1", X(best.t)); cross.setAttribute("x2", X(best.t)); cross.style.display = "";
+    dot.setAttribute("cx", X(best.t)); dot.setAttribute("cy", Y(best.v)); dot.style.display = "";
+    showTip(ev, `${fmt(best.v)} µs, ${fmt(t1 - best.t)} s ago`);
+  });
+  hit.addEventListener("mouseleave", () => { hideTip(); $("lat-cross").style.display = "none"; $("lat-dot").style.display = "none"; });
+}
+
+function drawPwm(s) {
+  const engines = ["software", "ICSSG PWM module", "EHRPWM", "eCAP"];
+  let t = `<tr><th>Pins</th><th>How</th><th>Now</th><th>Doing</th><th class="r">Periods a second</th><th class="r">Late edges</th></tr>`;
+  s.cur.pwm.forEach((p, i) => {
+    const r = s.ref.pwm[i];
+    // R5F0_1 does not count EHRPWM4's periods: periods stays 0.
+    const per = p.periods && p.periods >= r.periods ? (p.periods - r.periods) / s.dt : NaN;
+    t += `<tr><td><b>${PWM_GENS[i].pins}</b></td><td>${esc(PWM_GENS[i].how)}<div class="small">${p.ok ? engines[p.engine] || "?" : ""}</div></td>` +
+         `<td class="num">${p.ok && p.period ? `${fmt(1e6 / p.period, 1)} kHz, ${fmt(100 * p.duty / p.period, 0)}%` : "–"}</td>` +
+         `<td>${esc(pwmMode(p))}</td><td class="r num">${fmt(per)}</td><td class="r num">${p.ok ? fmt(p.late) : "–"}</td></tr>`;
+  });
+  $("pwm").innerHTML = t;
+}
+
+function drawFabric(s) {
+  const n = NODE_NAMES.length, hz = s.cur.gtc_hz;
+  const one = [], rtt = [], pps = [];
+  let max = 0;
+  for (let i = 0; i < n; i++) {
+    one.push([]); rtt.push([]); pps.push([]);
+    for (let j = 0; j < n; j++) {
+      const a = s.cur.fabric[i].peers[j], b = s.ref.fabric[i].peers[j];
+      const k = u32(a[0] - b[0]);
+      const ok = i !== j && s.cur.fabric[i].up && a[0] >= b[0] && k > 0;
+      const v = ok ? ticksUs(u32(a[4] - b[4]) / k, hz) : null;
+      one[i].push(v); rtt[i].push(ok ? ticksUs(u32(a[3] - b[3]) / k, hz) : null); pps[i].push(ok ? k / s.dt : 0);
+      if (v !== null) max = Math.max(max, v);
+    }
+  }
+  heatmap($("fabric-matrix"), NODE_NAMES, NODE_NAMES, (i, j) => i === j ? null : one[i][j] === null ? 0 : one[i][j],
+    "fabric one-way latency matrix",
+    (i, j, v) => one[i][j] === null ? `${NODE_NAMES[i]} → ${NODE_NAMES[j]}: no pings` :
+      `${NODE_NAMES[i]} → ${NODE_NAMES[j]}: one way ${fmt(v, 1)} µs, round trip ${fmt(rtt[i][j], 1)} µs, ${fmt(pps[i][j])} pings/s`, max, "µs");
+  let t = "<table><tr><th>from \\ to</th>" + NODE_NAMES.map(l => `<th class="r">${l}</th>`).join("") + "</tr>";
+  one.forEach((row, i) => { t += `<tr><th>${NODE_NAMES[i]}</th>` + row.map(v => `<td class="r num">${v === null ? "–" : fmt(v, 1)}</td>`).join("") + "</tr>"; });
+  $("fabric-table").innerHTML = t + "</table>";
+
+  let nt = `<tr><th>Node</th><th>State</th><th class="r">Starts</th><th class="r">Pongs a second</th><th class="r">Tally</th></tr>`;
+  for (let i = 0; i < n; i++) {
+    const f = s.cur.fabric[i];
+    const hb = heartbeat(s, i);
+    const pongs = pps[i].reduce((x, y) => x + y, 0);
+    nt += `<tr><td><b>${NODE_NAMES[i]}</b></td><td><span class="dot ${hb.cls}" style="width:7px;height:7px"></span> ${f.up ? (hb.cls === "good" ? "up" : "silent") : "not joined"}</td>` +
+          `<td class="r num">${f.up ? fmt(f.boot) : "–"}</td><td class="r num">${f.up ? fmt(pongs) : "–"}</td>` +
+          `<td class="r num">${s.cur.tally.ok ? fmt(s.cur.tally.count[i]) : "–"}</td></tr>`;
+  }
+  $("nodes").innerHTML = nt;
+}
+
+const tip = $("tip");
+function showTip(ev, text) {
+  tip.textContent = text; tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 14;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+document.addEventListener("mousemove", ev => {
+  const t = ev.target.closest && ev.target.closest("[data-tip]");
+  if (t) showTip(ev, t.getAttribute("data-tip"));
+  else if (ev.target.id !== "lat-hit") hideTip();
+});
+
+function draw() {
+  const cur = history[history.length - 1].d;
+  let ref = history[0].d;
+  for (const h of history) if (cur.t - h.d.t >= 3) ref = h.d;
+  const s = { cur, ref, dt: Math.max(cur.t - ref.t, 0.001) };
+  drawCores(s);
+  drawPipe(s);
+  drawPwm(s);
+  drawFabric(s);
+  drawLatency();
+}
+
+async function poll() {
+  try {
+    const r = await fetch("status.json", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const d = JSON.parse((await r.text()).replace(/"gtc":(\d+)/, '"gtc":"$1"'));
+    history.push({ d });
+    while (history.length > 1 && d.t - history[0].d.t > 4) history.shift();
+    // Half a second's mean latency, window end to P9.25 set.
+    if (history.length > 1) {
+      const p = history[history.length - 2].d, a = d.pipe.stages[ST.PWM], b = p.pipe.stages[ST.PWM];
+      const k = u32(a[1] - b[1]);
+      latSeries.push({ t: d.t, v: k && a[1] >= b[1] && d.pipe.run ? ticksUs(u32(a[4] - b[4]) / k, d.gtc_hz) : NaN });
+      while (latSeries.length && d.t - latSeries[0].t > 120) latSeries.shift();
+    }
+    lastOk = Date.now();
+    $("banner").style.display = "none";
+    draw();
+  } catch (e) {
+    if (Date.now() - lastOk > 3000) {
+      $("banner").style.display = "block";
+      $("banner").textContent = "The board is not answering. Is ai64 web still running (ai64-demo starts it)?";
+    }
+  }
+  const age = (Date.now() - lastOk) / 1000;
+  $("live-dot").className = "dot " + (age < 2 ? "good" : age < 6 ? "warning" : "critical");
+  $("live-text").textContent = lastOk ? (age < 2 ? "live, twice a second" : `no answer for ${fmt(age)} s`) : "connecting";
+  setTimeout(poll, 500);
+}
+poll();
+</script>
+</body>
+</html>

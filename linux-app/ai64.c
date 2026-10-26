@@ -75,6 +75,10 @@
  *   C66x cores' FFT, and the C7x's MMA: starts it and trains its layer, or
  *   shows each stage's numbers (ai64_pipe.c).
  *
+ * ai64 web [port]
+ *   Serves a live page of every core's state, the fabric, the PWM
+ *   generators, and the pipeline, on port 8064; read only (ai64_web.c).
+ *
  * ai64 linux <dir>
  *   Sends the startup script, then reads commands such as r5f0_0 pwm and
  *   rtu0 steps.
@@ -82,6 +86,7 @@
 
 int fabric_main(int argc, char **argv);
 int pipe_main(int argc, char **argv);
+int web_main(int argc, char **argv);
 
 /* An erpc or peer window writes its result lines to this path too. */
 static char g_reply_path[512];
@@ -147,6 +152,7 @@ static void print_usage(const char *prog)
 	printf("  pipe start [seconds]      start the pipeline P8.31 -> ICSSG0 -> UDMA -> C66x FFT ->\n"
 	       "                            C7x MMA -> P9.25, training its layer on that many seconds\n");
 	printf("  pipe [seconds|once] | stop  the pipeline's numbers (the pipe window), or stop it\n");
+	printf("  web [port]                a live page of every core, on port 8064 (the web window)\n");
 	printf("\n");
 	printf("In the linux window, ");
 	print_help();
@@ -1855,7 +1861,7 @@ static int linux_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s peer|erpc|pwm|sched|pads|trace|bench|dsp|mma|shutdown|fabric|pipe|linux ... (-h for help)\n", argv[0]);
+		fprintf(stderr, "usage: %s peer|erpc|pwm|sched|pads|trace|bench|dsp|mma|shutdown|fabric|pipe|web|linux ... (-h for help)\n", argv[0]);
 		return 2;
 	}
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
@@ -1897,6 +1903,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "pipe")) {
 		return pipe_main(argc, argv);
+	}
+	if (!strcmp(argv[1], "web")) {
+		return web_main(argc, argv);
 	}
 	if (!strcmp(argv[1], "linux")) {
 		return linux_main(argc, argv);

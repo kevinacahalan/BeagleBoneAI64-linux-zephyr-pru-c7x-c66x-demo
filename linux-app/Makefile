@@ -29,8 +29,10 @@ ERPC_SRCS = \
 
 all: ai64
 
-ai64: ai64.o ai64_fabric.o ai64_pipe.o $(ERPC_SRCS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ ai64.o ai64_fabric.o ai64_pipe.o $(ERPC_SRCS) -lm
+OBJS = ai64.o ai64_fabric.o ai64_pipe.o ai64_web.o ai64_web_page.o
+
+ai64: $(OBJS) $(ERPC_SRCS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $(OBJS) $(ERPC_SRCS) -lm
 
 ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h $(ROOT)/dsp/include/ai64_dsp_job.h
 	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ ai64.c
@@ -41,5 +43,12 @@ ai64_fabric.o: ai64_fabric.c $(ROOT)/zephyr/include/ai64_fabric.h
 ai64_pipe.o: ai64_pipe.c $(ROOT)/zephyr/include/ai64_pipe.h $(ROOT)/zephyr/include/ai64_shm.h
 	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_pipe.c
 
+ai64_web.o: ai64_web.c $(ROOT)/zephyr/include/ai64_fabric.h $(ROOT)/zephyr/include/ai64_pipe.h $(ROOT)/zephyr/include/ai64_shm.h
+	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_web.c
+
+# The page, built into the program (.incbin, relative to this directory).
+ai64_web_page.o: ai64_web_page.S web/index.html
+	$(CC) -c -o $@ ai64_web_page.S
+
 clean:
-	rm -f ai64 ai64.o ai64_fabric.o ai64_pipe.o
+	rm -f ai64 $(OBJS)
