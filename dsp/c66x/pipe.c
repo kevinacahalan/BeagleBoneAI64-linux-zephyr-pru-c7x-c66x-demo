@@ -33,7 +33,7 @@
 #include <c6x.h>
 
 #include "ai64_pipe.h"
-#include "ai64_c66x_pipe.h"
+#include "pipe.h"
 
 #define N     AI64_PIPE_WIN
 #define LOG2N 11u

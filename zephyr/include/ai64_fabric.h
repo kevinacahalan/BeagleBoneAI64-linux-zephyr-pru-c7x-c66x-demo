@@ -20,7 +20,7 @@
  *     so the receiver only reads DDR when something has arrived.
  *   The GTC, the 200 MHz SoC timebase Linux's arch timer also counts.
  *     Messages carry GTC stamps, so one-way latencies are real. The C66x
- *     reaches it through an MPAX window (c66x/main.c).
+ *     reaches it through an MPAX window (dsp/c66x/fabric.c).
  * and a fourth, hardware spinlock AI64_FAB_LOCK, guards a tally that every
  * node adds to (struct ai64_fab_tally).
  *

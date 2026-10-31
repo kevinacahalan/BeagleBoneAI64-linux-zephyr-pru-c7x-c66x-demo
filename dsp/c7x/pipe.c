@@ -25,9 +25,9 @@
 #include <stdint.h>
 
 #include "ai64_pipe.h"
-#include "ai64_c7x_mma.h"
-#include "ai64_c7x_mmu.h"
-#include "ai64_c7x_pipe.h"
+#include "mma.h"
+#include "mmu.h"
+#include "pipe.h"
 
 #define IN   ((volatile struct ai64_pipe_c7x_in *)AI64_PIPE_C7X_ADDR)
 #define PIPE ((volatile struct ai64_pipe *)AI64_PIPE_ADDR)

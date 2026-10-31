@@ -127,7 +127,7 @@ struct ai64_pipe_c66x_in {
 
 /*
  * The C7x's L2 SRAM, past its job block. The first 4 KiB, which the C7x
- * maps non-cacheable (c7x/ai64_c7x_mmu.c), take the C66x cores' output: a
+ * maps non-cacheable (dsp/c7x/mmu.c), take the C66x cores' output: a
  * ring of the last 16 windows' features, the MMA's input rows, their tags,
  * and from each C66x, one past the newest window it wrote. The two write
  * alternate rows. The C7x keeps the weights and the

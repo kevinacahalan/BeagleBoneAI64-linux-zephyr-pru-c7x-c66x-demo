@@ -4,7 +4,7 @@
  * boot address (_c_int00) has to be 2 MiB aligned, so the code starts at
  * 0xa8200000. The trace buffer and the resource table, which Linux reads,
  * go in the 1 MiB below it: the MMU maps that 2 MiB block non-cacheable
- * and the rest write-back (ai64_c7x_mmu.c). The job block
+ * and the rest write-back (mmu.c). The job block
  * (ai64_dsp_job.h) is in L2 SRAM, outside the image.
  */
 -c

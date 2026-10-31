@@ -5,7 +5,7 @@
  * Each DSP keeps the block in its own L2 SRAM, which Linux reaches through
  * /dev/mem at the SoC address. On the C66x, L1D snoops writes from outside,
  * so neither side has cache work to do. The C7x maps the block's header
- * non-cacheable and writes L1D back around each job (c7x/main.c).
+ * non-cacheable and writes L1D back around each job (c7x/jobs.c).
  *
  *   Linux: write op, count, taps, and the input; then req_seq + 1
  *   DSP:   sees req_seq != done_seq, runs the job, writes the output,
@@ -22,7 +22,7 @@
  * b 64 x 64 int8, y count x 64, row-major, with shift and relu in the arg
  * word. AI64_JOB_LAYER_MMA runs it on the C7x's
  * Matrix Multiply Accelerator, AI64_JOB_LAYER_C in C on the C7x itself
- * (c7x/ai64_c7x_mma.c). The C66x refuses both.
+ * (c7x/mma.c). The C66x refuses both.
  *
  * Linux and both DSP compilers include this file, so it only uses 32-bit
  * fields at fixed offsets.

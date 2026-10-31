@@ -2,9 +2,9 @@
 ;
 ; C7x control registers the C compiler has no names for: the MMU, the
 ; memory attributes, and the cache configuration and maintenance registers.
-; ai64_c7x_mmu.c and main.c call these. The core comes out of reset in
+; mmu.c, jobs.c, and main.c call these. The core comes out of reset in
 ; secure supervisor mode. Each MMU register is written in both its secure
-; (_S) and its plain copy; see ai64_c7x_mmu.c.
+; (_S) and its plain copy; see mmu.c.
 ;
 ; C calling convention: the first argument is in a4, the result in a4.
 

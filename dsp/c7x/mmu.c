@@ -43,9 +43,9 @@
 #include "ai64_dsp_job.h"
 #include "ai64_fabric.h"
 #include "ai64_pipe.h"
-#include "ai64_c7x_mmu.h"
+#include "mmu.h"
 
-/* c7x_regs.asm */
+/* regs.asm */
 extern void ai64_set_mair(uint64_t mair);
 extern void ai64_set_tcr(uint64_t tcr);
 extern void ai64_set_tbr(uint64_t table);

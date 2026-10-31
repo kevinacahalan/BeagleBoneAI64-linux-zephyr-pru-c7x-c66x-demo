@@ -15,10 +15,11 @@ SHARED := ../zephyr/include
 .PHONY: all clean
 all: $(BUILD)/ai64-c66x.elf $(BUILD)/ai64-c7x.elf
 
-C66X_SRC := c66x/main.c c66x/ai64_c66x_pipe.c
-C66X_OBJ := $(BUILD)/c66x/main.obj $(BUILD)/c66x/ai64_c66x_pipe.obj
+# Each core: main.c, and a file per part it runs (main.c lists them).
+C66X_SRC := c66x/main.c c66x/fabric.c c66x/jobs.c c66x/pipe.c
+C66X_OBJ := $(patsubst c66x/%.c,$(BUILD)/c66x/%.obj,$(C66X_SRC))
 
-$(BUILD)/ai64-c66x.elf: $(C66X_SRC) c66x/ai64_c66x_pipe.h c66x/c66x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h $(INC)/ai64_dsp_job.h $(SHARED)/ai64_fabric.h $(SHARED)/ai64_pipe.h
+$(BUILD)/ai64-c66x.elf: $(C66X_SRC) $(wildcard c66x/*.h) c66x/c66x.cmd $(wildcard $(INC)/*.h) $(SHARED)/ai64_fabric.h $(SHARED)/ai64_pipe.h
 	mkdir -p $(BUILD)/c66x
 	$(C6X_CGT)/bin/cl6x -mv6600 --abi=eabi -O3 --display_error_number \
 		--include_path=$(C6X_CGT)/include --include_path=$(INC) --include_path=$(SHARED) \
@@ -29,11 +30,10 @@ $(BUILD)/ai64-c66x.elf: $(C66X_SRC) c66x/ai64_c66x_pipe.h c66x/c66x.cmd $(INC)/a
 
 # Warning 70: the resource table stores the 64-bit trace buffer pointer in a
 # uint32_t. The buffer is in DDR below 4 GiB, so nothing is lost.
-C7X_SRC := c7x/main.c c7x/ai64_c7x_mmu.c c7x/ai64_c7x_mma.c c7x/ai64_c7x_pipe.c c7x/c7x_regs.asm
-C7X_OBJ := $(BUILD)/c7x/main.obj $(BUILD)/c7x/ai64_c7x_mmu.obj $(BUILD)/c7x/ai64_c7x_mma.obj \
-	$(BUILD)/c7x/ai64_c7x_pipe.obj $(BUILD)/c7x/c7x_regs.obj
+C7X_SRC := c7x/main.c c7x/fabric.c c7x/jobs.c c7x/mmu.c c7x/mma.c c7x/pipe.c c7x/regs.asm
+C7X_OBJ := $(patsubst c7x/%.asm,$(BUILD)/c7x/%.obj,$(patsubst c7x/%.c,$(BUILD)/c7x/%.obj,$(C7X_SRC)))
 
-$(BUILD)/ai64-c7x.elf: $(C7X_SRC) c7x/ai64_c7x_mmu.h c7x/ai64_c7x_mma.h c7x/ai64_c7x_pipe.h c7x/c7x.cmd $(INC)/ai64_dsp_trace.h $(INC)/ai64_dsp_mbox.h $(INC)/ai64_dsp_job.h $(SHARED)/ai64_fabric.h $(SHARED)/ai64_pipe.h
+$(BUILD)/ai64-c7x.elf: $(C7X_SRC) $(wildcard c7x/*.h) c7x/c7x.cmd $(wildcard $(INC)/*.h) $(SHARED)/ai64_fabric.h $(SHARED)/ai64_pipe.h
 	mkdir -p $(BUILD)/c7x
 	$(C7X_CGT)/bin/cl7x -mv7100 -O3 --display_error_number --diag_suppress=70 \
 		--include_path=$(C7X_CGT)/include --include_path=$(INC) --include_path=$(SHARED) \

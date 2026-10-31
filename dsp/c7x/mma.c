@@ -43,7 +43,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "ai64_c7x_mma.h"
+#include "mma.h"
 
 #define K 64u
 #define N 64u
