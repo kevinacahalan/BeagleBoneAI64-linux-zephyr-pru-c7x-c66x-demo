@@ -23,17 +23,15 @@ IMAGE_PRU=ai64-pru-cgt
 IMAGE_ZEPHYR=ai64-zephyr-sdk
 IMAGE_DSP=ai64-dsp-cgt
 
-# The R5F cores that run Zephyr, as west board names. One sysbuild build of
-# zephyr/r5 makes an image for each (zephyr/r5/sysbuild.cmake), each with its
-# own job and overlay from zephyr/r5/boards/. The first is the default image.
+# The R5F cores that run Zephyr, as west board names. Each has its own app,
+# zephyr/r5/<core>/, and one sysbuild build of the first makes all four
+# (zephyr/r5/r5f0_0/sysbuild.cmake).
 R5_CORES=(main_r5f0_0 main_r5f0_1 main_r5f1_0 main_r5f1_1)
 
-# Where sysbuild puts core $1's ELF: build/zephyr/<image>/zephyr/.
+# Where sysbuild puts core $1's ELF: build/zephyr/<core>/zephyr/.
 r5_elf() {
-	local core=${1#main_} image
-	image=$core
-	[[ $1 == "${R5_CORES[0]}" ]] && image=r5
-	echo "build/zephyr/$image/zephyr/ai64_$core.elf"
+	local core=${1#main_}
+	echo "build/zephyr/$core/zephyr/ai64_$core.elf"
 }
 
 # AI64_CONTAINER_ENGINE is podman or docker. Unset, use podman when it
@@ -257,7 +255,7 @@ build_zephyr() {
 			# directory has any.
 			west update
 			zephyr/scripts/apply-patches.sh
-			west build --sysbuild -b "beaglebone_ai64/j721e/$CORE" zephyr/r5 \
+			west build --sysbuild -b "beaglebone_ai64/j721e/$CORE" "zephyr/r5/${CORE#main_}" \
 				-d build/zephyr -p always'
 }
 

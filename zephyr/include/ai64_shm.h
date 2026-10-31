@@ -30,7 +30,7 @@
 /*
  * R5F0_0 owns 0xa2000000-0xa2ffffff (Linux reserved-memory, no-map).
  * Zephyr's board file splits it into vrings (1 MiB), resource table (1 MiB),
- * and DRAM (14 MiB at 0xa2200000). zephyr/r5/boards/ shrinks DRAM so the
+ * and DRAM (14 MiB at 0xa2200000). R5F0_0's overlay shrinks DRAM so the
  * last 68 KiB hold the bulk buffer and a spare 4 KiB page.
  */
 #define AI64_BULK_ADDR  0xA2FEF000u

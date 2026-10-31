@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: MIT
+#include <zephyr/dt-bindings/interrupt-controller/ti-vim.h>
+
+/*
+ * TI-SCI, the device manager's API. Zephyr's TI-SCI driver talks to it over
+ * this host's (42) threads on main_sec_proxy0: 93 (low_priority,
+ * write) and 91 (response, read; k3conf show threads). The polled mailbox
+ * driver in common/src/sproxy.c carries it, since no secure proxy interrupt
+ * reaches an R5F here. reg is the device manager's debug window, which the
+ * binding asks for and nothing reads.
+ */
+/ {
+	ai64_sproxy: mailbox@32c00000 {
+		compatible = "ai64,secure-proxy-poll";
+		reg = <0x32c00000 0x100000>, <0x32400000 0x100000>;
+		reg-names = "target_data", "rt";
+		#mbox-cells = <1>;
+	};
+
+	dmsc: system-controller@44083000 {
+		compatible = "ti,k2g-sci";
+		reg = <0x44083000 0x1000>;
+		ti,host-id = <42>;
+		mboxes = <&ai64_sproxy 91>, <&ai64_sproxy 93>;
+		mbox-names = "rx", "tx";
+	};
+};
+
+/*
+ * The mailbox interrupt route this core asks the device manager for at boot
+ * (common/src/tisci.c), through Zephyr's TI-SCI driver.
+ * NAVSS0_MAILBOX_2 user 2 arrives on NAVSS0_INTR_ROUTER_0
+ * (device 213) input 430. Output 292 is the first of this host's range
+ * (k3conf dump rm 213) and lands on this core's VIM input 228.
+ */
+/ {
+	ai64_tisci: tisci-route {
+		compatible = "ai64,tisci-irq-route";
+		ir-id = <213>;
+		ir-input = <430>;
+		ir-output = <292>;
+	};
+};
+
+/* The board puts the mailbox on VIM 256, which nothing routes to. */
+&mbox2 {
+	interrupts = <0 228 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+};
+
+/*
+ * The links to the other three R5F cores (common/ai64_ipc.dtsi). This core's
+ * doorbells are NAVSS0_MAILBOX_10 user 3, which arrives on router input
+ * 399 (TI-SCI's pend_intr 2); output 293, the next of this host's range,
+ * lands on VIM input 229.
+ */
+#define AI64_IPC_SELF 3
+#include "../common/ai64_ipc.dtsi"
+
+/ {
+	ai64_tisci_ipc: tisci-route-ipc {
+		compatible = "ai64,tisci-irq-route";
+		ir-id = <213>;
+		ir-input = <399>;
+		ir-output = <293>;
+	};
+
+	AI64_IPC_LINK(3, 0)
+	AI64_IPC_LINK(3, 1)
+	AI64_IPC_LINK(3, 2)
+};

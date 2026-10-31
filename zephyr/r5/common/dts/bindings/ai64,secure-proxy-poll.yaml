@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+description: |
+  The main secure proxy, as a mailbox with no interrupt: a send waits for
+  the answer on the enabled receive threads (zephyr/r5/common/src/sproxy.c).
+  It carries Zephyr's TI-SCI driver (ti,k2g-sci) on the main-domain R5Fs,
+  where no secure proxy interrupt is routed. A channel is a secure proxy
+  thread.
+
+compatible: "ai64,secure-proxy-poll"
+
+include: [base.yaml, mailbox-controller.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: '"target_data" and "rt"'
+
+mbox-cells:
+  - channel

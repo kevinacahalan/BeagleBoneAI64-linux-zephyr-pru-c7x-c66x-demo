@@ -42,7 +42,7 @@
 int pipe_main(int argc, char **argv);
 
 #define RESERVED "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
-/* As R5F0_1 keeps score (src/ai64_pipe_pwm.c). */
+/* As R5F0_1 keeps score (zephyr/r5/r5f0_1/src/pipe_pwm.c). */
 #define MARGIN_GTC (60u * (AI64_GTC_HZ / 1000000u))
 #define TRAIN_MAX  16384u
 

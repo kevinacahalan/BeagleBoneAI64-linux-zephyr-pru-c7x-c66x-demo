@@ -64,10 +64,10 @@ Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its 
 
 Each Zephyr image muxes its own pins from its devicetree, the way the PocketBeagle 2 demo's M4 does. The R5F can write the pad registers because Linux has already unlocked them. Linux does not touch these pads: `main_spi7`, `main_uart2`, and `main_ehrpwm4` stay disabled in the Linux device tree.
 
-- **P9.25** is EHRPWM4 output B, mode 6 on W26, with AC4 held off: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_1.overlay`. The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`, which gives the same ball and EHRPWM4 to Linux. `install-beagle.sh` removes that overlay from the default label and adds this demo's; the original `extlinux.conf` is saved as `extlinux.conf.ai64-bak`.
-- **SPI7**: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f0_0.overlay`. Its functional clock is 50 MHz. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed. The board firmware leaves MCSPI7 powered (`k3conf dump device` shows `DEVICE_STATE_ON`).
+- **P9.25** is EHRPWM4 output B, mode 6 on W26, with AC4 held off: `zephyr/r5/r5f0_1/app.overlay`. The stock image's boot entry selects `k3-j721e-beagleboneai64-pwm-epwm4-p9_25.dtbo`, which gives the same ball and EHRPWM4 to Linux. `install-beagle.sh` removes that overlay from the default label and adds this demo's; the original `extlinux.conf` is saved as `extlinux.conf.ai64-bak`.
+- **SPI7**: `zephyr/r5/r5f0_0/app.overlay`. Its functional clock is 50 MHz. D0 is MOSI (`ti,d1-miso-d0-mosi`). MISO (P9.29) is not muxed. The board firmware leaves MCSPI7 powered (`k3conf dump device` shows `DEVICE_STATE_ON`).
 - **UART2**: the upstream Zephyr board file for R5F0_0. Any 3.3 V USB-serial adapter reads the console there.
-- **P8.18** is ball AJ23 in mode 7, GPIO, with bit 4 of the pad set: bits 5:4 pick which of the main domain's GPIO0, GPIO2, GPIO4, and GPIO6 drives a pad, and 1 is GPIO2. Linux owns GPIO0 and leaves GPIO2 disabled, so R5F1_0 takes GPIO2 whole: `zephyr/r5/boards/beaglebone_ai64_j721e_main_r5f1_0.overlay`. The pad reads `0x10017`.
+- **P8.18** is ball AJ23 in mode 7, GPIO, with bit 4 of the pad set: bits 5:4 pick which of the main domain's GPIO0, GPIO2, GPIO4, and GPIO6 drives a pad, and 1 is GPIO2. Linux owns GPIO0 and leaves GPIO2 disabled, so R5F1_0 takes GPIO2 whole: `zephyr/r5/r5f1_0/app.overlay`. The pad reads `0x10017`.
 
 What each pin should show, and how B relates to A on the ICSSG0 pairs, is in the README's [Probe the pins](README.md#probe-the-pins).
 

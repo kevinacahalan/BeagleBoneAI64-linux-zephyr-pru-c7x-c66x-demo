@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+description: |
+  One NAVSS interrupt-router route this R5F core asks the device manager to
+  set up at boot (TI-SCI RM_IRQ_SET), through the dmsc node.
+  zephyr/r5/common/src/tisci.c reads it.
+
+  The route is router input -> router output, the way Linux's ti,sci-intr
+  and Zephyr PR #121379 program it: src and dst are both the router. The
+  output must be in this host's range (k3conf dump rm 213), and the TI-SCI
+  J721E interrupt tables say which VIM input that output lands on.
+
+compatible: "ai64,tisci-irq-route"
+
+properties:
+  ir-id:
+    type: int
+    required: true
+    description: TI-SCI device ID of the interrupt router (NAVSS0_INTR_ROUTER_0 is 213)
+
+  ir-input:
+    type: int
+    required: true
+    description: router input the mailbox user interrupt arrives on
+
+  ir-output:
+    type: int
+    required: true
+    description: router output to connect it to

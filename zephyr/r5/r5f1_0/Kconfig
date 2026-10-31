@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+
+config AI64_BLINK_HALF_PERIOD_US
+	int "Half period of the P8.18 square wave, in microseconds"
+	default 500
+
+source "Kconfig.zephyr"

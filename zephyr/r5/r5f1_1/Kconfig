@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+
+config AI64_MONITOR_PERIOD_MS
+	int "How often the monitor pings every core, in milliseconds"
+	default 100
+
+source "Kconfig.zephyr"

@@ -101,7 +101,7 @@ struct ai64_pipe_pru {
 
 /*
  * Doorbells: a FIFO of a core's mailbox, each written with a window
- * number. Neither FIFO is used otherwise (boards/ai64_ipc.dtsi). A full
+ * number. Neither FIFO is used otherwise (zephyr/r5/common/ai64_ipc.dtsi). A full
  * FIFO drops the write; the receiver goes by the counts, not the messages.
  */
 #define AI64_PIPE_MBOX_R5F0_0 0x31F8B000u /* cluster 11: R5F0_0 is user 1 */

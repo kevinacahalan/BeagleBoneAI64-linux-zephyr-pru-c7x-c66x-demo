@@ -1,5 +1,5 @@
 SUMMARY = "BeagleBone AI-64 Zephyr R5F demo firmware"
-DESCRIPTION = "Builds the R5F app in zephyr/r5 with one sysbuild build, an image for each main-domain core in R5_CORES (zephyr/r5/sysbuild.cmake), with the Zephyr SDK and a west workspace fetched during the build. Installs each ELF as /lib/firmware/ai64_<core>.elf, not the kernel's default name, so the cores stay off until ai64-demo starts them."
+DESCRIPTION = "Builds the R5F apps in zephyr/r5, one for each main-domain core in R5_CORES, with one sysbuild build (zephyr/r5/r5f0_0/sysbuild.cmake), with the Zephyr SDK and a west workspace fetched during the build. Installs each ELF as /lib/firmware/ai64_<core>.elf, not the kernel's default name, so the cores stay off until ai64-demo starts them."
 # The demo is MIT, EmbeddedRPC is BSD-3-Clause, and Zephyr is Apache-2.0.
 LICENSE = "MIT & BSD-3-Clause & Apache-2.0"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302 \
@@ -73,14 +73,11 @@ do_compile () {
     if [ -f zephyr/upstream/scripts/requirements-base.txt ]; then
         pip3 install --target ${WORKDIR}/py -r zephyr/upstream/scripts/requirements-base.txt
     fi
-    west build --sysbuild -b beaglebone_ai64/j721e/main_r5f0_0 zephyr/r5 -d "$ws/zbuild" -p always
+    west build --sysbuild -b beaglebone_ai64/j721e/main_r5f0_0 zephyr/r5/r5f0_0 -d "$ws/zbuild" -p always
     for core in ${R5_CORES}; do
         name=ai64_${core#main_}.elf
-        # sysbuild names the default image after the app directory.
-        image=${core#main_}
-        [ "$core" = main_r5f0_0 ] && image=r5
-        test -f "$ws/zbuild/$image/zephyr/$name"
-        install -m 0644 "$ws/zbuild/$image/zephyr/$name" ${WORKDIR}/$name
+        test -f "$ws/zbuild/${core#main_}/zephyr/$name"
+        install -m 0644 "$ws/zbuild/${core#main_}/zephyr/$name" ${WORKDIR}/$name
     done
     rm -rf "$ws"
 }
