@@ -80,7 +80,7 @@ The 64 KiB of ICSSG0 shared RAM at `0x10000` hold the pipeline's ring of P8.31 w
 
 ## The pipeline's first stage
 
-Slice 1 also feeds the [pipeline](../../README.md#the-pipeline-p831-to-p925), which runs P8.31 through ICSSG0, R5F0_0's UDMA, both C66x cores, and the C7x, and out on P9.25. The same split holds: PRU1 keeps time, RTU1 talks.
+Slice 1 also feeds the [pipeline](../../docs/pipeline.md#the-pipeline-p831-to-p925), which runs P8.31 through ICSSG0, R5F0_0's UDMA, both C66x cores, and the C7x, and out on P9.25. The same split holds: PRU1 keeps time, RTU1 talks.
 
 - **PRU1** runs P8.31 (`PRG0_PRU1_GPI0`, jumpered from P9.15) through its R31 GPI shift register: 28-bit shift mode, the 250 MHz core clock divided by 12.5 and by 10, so a sample every 500 ns, the newest in bit 0. R31 bit 28, Cnt_16, is high for one sample's time after every 16th, and the loop that rearms the PWM compares takes R31's low 16 bits where it rises: 128 chunks make a window of 2048 samples, 1.024 ms, in one of 16 slots in shared RAM, and a new window ends every 64 chunks: each chunk goes into its half window's slot and into the second half of the slot before, so every slot holds a whole window, each starting half a window after the last. The hardware times every sample, and a chunk costs PRU1 two loads and three stores every 8 µs, so its PWM keeps every edge.
 - **RTU1** stamps each window with the GTC, which PRU1 cannot read without stalling an edge: it counts back from the chunk PRU1 is on now, 8 µs a chunk, so the stamp is within a chunk of the truth however late RTU1 comes round. While the pipeline runs it then rings R5F0_0's mailbox, cluster 11 FIFO 15, with the window's number.

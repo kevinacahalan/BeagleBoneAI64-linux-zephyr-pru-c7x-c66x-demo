@@ -1,6 +1,9 @@
 # Pinmux
 
-This demo muxes header pins from two places: the Linux overlay (the ICSSG pins) and the Zephyr devicetree inside the R5F0_0 image (the Zephyr pins). RPMsg, the fabric, and ICSSG RAM use no pin.
+This demo muxes header pins from two places, and RPMsg, the fabric, and ICSSG RAM use no pin:
+
+- **The Linux overlay** sets the ICSSG pins (below). Each pad hangs on the ICSSG core that drives it, reads it, or runs its PWM set, so `pru_rproc` applies it when the core probes: P8.31, the pipeline's input, goes with PRU1, in mode 1 (`PRG0_PRU1_GPI0`), and its partner ball is held off. The overlay also carries RTU0's vring interrupt.
+- **Each R5F core** muxes its own pins from its `zephyr/r5/<core>/app.overlay`: the SPI7 pins on R5F0_0, P9.25's EHRPWM4_B on R5F0_1, and P8.18 (as GPIO2_4) on R5F1_0; the UART2 console pins come from the upstream board file, on R5F0_0. R5F1_1 uses no pins. A core can write those pad registers only because Linux has already unlocked them.
 
 Most BeagleBone AI-64 header pins are wired to two SoC balls, an "a" ball and a "b" ball. The ball the demo does not use is held off (mux mode 7, transmit disabled) so it cannot fight the one it does. Every ICSSG pin the demo uses has one ball, but P8.31.
 
@@ -54,7 +57,7 @@ Mux mode 3 on these balls is the ICSSG's PWM module: `PRG0_PWM2_A0` and `PRG0_PW
 
 ## ICSSG0 slice 1: P8.31, the pipeline's input
 
-Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its GPI shift register samples in 28-bit shift mode ([the pipeline](README.md#the-pipeline-p831-to-p925)). PRU1 drives no pin of its own, since the PWM module drives P9.12 and P9.15, so its inputs are free. P8.31's other ball, AJ25 (`PRG1_PRU1_GPO11`, pad `0x084`), is held off. The pinctrl goes with PRU1's other pins, on `&pru0_1`. A jumper wire from P9.15 brings it slice 1's output B; without one the pin floats, and the pipeline finds nothing to train on.
+Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its GPI shift register samples in 28-bit shift mode ([the pipeline](docs/pipeline.md#the-pipeline-p831-to-p925)). PRU1 drives no pin of its own, since the PWM module drives P9.12 and P9.15, so its inputs are free. P8.31's other ball, AJ25 (`PRG1_PRU1_GPO11`, pad `0x084`), is held off. The pinctrl goes with PRU1's other pins, on `&pru0_1`. A jumper wire from P9.15 brings it slice 1's output B; without one the pin floats, and the pipeline finds nothing to train on.
 
 ## ICSSG1: P8.17
 

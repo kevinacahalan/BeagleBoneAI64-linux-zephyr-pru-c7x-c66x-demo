@@ -4,7 +4,9 @@
 .
 ├── README.md
 ├── PINMUX.md
+├── MEMORY.md
 ├── LAYOUT.md
+├── docs/
 ├── LICENSE
 ├── linux-app/
 ├── beagle-linux/
@@ -22,6 +24,7 @@
 │   ├── scripts/
 │   ├── west.yml
 │   └── upstream/          generated
+├── tests/                 board tests, run from the PC
 ├── dsp/
 │   ├── c66x/
 │   ├── c7x/
@@ -59,9 +62,15 @@
 
 `PINMUX.md` — header pins and which core owns them.
 
+`MEMORY.md` — every shared memory region: its address, who writes it, and how each core caches it.
+
+`docs/` — what spans several kinds of core: the fabric (`fabric.md`), the pipeline (`pipeline.md`), and the Debian and Yocto images' two kernels (`kernels.md`). What belongs to one kind of core is in that core's directory: `zephyr/r5/README.md`, `pru/README.md`, `dsp/README.md`, `linux-app/README.md`.
+
+`tests/` — board tests, run from the PC over SSH: `run.sh` copies `board/` to the board and runs `check`, `soak`, or `routes` there. `tests/README.md` lists what each checks.
+
 `LICENSE` — MIT, plus the files that keep their own license.
 
-`linux-app/` — the `ai64` userspace program: `ai64.c`, `ai64_fabric.c` for `ai64 fabric`, Linux's node on the fabric, and `ai64_pipe.c` for `ai64 pipe`, which trains the pipeline's layer and shows its numbers, and `ai64_web.c` for `ai64 web`, which serves the live page `web/index.html` (built in by `ai64_web_page.S`). `linux-app/ai64` is a build product.
+`linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. `web/index.html` is the live page `ai64 web` serves, built in by `web_page.S`. `linux-app/ai64` is a build product.
 
 `beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
 
@@ -95,7 +104,7 @@
 
 `pru/build/` — generated ICSSG images, `ai64-icssg<ICSSG>-<pru|rtu|txpru><slice>.elf`, and their maps.
 
-`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images and their linker scripts. Both are fabric nodes; the C66x maps the GTC through an MPAX window, and both C66x cores take turns as the pipeline's FFT stage (`ai64_c66x_pipe.c`). `dsp/c7x/` also turns on the C7x MMU and caches (`ai64_c7x_mmu.c`, with the control register accessors in `c7x_regs.asm`), runs an int8 layer on its Matrix Multiply Accelerator (`ai64_c7x_mma.c`), and with it is the pipeline's classifier (`ai64_c7x_pipe.c`). `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
+`dsp/c66x/`, `dsp/c7x/` — the C66x and C7x images, laid out like the R5F apps: `main.c` says what the core runs and starts each part, next to a file per part: `jobs.c`, Linux's job block; `fabric.c`, the core's fabric node (on the C66x, with the MPAX window it reads the GTC through); and `pipe.c`, its pipeline stage, the FFT on both C66x cores and the classifier on the C7x. The C7x also has `mmu.c`, its MMU and caches (with the control register accessors in `regs.asm`), and `mma.c`, the int8 layer on its Matrix Multiply Accelerator. `dsp/README.md` has the details. `dsp/include/` has what both share: the resource table and trace log, the shutdown handler, and the job block, which `linux-app/` includes too.
 
 `dsp/build/` — generated DSP images, `ai64-c66x.elf` and `ai64-c7x.elf`.
 
