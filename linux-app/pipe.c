@@ -37,11 +37,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "ai64.h"
 #include "ai64_pipe.h"
 
-int pipe_main(int argc, char **argv);
-
-#define RESERVED "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
 /* As R5F0_1 keeps score (zephyr/r5/r5f0_1/src/pipe_pwm.c). */
 #define MARGIN_GTC (60u * (AI64_GTC_HZ / 1000000u))
 #define TRAIN_MAX  16384u
@@ -65,8 +63,8 @@ static int pipe_map(void)
 	int fd;
 	void *p;
 
-	if (access(RESERVED, F_OK)) {
-		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", RESERVED);
+	if (access(FABRIC_DT, F_OK)) {
+		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", FABRIC_DT);
 		return -1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -127,7 +125,7 @@ static int stages_up(void)
 	return bad ? -1 : 0;
 }
 
-/* The C7x's layer (ai64_c7x_mma.c): signed int8 out, no ReLU. */
+/* The C7x's layer (dsp/c7x/mma.c): signed int8 out, no ReLU. */
 static void layer_row(const int8_t *a, const int8_t (*b)[AI64_PIPE_FEATURES], uint32_t shift,
 		      int32_t *acc, int8_t *y)
 {

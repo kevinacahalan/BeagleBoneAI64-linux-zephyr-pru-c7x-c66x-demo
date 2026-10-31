@@ -16,21 +16,10 @@ inherit deploy
 FILESEXTRAPATHS:prepend := "${@os.path.abspath(os.path.join(os.path.dirname(d.getVar('FILE')), '..', '..', '..', '..', '..'))}/:"
 
 SRC_URI = " \
-    file://linux-app/ai64.c;subdir=src \
-    file://linux-app/ai64_fabric.c;subdir=src \
-    file://linux-app/ai64_pipe.c;subdir=src \
-    file://linux-app/ai64_web.c;subdir=src \
-    file://linux-app/ai64_web_page.S;subdir=src \
-    file://linux-app/web/index.html;subdir=src \
-    file://linux-app/ai64_erpc_linux.cpp;subdir=src \
-    file://linux-app/ai64_erpc_linux.h;subdir=src \
-    file://linux-app/erpc_config.h;subdir=src \
-    file://linux-app/Makefile;subdir=src \
+    file://linux-app;subdir=src \
     file://beagle-linux/overlays/Makefile;subdir=src \
     file://beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso;subdir=src \
-    file://zephyr/include/ai64_shm.h;subdir=src \
-    file://zephyr/include/ai64_fabric.h;subdir=src \
-    file://zephyr/include/ai64_pipe.h;subdir=src \
+    file://zephyr/include;subdir=src \
     file://dsp/include/ai64_dsp_job.h;subdir=src \
     file://zephyr/erpc/shim;subdir=src \
     file://beagle-linux/scripts/ai64-demo;subdir=src \

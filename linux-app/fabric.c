@@ -51,10 +51,8 @@ static sigset_t g_lock_sigs;
 #define AI64_FAB_LOCK_ENTER() sigprocmask(SIG_BLOCK, &g_lock_sigs, NULL)
 #define AI64_FAB_LOCK_EXIT()  sigprocmask(SIG_UNBLOCK, &g_lock_sigs, NULL)
 #include "ai64_fabric.h"
+#include "ai64.h"
 
-int fabric_main(int argc, char **argv);
-
-#define RESERVED "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
 #define ROUTE_LOCK "/tmp/ai64-fabric-route.lock"
 #define NODE0_LOCK "/tmp/ai64-fabric-node0.lock"
 
@@ -99,9 +97,9 @@ static int fabric_map(void)
 {
 	void *fab, *gtc, *mbox, *lock;
 
-	if (access(RESERVED, F_OK)) {
+	if (access(FABRIC_DT, F_OK)) {
 		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied, so the\n"
-			"fabric's DDR belongs to Linux. Run install-beagle.sh and reboot.\n", RESERVED);
+			"fabric's DDR belongs to Linux. Run install-beagle.sh and reboot.\n", FABRIC_DT);
 		return -1;
 	}
 	fab = map(AI64_FAB_ADDR, AI64_FAB_SIZE);

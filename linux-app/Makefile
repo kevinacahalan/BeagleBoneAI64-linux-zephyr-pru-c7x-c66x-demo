@@ -29,26 +29,21 @@ ERPC_SRCS = \
 
 all: ai64
 
-OBJS = ai64.o ai64_fabric.o ai64_pipe.o ai64_web.o ai64_web_page.o
+# A file per subcommand (README.md), and what they share.
+SRCS = ai64.c util.c cores.c linux_window.c erpc_window.c rtu0_window.c pwm.c sched.c \
+	pads.c trace.c bench.c shutdown.c dsp.c mma.c fabric.c pipe.c web.c
+OBJS = $(SRCS:.c=.o) web_page.o
+HDRS = ai64.h ai64_erpc_linux.h $(wildcard $(ROOT)/zephyr/include/*.h) $(ROOT)/dsp/include/ai64_dsp_job.h
 
 ai64: $(OBJS) $(ERPC_SRCS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $(OBJS) $(ERPC_SRCS) -lm
 
-ai64.o: ai64.c ai64_erpc_linux.h $(ROOT)/zephyr/include/ai64_shm.h $(ROOT)/dsp/include/ai64_dsp_job.h
-	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ ai64.c
-
-ai64_fabric.o: ai64_fabric.c $(ROOT)/zephyr/include/ai64_fabric.h
-	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_fabric.c
-
-ai64_pipe.o: ai64_pipe.c $(ROOT)/zephyr/include/ai64_pipe.h $(ROOT)/zephyr/include/ai64_shm.h
-	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_pipe.c
-
-ai64_web.o: ai64_web.c $(ROOT)/zephyr/include/ai64_fabric.h $(ROOT)/zephyr/include/ai64_pipe.h $(ROOT)/zephyr/include/ai64_shm.h
-	$(CC) $(CFLAGS) -I$(ROOT)/zephyr/include -c -o $@ ai64_web.c
+%.o: %.c $(HDRS)
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ $<
 
 # The page, built into the program (.incbin, relative to this directory).
-ai64_web_page.o: ai64_web_page.S web/index.html
-	$(CC) -c -o $@ ai64_web_page.S
+web_page.o: web_page.S web/index.html
+	$(CC) -c -o $@ web_page.S
 
 clean:
 	rm -f ai64 $(OBJS)

@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: MIT -->
 <!--
-  The page ai64 web serves (linux-app/ai64_web.c). It asks the board for
+  The page ai64 web serves (linux-app/web.c). It asks the board for
   /status.json twice a second: the cores' own running totals, read from
   shared memory. Everything per second here is the page's own difference
   between two of those, about 3 s apart. No external files: the board may
@@ -240,36 +240,19 @@ const PWM_GENS = [
   { pins: "P9.25", how: "the SoC's EHRPWM4, set by Zephyr on R5F0_1" },
 ];
 
-// Each card: the remoteproc, its fabric node if it is one, and what it shows.
-const GROUPS = [
-  { title: "Zephyr on the main-domain R5F cores", cores: [
-    { rp: "5c00000.r5f", name: "R5F0_0", node: 1, role: "SPI7 and the UDMA; moves the pipeline's windows", show: s => stageLine(s, ST.DMA, "windows moved") },
-    { rp: "5d00000.r5f", name: "R5F0_1", node: 2, role: "EHRPWM4 on P9.25; the pipeline's last stage", show: s => pwmLine(s.cur.pwm[3]) },
-    { rp: "5e00000.r5f", name: "R5F1_0", node: 3, role: "a square wave on P8.18" },
-    { rp: "5f00000.r5f", name: "R5F1_1", node: 4, role: "watches the other three over ipc_service" },
-  ]},
-  { title: "ICSSG0: the PWM slices, and the pipeline's sampler", cores: [
-    { rp: "b034000.pru", name: "PRU0", role: "slice 0: PWM in software on P8.11, P8.12", show: s => pwmLine(s.cur.pwm[0]) },
-    { rp: "b00a000.txpru", name: "Tx_PRU0", role: "slice 0: the modulator, and eCAP0 on P8.15", show: s => pwmLine(s.cur.pwm[1]) },
-    { rp: "b004000.rtu", name: "RTU0", node: 8, role: "slice 0 talks: RPMsg to Linux, the fabric" },
-    { rp: "b038000.pru", name: "PRU1", role: "slice 1: the ICSSG PWM module on P9.12, P9.15; samples P8.31 at 2 MHz", show: s => pwmLine(s.cur.pwm[2]) },
-    { rp: "b00c000.txpru", name: "Tx_PRU1", role: "slice 1: the modulator" },
-    { rp: "b006000.rtu", name: "RTU1", node: 9, role: "slice 1 talks; stamps the pipeline's windows", show: s => stageLine(s, ST.RTU, "windows stamped") },
-  ]},
-  { title: "ICSSG1: TI's multicore scheduler, a task each on IEP0's time", cores: [
-    { rp: "b134000.pru", name: "PRU0", role: "sets the scheduler up; its task sets P8.17 high" },
-    { rp: "b138000.pru", name: "PRU1", role: "its task sets P8.17 low" },
-    { rp: "b104000.rtu", name: "RTU0", role: "its task sets P8.17 low" },
-    { rp: "b106000.rtu", name: "RTU1", role: "its task sets P8.17 high" },
-    { rp: "b10a000.txpru", name: "Tx_PRU0", role: "its task sets P8.17 high" },
-    { rp: "b10c000.txpru", name: "Tx_PRU1", role: "its task sets P8.17 low" },
-  ]},
-  { title: "The DSPs", cores: [
-    { rp: "4d80800000.dsp", name: "C66x 0", node: 5, role: "FIR jobs; the pipeline's FFT, even windows", show: s => stageLine(s, ST.FFT0, "FFTs") },
-    { rp: "4d81800000.dsp", name: "C66x 1", node: 6, role: "FIR jobs; the pipeline's FFT, odd windows", show: s => stageLine(s, ST.FFT1, "FFTs") },
-    { rp: "64800000.dsp", name: "C7x", node: 7, role: "FIR and MMA layer jobs; classifies each window", show: s => stageLine(s, ST.MMA, "windows classified") },
-  ]},
-];
+// The cores and their groups come from ai64 in /status.json (linux-app/cores.c);
+// this adds the live line a card shows, by the core's label.
+const SHOW = {
+  r5f0_0: s => stageLine(s, ST.DMA, "windows moved"),
+  r5f0_1: s => pwmLine(s.cur.pwm[3]),
+  g0pru0: s => pwmLine(s.cur.pwm[0]),
+  g0txpru0: s => pwmLine(s.cur.pwm[1]),
+  g0pru1: s => pwmLine(s.cur.pwm[2]),
+  g0rtu1: s => stageLine(s, ST.RTU, "windows stamped"),
+  c66x0: s => stageLine(s, ST.FFT0, "FFTs"),
+  c66x1: s => stageLine(s, ST.FFT1, "FFTs"),
+  c7x: s => stageLine(s, ST.MMA, "windows classified"),
+};
 
 const PIPE_STAGES = [
   { st: ST.RTU, core: "ICSSG0 PRU1 + RTU1", job: "sample P8.31, stamp the window" },
@@ -345,14 +328,15 @@ function drawCores(s) {
   const rp = {};
   for (const r of s.cur.rproc) rp[r.name] = r;
   let html = "";
-  for (const g of GROUPS) {
+  for (const g of s.cur.groups) {
     html += `<div class="group"><div class="group-title">${esc(g.title)}</div><div class="cards">`;
-    for (const c of g.cores) {
+    for (const c of s.cur.cores.filter(c => c.group === g.group)) {
       const r = rp[c.rp] || {};
       const [cls, label] = stateDot(r.state);
-      let metric = c.show && r.state === "running" ? c.show(s) : "";
+      const show = SHOW[c.label];
+      let metric = show && r.state === "running" ? show(s) : "";
       let foot = r.fw ? esc(r.fw) : esc(c.rp);
-      if (c.node !== undefined && r.state === "running") {
+      if (c.node >= 0 && r.state === "running") {
         const hb = heartbeat(s, c.node);
         foot += ` · <span class="dot ${hb.cls}" style="width:7px;height:7px"></span> ${hb.text}`;
       }

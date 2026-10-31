@@ -3,7 +3,7 @@
  * ai64 web [port]
  *   Serves a page of what every demo core is doing, live, on port 8064 (or
  *   port), to anyone on the board's network. The page (web/index.html,
- *   built into the program by ai64_web_page.S) asks for /status.json twice
+ *   built into the program by web_page.S) asks for /status.json twice
  *   a second and draws it: each core's remoteproc state and firmware, every
  *   fabric node's page (its heartbeat, its pings to the others), the four
  *   PWM generators' status records, and the pipeline's stages, score, and
@@ -39,14 +39,12 @@
 
 #include "ai64_shm.h"
 #include "ai64_fabric.h"
+#include "ai64.h"
 #include "ai64_pipe.h"
 
-int web_main(int argc, char **argv);
-
-#define RESERVED  "/proc/device-tree/reserved-memory/ai64-fabric@a9000000"
 #define WEB_PORT  8064
 
-/* web/index.html, from ai64_web_page.S. */
+/* web/index.html, from web_page.S. */
 extern const char ai64_web_page[], ai64_web_page_end[];
 
 static volatile uint32_t *g_gtc;
@@ -157,6 +155,22 @@ static void status_json(void)
 	g_len = 0;
 	out("{\"t\":%.4f,\"gtc\":%llu,\"gtc_hz\":%u,", ts.tv_sec + ts.tv_nsec / 1e9,
 	    (unsigned long long)gtc_now(), AI64_GTC_HZ);
+
+	/* The demo's cores and their groups (cores.c), in the order the page shows them. */
+	out("\"groups\":[");
+	for (n = 0; n < ai64_ngroups; n++) {
+		out("%s{\"group\":\"%s\",\"title\":\"%s\"}", n ? "," : "", ai64_groups[n].group,
+		    ai64_groups[n].title);
+	}
+	out("],\"cores\":[");
+	for (n = 0; n < ai64_ncores; n++) {
+		const struct ai64_core *k = &ai64_cores[n];
+
+		out("%s{\"label\":\"%s\",\"rp\":\"%s\",\"group\":\"%s\",\"name\":\"%s\","
+		    "\"role\":\"%s\",\"node\":%d}", n ? "," : "", k->label, k->rproc, k->group,
+		    k->name, k->role, k->node);
+	}
+	out("],");
 
 	/* Every remoteproc, demo core or not: the page picks out its own. */
 	out("\"rproc\":[");
@@ -343,8 +357,8 @@ int web_main(int argc, char **argv)
 		fprintf(stderr, "usage: %s web [port]\n", argv[0]);
 		return 2;
 	}
-	if (access(RESERVED, F_OK)) {
-		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", RESERVED);
+	if (access(FABRIC_DT, F_OK)) {
+		fprintf(stderr, "%s is missing: the ai64-demo overlay is not applied.\n", FABRIC_DT);
 		return 1;
 	}
 	g_gtc = map_ro(AI64_GTC_ADDR, 4096);

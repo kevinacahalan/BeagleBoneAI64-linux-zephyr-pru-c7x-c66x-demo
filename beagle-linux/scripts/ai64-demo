@@ -17,44 +17,58 @@ set -euo pipefail
 
 SESSION=ai64
 RUN=/tmp/ai64-demo
-# The main-domain R5F cores, as remoteproc name:firmware:label. In split
-# mode a cluster's core 1 cannot power up before its core 0, or core 0 power
-# down before core 1, so cores start in this order and stop in reverse.
-R5_CORES=(
-	5c00000.r5f:ai64_r5f0_0.elf:r5f0_0
-	5e00000.r5f:ai64_r5f1_0.elf:r5f1_0
-	5d00000.r5f:ai64_r5f0_1.elf:r5f0_1
-	5f00000.r5f:ai64_r5f1_1.elf:r5f1_1
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# ai64: the copy next to this script (/root on the image), or on PATH.
+if [[ -x $SCRIPT_DIR/ai64 ]]; then
+	BIN=$SCRIPT_DIR/ai64
+else
+	BIN=$(command -v ai64 || true)
+fi
+if [[ -z $BIN ]]; then
+	echo "ai64 is not on PATH" >&2
+	exit 1
+fi
+
+# Every demo core, from ai64 cores (linux-app/cores.c): a line each, as
+# group label remoteproc firmware node name, each group in start order.
+#   R5_CORES   the main-domain R5F cores, as remoteproc:firmware:label. In
+#              split mode a cluster's core 1 cannot power up before its
+#              core 0, or core 0 power down before core 1, so they stop in
+#              reverse order.
+#   DSP_CORES  the DSPs, the same way.
+#   PWM_SLICES ICSSG0, the PWM project (pru/pwm), as slice:PRU:RTU:Tx_PRU.
+#              In each slice the RTU talks, the Tx_PRU modulates, and the
+#              PRU makes the edges.
+#   MCS_CORES  ICSSG1, the multicore scheduler (pru/multicore_scheduler),
+#              as remoteproc:firmware.
+R5_CORES=()
+DSP_CORES=()
+MCS_CORES=()
+ICSSG_NAMES=" "
+declare -A RPROC
+while read -r group label rproc fw _; do
+	[[ $group == "#"* ]] && continue
+	RPROC[$label]=$rproc
+	case $group in
+	r5) R5_CORES+=("$rproc:$fw:$label") ;;
+	dsp) DSP_CORES+=("$rproc:$fw:$label") ;;
+	g0) ICSSG_NAMES+="$rproc " ;;
+	g1) MCS_CORES+=("$rproc:$fw"); ICSSG_NAMES+="$rproc " ;;
+	esac
+done < <("$BIN" cores)
+if [[ ${#R5_CORES[@]} -ne 4 || ${#DSP_CORES[@]} -ne 3 || ${#MCS_CORES[@]} -ne 6 ]]; then
+	echo "$BIN cores did not list the demo's cores; is it an older ai64?" >&2
+	exit 1
+fi
+PWM_SLICES=(
+	"0:${RPROC[g0pru0]}:${RPROC[g0rtu0]}:${RPROC[g0txpru0]}"
+	"1:${RPROC[g0pru1]}:${RPROC[g0rtu1]}:${RPROC[g0txpru1]}"
 )
 R5_NAMES=" ${R5_CORES[*]%%:*} "
-# The DSPs, as remoteproc name:firmware:label. They run the hello images
-# and only log; their windows follow the trace buffers.
-DSP_CORES=(
-	4d80800000.dsp:ai64-c66x.elf:c66x0
-	4d81800000.dsp:ai64-c66x.elf:c66x1
-	64800000.dsp:ai64-c7x.elf:c7x
-)
 DSP_NAMES=" ${DSP_CORES[*]%%:*} "
-C7X_NAME=64800000.dsp
-RTU0_NAME=b004000.rtu
-# ICSSG0, the PWM project (pru/pwm), as slice:PRU:RTU:Tx_PRU. In each slice
-# the RTU talks, the Tx_PRU modulates, and the PRU makes the edges. Their
-# firmware is ai64-icssg0-<core><slice>.elf.
-PWM_SLICES=(
-	0:b034000.pru:b004000.rtu:b00a000.txpru
-	1:b038000.pru:b006000.rtu:b00c000.txpru
-)
-# ICSSG1, the multicore scheduler (pru/multicore_scheduler), as
-# remoteproc name:core. Firmware ai64-icssg1-<core>.elf.
-MCS_CORES=(
-	b104000.rtu:rtu0
-	b106000.rtu:rtu1
-	b10a000.txpru:txpru0
-	b10c000.txpru:txpru1
-	b138000.pru:pru1
-	b134000.pru:pru0
-)
-ICSSG_NAMES=" b034000.pru b004000.rtu b00a000.txpru b038000.pru b006000.rtu b00c000.txpru ${MCS_CORES[*]%%:*} "
+C7X_NAME=${RPROC[c7x]}
+RTU0_NAME=${RPROC[g0rtu0]}
 FABRIC_DT=/proc/device-tree/reserved-memory/ai64-fabric@a9000000
 # The MCU R5F cluster runs the board's device manager. Never touch it.
 MCU_R5_NAMES="41000000.r5f 41400000.r5f"
@@ -279,9 +293,7 @@ restart_r5_cores() {
 	done
 	for entry in "${R5_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
-		image=$label
-		[[ $label == r5f0_0 ]] && image=r5
-		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr/$image/zephyr/$fw")
+		src=$(firmware_path "$fw" "/lib/firmware/$fw" "build/zephyr/$label/zephyr/$fw")
 		load_fw "$name" "$fw" "$src"
 	done
 }
@@ -322,7 +334,7 @@ restart_pwm() {
 # Each ICSSG1 core arms its own task manager and clears its own compare, so
 # the six can start in any order; PRU0, which sets up IEP0, goes last.
 restart_mcs() {
-	local entry name core fw src
+	local entry name fw src
 	for entry in "${MCS_CORES[@]}"; do
 		name=${entry%%:*}
 		if ! rproc_by_name "$name" >/dev/null 2>&1; then
@@ -335,8 +347,7 @@ restart_mcs() {
 	done
 	for entry in "${MCS_CORES[@]}"; do
 		name=${entry%%:*}
-		core=${entry#*:}
-		fw=ai64-icssg1-$core.elf
+		fw=${entry#*:}
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
 		load_fw "$name" "$fw" "$src"
 	done
@@ -369,8 +380,6 @@ wait_rpmsg() {
 	done
 	return 1
 }
-
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Prefer the copies sitting next to this script (/root on the image).
 # Otherwise use /lib/firmware, then a Debian build tree relative to cwd.
@@ -415,16 +424,6 @@ fi
 
 if [[ $USE_TMUX -eq 1 ]] && ! command -v tmux >/dev/null 2>&1; then
 	echo "tmux is not installed" >&2
-	exit 1
-fi
-
-if [[ -x $SCRIPT_DIR/ai64 ]]; then
-	BIN=$SCRIPT_DIR/ai64
-else
-	BIN=$(command -v ai64 || true)
-fi
-if [[ -z $BIN ]]; then
-	echo "ai64 is not on PATH" >&2
 	exit 1
 fi
 
