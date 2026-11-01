@@ -21,7 +21,7 @@
 const struct ai64_group ai64_groups[] = {
 	{ "r5", "Zephyr on the main-domain R5F cores" },
 	{ "g0", "ICSSG0: the PWM slices, and the pipeline's sampler" },
-	{ "g1", "ICSSG1: TI's multicore scheduler, a task each on IEP0's time" },
+	{ "g1", "ICSSG1: TI's multicore scheduler, a task each on IEP0's time (an extra demo)" },
 	{ "dsp", "The DSPs" },
 };
 const size_t ai64_ngroups = sizeof(ai64_groups) / sizeof(ai64_groups[0]);
@@ -70,22 +70,22 @@ const struct ai64_core ai64_cores[] = {
 	  .name = "RTU1", .role = "slice 1 talks; stamps the pipeline's windows",
 	  .start = 4, .node = AI64_FAB_G0RTU1, .icssg = 0x0b000000ull, .slice = 1 },
 
-	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-icssg1-pru0.elf", .group = "g1",
+	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-mcs-pru0.elf", .group = "g1",
 	  .name = "PRU0", .role = "sets the scheduler up; its task sets P8.17 high",
 	  .start = 6, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "ai64-icssg1-pru1.elf", .group = "g1",
+	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "ai64-mcs-pru1.elf", .group = "g1",
 	  .name = "PRU1", .role = "its task sets P8.17 low",
 	  .start = 5, NONE, .icssg = 0x0b100000ull, .slice = 1 },
-	{ .label = "g1rtu0", .rproc = "b104000.rtu", .fw = "ai64-icssg1-rtu0.elf", .group = "g1",
+	{ .label = "g1rtu0", .rproc = "b104000.rtu", .fw = "ai64-mcs-rtu0.elf", .group = "g1",
 	  .name = "RTU0", .role = "its task sets P8.17 low",
 	  .start = 1, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1rtu1", .rproc = "b106000.rtu", .fw = "ai64-icssg1-rtu1.elf", .group = "g1",
+	{ .label = "g1rtu1", .rproc = "b106000.rtu", .fw = "ai64-mcs-rtu1.elf", .group = "g1",
 	  .name = "RTU1", .role = "its task sets P8.17 high",
 	  .start = 2, NONE, .icssg = 0x0b100000ull, .slice = 1 },
-	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "ai64-icssg1-txpru0.elf",
+	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "ai64-mcs-txpru0.elf",
 	  .group = "g1", .name = "Tx_PRU0", .role = "its task sets P8.17 high",
 	  .start = 3, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "ai64-icssg1-txpru1.elf",
+	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "ai64-mcs-txpru1.elf",
 	  .group = "g1", .name = "Tx_PRU1", .role = "its task sets P8.17 low",
 	  .start = 4, NONE, .icssg = 0x0b100000ull, .slice = 1 },
 

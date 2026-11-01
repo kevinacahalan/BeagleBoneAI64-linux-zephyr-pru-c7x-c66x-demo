@@ -15,7 +15,7 @@
 #include "ai64.h"
 
 /*
- * ICSSG1's multicore scheduler (pru/multicore_scheduler): which IEP0
+ * ICSSG1's multicore scheduler (extra-demos/icssg1-multicore-scheduler): which IEP0
  * compare starts each core's task, and what the task writes to PWM2_0's
  * initial state, which P8.17 shows. In the order the tasks run.
  */

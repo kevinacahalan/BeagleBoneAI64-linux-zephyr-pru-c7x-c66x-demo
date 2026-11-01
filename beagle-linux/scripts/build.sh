@@ -272,12 +272,12 @@ bundle() {
 		pru/build/ai64-icssg0-pru1.elf
 		pru/build/ai64-icssg0-rtu1.elf
 		pru/build/ai64-icssg0-txpru1.elf
-		pru/build/ai64-icssg1-pru0.elf
-		pru/build/ai64-icssg1-rtu0.elf
-		pru/build/ai64-icssg1-txpru0.elf
-		pru/build/ai64-icssg1-pru1.elf
-		pru/build/ai64-icssg1-rtu1.elf
-		pru/build/ai64-icssg1-txpru1.elf
+		pru/build/ai64-mcs-pru0.elf
+		pru/build/ai64-mcs-rtu0.elf
+		pru/build/ai64-mcs-txpru0.elf
+		pru/build/ai64-mcs-pru1.elf
+		pru/build/ai64-mcs-rtu1.elf
+		pru/build/ai64-mcs-txpru1.elf
 		beagle-linux/kernel/pru_rproc/pru_rproc.ko
 		beagle-linux/kernel/k3_r5_rproc/ti_k3_r5_remoteproc.ko
 		beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtbo

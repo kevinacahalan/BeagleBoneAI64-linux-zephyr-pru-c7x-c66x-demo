@@ -1,6 +1,6 @@
 # The ICSSG cores
 
-How the twelve ICSSG cores' firmware is laid out, and what each slice does. [`pwm/README.md`](pwm/README.md) and [`multicore_scheduler/README.md`](multicore_scheduler/README.md) go further into each project.
+How the twelve ICSSG cores' firmware is laid out, and what each slice does. [`pwm/README.md`](pwm/README.md) and [`extra-demos/icssg1-multicore-scheduler/README.md`](../extra-demos/icssg1-multicore-scheduler/README.md) go further into each project.
 
 ## The ICSSG firmware
 
@@ -17,7 +17,8 @@ pru/
       beaglebone-ai64/icss_g0_<core>_fw/
         main.c         a PRU's own source
         ti-pru-cgt/    makefile, linker.cmd
-  multicore_scheduler/ ICSSG1, the same way
+extra-demos/
+  icssg1-multicore-scheduler/  ICSSG1, the same way, built by pru/Makefile
 ```
 
 Each core's makefile names its image, its sources, and its defines, and includes `pru_rules.mak`, as open-pru's do. Each core's `linker.cmd` includes its project's memory map, so the C code and the linker share one set of addresses. After each link the build prints how full each image's RAM is, and fails a region past 95%. Every core builds as PRU silicon version 4, the ICSSG.
@@ -30,7 +31,7 @@ Each core's makefile names its image, its sources, and its defines, and includes
 | ICSSG0 RTU1 | `b006000.rtu` | `ai64-icssg0-rtu1.elf` | pwm, slice 1: talks, over the fabric (node 9, `g0rtu1`) |
 | ICSSG0 Tx_PRU1 | `b00c000.txpru` | `ai64-icssg0-txpru1.elf` | pwm, slice 1: the modulator |
 | ICSSG0 PRU1 | `b038000.pru` | `ai64-icssg0-pru1.elf` | pwm, slice 1: the ICSSG PWM module |
-| ICSSG1, all six | `b134000.pru`, `b138000.pru`, `b104000.rtu`, `b106000.rtu`, `b10a000.txpru`, `b10c000.txpru` | `ai64-icssg1-<core><slice>.elf` | multicore_scheduler |
+| ICSSG1, all six | `b134000.pru`, `b138000.pru`, `b104000.rtu`, `b106000.rtu`, `b10a000.txpru`, `b10c000.txpru` | `ai64-mcs-<core><slice>.elf` | the multicore scheduler |
 
 In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 
@@ -64,7 +65,7 @@ Slice 1's PRU1 also samples P8.31 for [the pipeline](../docs/pipeline.md#the-pip
 
 ## ICSSG1: the multicore scheduler
 
-[`pru/multicore_scheduler/`](multicore_scheduler/README.md) is TI's open-pru example `multicore_scheduler`, ported from ICSSG0 of the AM243x LaunchPad to ICSSG1 here. IEP0's CMP0 resets the counter every 100 ns, and on each 4 ns step after it one more compare fires and starts one core's task through that core's task manager: PRU0, PRU1, RTU1, RTU0, Tx_PRU1, Tx_PRU0. Each task sets PWM set 2's initial state high or low; PWM2 runs on IEP1, which nothing starts, so P8.17 (`PRG1_PWM2_A0`) follows it.
+[`extra-demos/icssg1-multicore-scheduler/`](../extra-demos/icssg1-multicore-scheduler/README.md) is TI's open-pru example `multicore_scheduler`, ported from ICSSG0 of the AM243x LaunchPad to ICSSG1 here. IEP0's CMP0 resets the counter every 100 ns, and on each 4 ns step after it one more compare fires and starts one core's task through that core's task manager: PRU0, PRU1, RTU1, RTU0, Tx_PRU1, Tx_PRU0. Each task sets PWM set 2's initial state high or low; PWM2 runs on IEP1, which nothing starts, so P8.17 (`PRG1_PWM2_A0`) follows it.
 
 The port keeps TI's files, names, and timing. What J721E needed: no clock or pin setup in PRU0, since Linux has done both; and, with no `PWM_EFC_EN`, the compare flags cleared in software. Each task clears its own, each core clears its own once its task manager is on, and PRU0 maps every task's event before it starts IEP0, and clears all six flags once more two periods later. Without those, a compare that fires before its core's task manager sees it leaves a flag nothing clears, and that core's task never runs again. `MCS_STEP_NS` and `MCS_PERIOD_NS`, on the make command line, change the schedule.
 

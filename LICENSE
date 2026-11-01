@@ -30,7 +30,7 @@ Exceptions. These files keep their own licenses:
   Copyright (c) 2015 Robert Nelson; see the copyright file there.
 - yocto/layers/meta-ai64/patches/: a patch to BitBake, GPL-2.0-only like
   BitBake itself.
-- pru/multicore_scheduler/: BSD-3-Clause, Copyright (C) Texas Instruments.
+- extra-demos/icssg1-multicore-scheduler/: BSD-3-Clause, Copyright (C) Texas Instruments.
   It is ported from open-pru's examples/multicore_scheduler; see the header
   in each file.
 - pru/common/ai64_rsc_rpmsg.h: BSD-3-Clause, Copyright (C) Texas

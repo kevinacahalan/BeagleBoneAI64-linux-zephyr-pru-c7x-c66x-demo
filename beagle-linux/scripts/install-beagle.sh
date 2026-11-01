@@ -63,9 +63,10 @@ find_artifact() {
 KREL=$(uname -r)
 AI64=$(find_artifact ai64 linux-app/ai64)
 DEMO=$(find_artifact ai64-demo beagle-linux/scripts/ai64-demo)
-# The ICSSG images: ICSSG0 the PWM project, ICSSG1 the multicore scheduler.
+# The ICSSG images: ICSSG0 the PWM project, ICSSG1 the multicore scheduler
+# (extra-demos/icssg1-multicore-scheduler).
 declare -A ICSSG
-for f in ai64-icssg{0,1}-{pru,rtu,txpru}{0,1}.elf; do
+for f in ai64-icssg0-{pru,rtu,txpru}{0,1}.elf ai64-mcs-{pru,rtu,txpru}{0,1}.elf; do
 	ICSSG[$f]=$(find_artifact "$f" "pru/build/$f")
 done
 declare -A R5

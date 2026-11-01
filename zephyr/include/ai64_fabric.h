@@ -5,8 +5,9 @@
  * main-domain R5Fs, both C66x, the C7x, and the RTU of each ICSSG0 slice.
  * The RTU is its slice's link to the rest of the SoC; the slice's PRU and
  * Tx_PRU keep to their real-time work and never touch the fabric. ICSSG1
- * runs TI's multicore scheduler on all six of its cores (pru/
- * multicore_scheduler/), with no core left to talk, so it is not a node.
+ * runs TI's multicore scheduler on all six of its cores (extra-demos/
+ * icssg1-multicore-scheduler/), with no core left to talk, so it is not a
+ * node.
  * The layout has room for AI64_FAB_SLOTS nodes; the last two are spare.
  * Linux, Zephyr, both DSP compilers, and the PRU compiler all include this
  * file, so it only uses 32-bit fields at fixed offsets.

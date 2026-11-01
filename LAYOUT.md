@@ -32,9 +32,10 @@
 │   └── build/             generated
 ├── pru/
 │   ├── pwm/
-│   ├── multicore_scheduler/
 │   ├── common/
 │   └── build/             generated
+├── extra-demos/
+│   └── icssg1-multicore-scheduler/
 ├── yocto/
 │   ├── kas/
 │   ├── layers/meta-ai64/
@@ -94,11 +95,13 @@
 
 `.west/`, `modules/`, `bootloader/`, `tools/`, `build/` — generated west workspace. `build/zephyr/<core>/zephyr/ai64_<core>.elf` is each R5F core's image, `build/zephyr/r5f0_0/zephyr/ai64_r5f0_0.elf` and so on.
 
-`pru/` — the ICSSG firmware, as two projects laid out the way TI's open-pru projects are: one directory per core, `<project>/firmware/beaglebone-ai64/icss_g<N>_<core>_fw/`, with its own `ti-pru-cgt/makefile` and `linker.cmd`. `pru/Makefile` builds both projects, and `pru_rules.mak` holds the rules every core's makefile includes.
+`pru/` — the ICSSG firmware, laid out the way TI's open-pru projects are: one directory per core, `<project>/firmware/beaglebone-ai64/icss_g<N>_<core>_fw/`, with its own `ti-pru-cgt/makefile` and `linker.cmd`. `pru/Makefile` builds `pwm/` and the extra demos' ICSSG projects, and `pru_rules.mak` holds the rules every core's makefile includes.
 
 `pru/pwm/` — ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1, and with eCAP0, which slice 0's Tx_PRU runs; slice 1's PRU1 and RTU1 are also the pipeline's first stage, sampling P8.31. `firmware/` holds the project's memory map (`pwm_map.h`) and IPC records (`pwm_ipc.h`), and the RTU and Tx_PRU sources both slices build; each PRU's `main.c` is in its core's directory. `README.md` explains the project.
 
-`pru/multicore_scheduler/` — ICSSG1: the port of open-pru's `examples/multicore_scheduler`, a `main.c` and a `pwm_toggle.asm` per core. BSD-3-Clause, as TI's original. `README.md` says what changed for J721E.
+`extra-demos/` — demos kept for reference, built with the rest but not started unless asked ([`extra-demos/README.md`](extra-demos/README.md)).
+
+`extra-demos/icssg1-multicore-scheduler/` — ICSSG1: the port of open-pru's `examples/multicore_scheduler`, a `main.c` and a `pwm_toggle.asm` per core. BSD-3-Clause, as TI's original. `README.md` says what changed for J721E. `ai64-demo --icssg1 scheduler` runs it.
 
 `pru/common/` — what both projects share: the trace-buffer log, the two resource tables (trace only, and RPMsg with trace), RTU0's RPMsg channel, text helpers, and the ICSSG register map (`icssg.h`).
 

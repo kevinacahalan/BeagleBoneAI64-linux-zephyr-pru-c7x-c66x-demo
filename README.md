@@ -11,7 +11,7 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](docs/fabric.md)).
 - **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies, read from shared memory twice a second ([The web page](#the-web-page)).
 
-The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/multicore_scheduler/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1 keeps TI's design, where every core runs a task.
+The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `extra-demos/icssg1-multicore-scheduler/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1 keeps TI's design, where every core runs a task.
 
 ```mermaid
 flowchart LR
@@ -522,7 +522,7 @@ Most of the delay is the windows: a 1.024 ms window has to be mostly the new ste
 
 **P8.17** changes every 4 ns, the ICSSG core clock, so it needs an analyzer at 500 MS/s or more to resolve; built with `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000` ([The multicore scheduler](pru/README.md#icssg1-the-multicore-scheduler)) it is slow enough for any.
 
-![Captured at 500 MS/s: P8.17 over two 100 ns periods, low from 8 to 12 ns and from 16 to 24 ns of each, with the core whose task each compare starts](media/p817.svg)
+![Captured at 500 MS/s: P8.17 over two 100 ns periods, low from 8 to 12 ns and from 16 to 24 ns of each, with the core whose task each compare starts](extra-demos/icssg1-multicore-scheduler/media/p817.svg)
 
 At 500 MS/s the capture resolves the schedule to the analyzer's 2 ns sample: 10.000 million periods a second, each low for 4 and then 8 ns.
 
@@ -666,4 +666,4 @@ On a board, the image with TI's 6.18 ran `ai64-demo` 20 times in a row (15 times
 
 ## License
 
-MIT; see `LICENSE`. `beagle-linux/kernel/pru_rproc/` and `beagle-linux/kernel/k3_r5_rproc/` are GPL-2.0-only because they are derived from the Linux drivers. `pru/multicore_scheduler/` is BSD-3-Clause, as TI's open-pru example it is ported from.
+MIT; see `LICENSE`. `beagle-linux/kernel/pru_rproc/` and `beagle-linux/kernel/k3_r5_rproc/` are GPL-2.0-only because they are derived from the Linux drivers. `extra-demos/icssg1-multicore-scheduler/` is BSD-3-Clause, as TI's open-pru example it is ported from.

@@ -31,7 +31,7 @@ PRU0 does the setup, in `FN_MCS_CFG` (`icss_g1_pru0_fw/pwm_toggle.asm`): it maps
   - every core clears it once more right after `tsen 1`, for a compare that hit before its task manager was on;
   - `FN_MCS_CFG` maps the task managers' events before it starts IEP0, not after. A compare that hits before its core's task manager has its event would set a flag that no task ever clears, and that task would never run.
   With those, the six cores can start in any order.
-- **The schedule is a build option.** `MCS_STEP_NS` is the time between steps, and `MCS_PERIOD_NS` the period: `make -C pru MCS_STEP_NS=1000 MCS_PERIOD_NS=10000 ...` for a schedule slow enough for any logic analyzer. The default is the original's: steps of 4 ns, one core clock, and a period of 100 ns.
+- **The schedule is a build option.** `MCS_STEP_NS` is the time between steps, and `MCS_PERIOD_NS` the period: `make -C pru MCS_STEP_NS=1000 MCS_PERIOD_NS=10000 ...` (`pru/Makefile` builds this project too) for a schedule slow enough for any logic analyzer. The default is the original's: steps of 4 ns, one core clock, and a period of 100 ns.
 - **Each core logs one line to its remoteproc trace** before its task manager takes over, so `ai64 trace b134000.pru` (and the other five) shows what it set up.
 
 ## Data RAM
@@ -40,7 +40,7 @@ Each slice's data RAM is split the way open-pru's linker files for this example 
 
 ## Build
 
-From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project and the PWM project into `pru/build/ai64-icssg1-<core><slice>.elf`.
+From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project and the PWM project; this one's images are `pru/build/ai64-mcs-<core><slice>.elf`, with the rules in `pru/pru_rules.mak`.
 
 ## Run
 
