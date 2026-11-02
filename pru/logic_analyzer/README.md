@@ -169,6 +169,29 @@ The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It 
 
 Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms, and the last 2 s at that rate in 7 ms. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s.
 
+## MCP: the analyzer for a model
+
+`ai64 mcp`, which `ai64-demo` starts in its `mcp` window, is an [MCP](https://modelcontextprotocol.io) server for the analyzer, on port 8065 at `/mcp`: the protocol's Streamable HTTP transport, JSON-RPC 2.0 in HTTP POSTs, in C on the board (`linux-app/mcp.c`), with nothing to install. Claude Code, for one, connects with:
+
+```
+claude mcp add --transport http ai64-la http://<board>:8065/mcp
+```
+
+| Tool | What it does |
+| --- | --- |
+| `la_channels` | the 19 channels: pin, ball, PRU and GPI bit, and what the demo's jumpers bring |
+| `la_status` | a quarter-second look: each PRU's edges a second and totals, gaps, marks, trigger hits, the trigger, and every channel's level |
+| `la_measure` | records for some seconds, and for each active channel gives edges, frequency, period and high time (min, median, max), and duty; and for channel pairs, the time from each change of one to the other's nearest |
+| `la_capture` | records for some seconds, or around the next trigger hit, and keeps it on the board, also as a VCD file; returns the same summary as `la_measure`, and the marks and hits |
+| `la_edges` | the last capture's changes on some channels in a time window, at most a limit a channel |
+| `la_decode` | SPI or UART in the last capture |
+| `la_trigger` | sets the Tx_PRUs' trigger |
+| `la_mark` | puts a mark in the stream, through the fabric |
+
+The answers are JSON, as both text and structured content, sized for a model: measurements and windows, not whole captures. Through the MCP Python SDK's own client, a session sets a trigger on SPI7's first clock, captures 2 ms around the next hit while the demo sends `spi hello`, and `la_decode` returns `{"frames":[{"t_ns":195308,"mosi":"68 65 6c 6c 6f","mosi_text":"hello"}]}`. UART decoding has not met a real UART yet: none of the demo's signals on the analyzer's pins is one.
+
+Unlike the web page, it can change something, the trigger and the marks, so it guards itself: it refuses a request whose `Origin` header is not its own address, which keeps a web page elsewhere from reaching it through a browser, and with `AI64_MCP_TOKEN` set in its environment it asks every request for `Authorization: Bearer <token>`. Without a token, anyone on the board's network can use it; it is meant for a bench.
+
 ## Build
 
 From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project with the others into `pru/build/ai64-la-<core><slice>.elf`.

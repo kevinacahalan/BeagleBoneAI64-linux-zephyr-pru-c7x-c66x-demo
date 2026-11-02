@@ -5,7 +5,7 @@
 #   ai64-demo                 (re)start the four main-domain R5F cores, the
 #                             twelve ICSSG cores, and the DSPs with their
 #                             firmware, then one merged console
-#   ai64-demo --tmux          same start, in tmux session ai64 (fourteen windows)
+#   ai64-demo --tmux          same start, in tmux session ai64 (fifteen windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
 #   ai64-demo --icssg1 SET    what ICSSG1 runs: la (the default; the logic
@@ -14,7 +14,8 @@
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
 # [RTU0], [PWM], [LA] (or [Sched]), [C66x0], [C66x1], [C7x], [Fabric], [Pipe],
-# or [Web]. Either way, ai64 web serves a live page of every core on port 8064.
+# [Web], or [MCP]. Either way, ai64 web serves a live page of every core on
+# port 8064, and ai64 mcp the logic analyzer's MCP server on port 8065.
 
 set -euo pipefail
 
@@ -470,7 +471,7 @@ viewer_pids() {
 		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
 		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
 		case ${argv[1]} in
-		peer|erpc|pwm|sched|la|trace|fabric|pipe|web|linux)
+		peer|erpc|pwm|sched|la|mcp|trace|fabric|pipe|web|linux)
 			echo "$pid"
 			;;
 		esac
@@ -586,6 +587,10 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	tmux send-keys -t "$SESSION:pipe" "$BIN pipe" C-m
 	tmux new-window -d -t "$SESSION" -n web
 	tmux send-keys -t "$SESSION:web" "$BIN web" C-m
+	if [[ $ICSSG1 == la ]]; then
+		tmux new-window -d -t "$SESSION" -n mcp
+		tmux send-keys -t "$SESSION:mcp" "$BIN mcp" C-m
+	fi
 	tmux send-keys -t "$SESSION:rtu0" "$BIN peer rtu0 $RTU0_DEV $RUN/rtu0.in" C-m
 	tmux send-keys -t "$SESSION:linux" "$BIN linux $RUN" C-m
 	tmux select-window -t "$SESSION:linux"
@@ -599,7 +604,8 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	[[ $ICSSG1 == la ]] && echo "  la     the logic analyzer's 19 channels"
 	echo "  fabric ddr"
 	echo "  pipe   the pipeline's numbers, P8.31 to P9.25"
-	echo "  web    a live page of every core: http://<board>:8064/"
+	echo "  web    a live page of every core: http://<board>:8064/, the analyzer at /la"
+	[[ $ICSSG1 == la ]] && echo "  mcp    the analyzer's MCP server: http://<board>:8065/mcp"
 	if [[ -t 0 && -t 1 ]]; then
 		exec tmux attach -t "$SESSION"
 	fi
@@ -654,6 +660,9 @@ done
 spawn_prefixed '[Fabric]' "$RUN/fabric.out" "$BIN" fabric lines
 spawn_prefixed '[Pipe]' "$RUN/pipe.out" "$BIN" pipe lines
 spawn_prefixed '[Web]' "$RUN/web.out" "$BIN" web
+if [[ $ICSSG1 == la ]]; then
+	spawn_prefixed '[MCP]' "$RUN/mcp.out" "$BIN" mcp
+fi
 
 rm -f "$RUN/linux.out"
 mkfifo "$RUN/linux.out"

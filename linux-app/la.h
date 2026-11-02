@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "ai64_la.h"
 
@@ -84,5 +85,72 @@ static inline int level(const uint32_t state[2], int c)
 {
 	return (int)(state[la_chans[c].pru] >> la_chans[c].bit & 1u);
 }
+
+
+struct event {
+	uint64_t t;
+	uint32_t state;
+};
+
+struct events {
+	struct event *e;
+	size_t n, cap;
+};
+
+/*
+ * A recording: both streams' edges over a span both cover, from the later
+ * first tick to the earlier last one, and every pin's state at its start.
+ * rec_next() hands the edges back merged by time.
+ */
+struct recording {
+	struct stream st[2];
+	struct events ev[2];
+	uint32_t state[2];
+	uint64_t begin, finish;
+	uint64_t hit;       /* the trigger hit it was taken around, or 0 */
+	size_t i[2];
+};
+
+/* One channel's changes: times, and the level after each. */
+struct changes {
+	uint64_t *t;
+	uint8_t *up;
+	size_t n, cap;
+};
+
+struct spread {
+	size_t n;
+	int64_t min, med, max;
+};
+
+struct chan_stats {
+	size_t edges, rises;
+	uint64_t high_ns;
+	int level_end;
+	struct spread period, high;
+};
+
+void changes_add(struct changes *ch, uint64_t t, int up);
+int cmp_i64(const void *a, const void *b);
+/* For each change of a that goes up (or down), the signed time to b's nearest change. */
+size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out);
+void rec_changes(struct recording *r, struct changes ch[AI64_LA_NCHAN]);
+void changes_free(struct changes ch[AI64_LA_NCHAN]);
+void spread_of(int64_t *v, size_t n, struct spread *sp);
+void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t finish, int64_t *v,
+		struct chan_stats *out);
+/* The recording as a VCD file (la.c); each PRU's edges in nedge, and the marks and hits. */
+size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2]);
+/* The trigger, on PRU pru (the other's goes off); -1 if the analyzer does not run. */
+int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value);
+
+void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state);
+/* secs of both streams from now; or, with trigger, around the next hit. */
+int record(struct recording *r, double secs, int trigger);
+/* The next edge in time, up to finish: its time, and the state before it in was. */
+int rec_next(struct recording *r, uint64_t *t, uint32_t was[2]);
+void rec_free(struct recording *r);
+/* Both streams' marks and hits in [begin, finish], merged by time, into *out. */
+size_t rec_marks(struct recording *r, struct mark **out);
 
 #endif

@@ -151,6 +151,13 @@ check_demo() {
 	"$AI64" la mark 1 2>&1 | grep -q 'g1rtu0 marked its stream' &&
 		ok "a mark reached the analyzer's stream through the fabric" || bad "ai64 la mark"
 
+	# The MCP server (ai64 mcp): la_measure through JSON-RPC, slice 1's dead band again.
+	n=$(wget -q -O - --header "Content-Type: application/json" --post-data \
+		'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"la_measure","arguments":{"seconds":0.5,"pairs":["9:10"]}}}' \
+		http://127.0.0.1:8065/mcp 2>/dev/null | grep -o '"after_a_falls_ns":{"min":[0-9-]*,"median":[0-9]*' | grep -o '[0-9]*$')
+	[ -n "$n" ] && [ "$n" -ge 992 ] && [ "$n" -le 1008 ] &&
+		ok "the MCP server's la_measure: slice 1's dead band $n ns" || bad "the MCP server's la_measure: ${n:-no answer}"
+
 	# The pads, and the web page's server.
 	check "every demo pad is muxed as the overlay and Zephyr ask" "$AI64" pads
 	n=$(for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done |

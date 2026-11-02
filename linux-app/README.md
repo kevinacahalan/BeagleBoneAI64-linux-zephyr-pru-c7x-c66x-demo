@@ -8,7 +8,8 @@
 | `erpc [core] <rpmsg-dev> <fifo>` | `erpc_window.c` | an R5F core's window: eRPC calls to Zephyr on that core; R5F0_0's also writes the bulk buffer for `chunk` and `dma` |
 | `peer <label> <rpmsg-dev> <fifo>` | `rtu0_window.c` | the `rtu0` window: RPMsg text to and from ICSSG0 RTU0 |
 | `pwm [seconds\|once]` | `pwm.c` | the `pwm` window: what each of the four PWM generators runs, from its status record |
-| `la [seconds\|once\|lines]`, `la capture`, `la measure`, `la trigger`, `la mark`, `la quiet` | `la.c`, and `la_stream.c`, the stream reader it shares with `la_ws.c` | the `la` window: ICSSG1's logic analyzer, every channel; a VCD capture, plain or around a trigger hit; measurements; the Tx_PRUs' trigger; a mark through the fabric; quieting ICSSG1 between firmware sets |
+| `la [seconds\|once\|lines]`, `la capture`, `la measure`, `la trigger`, `la mark`, `la quiet` | `la.c`; `la_stream.c`, the stream reader it shares with `la_ws.c`; and `la_rec.c`, recordings and measurements, which it shares with `mcp.c` | the `la` window: ICSSG1's logic analyzer, every channel; a VCD capture, plain or around a trigger hit; measurements; the Tx_PRUs' trigger; a mark through the fabric; quieting ICSSG1 between firmware sets |
+| `mcp [port]` | `mcp.c`, with `la_rec.c` | the `mcp` window: the logic analyzer's MCP server, JSON-RPC over HTTP at `/mcp` on port 8065 |
 | `sched [seconds\|once]` | `sched.c` | the `sched` window, with `--icssg1 scheduler`: ICSSG1's schedule, read from its registers |
 | `fabric ...` | `fabric.c` | the `fabric` window, Linux's node on the fabric, and `fabric route` |
 | `pipe ...` | `pipe.c` | the `pipe` window, and `pipe start`, which trains the pipeline's layer |

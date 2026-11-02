@@ -25,7 +25,7 @@ What `check`, and each run of `soak`, looks at:
 - **The pipeline** (`ai64 pipe once`): no window named wrong since training, and no stage lost a window or failed one.
 - **The fabric**, from its window: the spinlock tally agrees, and no node timed out or saw an error in the last second.
 - **The DSPs**: FIR jobs on both C66x cores and the C7x, and the MMA layer, all match the A72, while the pipeline runs on the same cores.
-- **The logic analyzer** on ICSSG1 (`ai64 la`): both streams with nothing lost, the square wave at 1 kHz, the jumpered PWM channels at 15 kHz on average over their steps, slice 1's dead band at 1000 ns (`la measure`), Tx_PRU0's trigger on the square wave firing about 1000 times a second, and a mark reaching the stream through the fabric. It needs [the jumpers](../pru/logic_analyzer/README.md#the-channels).
+- **The logic analyzer** on ICSSG1 (`ai64 la`): both streams with nothing lost, the square wave at 1 kHz, the jumpered PWM channels at 15 kHz on average over their steps, slice 1's dead band at 1000 ns (`la measure`), Tx_PRU0's trigger on the square wave firing about 1000 times a second, a mark reaching the stream through the fabric, and the MCP server's `la_measure` answering over JSON-RPC. It needs [the jumpers](../pru/logic_analyzer/README.md#the-channels).
 - **The pads** (`ai64 pads`), and one web server.
 
 The tests are shell scripts for `/bin/sh` on the board, BusyBox's included, and need `tmux`, which the demo needs anyway. `board/lib.sh` has the checks; add one there, and it runs in both `check` and `soak`.

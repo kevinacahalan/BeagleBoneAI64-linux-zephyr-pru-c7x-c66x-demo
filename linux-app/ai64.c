@@ -26,6 +26,7 @@ static const struct {
 	  "  la trigger off | <ch> rise|fall|any | <ch>=0|1 ...  set the Tx_PRUs' trigger\n"
 	  "  la measure [seconds] [a:b ...]  each channel's periods and high times, and a to b timing\n"
 	  "  la mark <value>           a mark in the analyzer's stream, through the fabric" },
+	{ "mcp", mcp_main, "mcp [port]                the logic analyzer's MCP server, on port 8065 (the mcp window)" },
 	{ "sched", sched_main, "sched [seconds|once]      ICSSG1's multicore scheduler, with --icssg1 scheduler" },
 	{ "pads", pads_main, "pads                      check the pin mux of every demo pin" },
 	{ "cores", cores_main, "cores                     every demo core: its remoteproc, firmware, node" },
