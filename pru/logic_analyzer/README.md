@@ -2,7 +2,7 @@
 
 ICSSG1's six cores record every change on 19 header pins, each stamped with the count of IEP0, ICSSG1's nanosecond counter on its 250 MHz clock, and Linux reads the records out of DDR. Jumper wires bring it the demo's own signals: the four PWM generators, SPI7, and the square wave. `ai64 la` then shows what each pin is doing, and `ai64 la capture` writes a VCD file for PulseView or GTKWave.
 
-It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s.
+It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s, and it keeps up with 6 million. Each slice's Tx_PRU matches a trigger on the edges as they come, and the RTUs are fabric nodes, so any core in the demo can put a mark on the timeline.
 
 ## The channels
 
@@ -44,17 +44,23 @@ flowchart LR
   iep -->|"stamps each edge"| pru1
   pru0 -->|"edge records,<br/>a ring in shared RAM"| rtu0["RTU0"]
   pru1 -->|"edge records,<br/>a ring in shared RAM"| rtu1["RTU1"]
+  pru0 -->|"the same ring"| tx0["Tx_PRU0<br/>trigger"]
+  pru1 -->|"the same ring"| tx1["Tx_PRU1<br/>trigger"]
+  tx0 -->|"hits"| rtu0
+  tx1 -->|"hits"| rtu1
   rtu0 -->|"starts"| iep
-  rtu0 -->|"records and ticks,<br/>a 32 MiB ring"| ddr[("DDR")]
-  rtu1 -->|"records and ticks,<br/>a 32 MiB ring"| ddr
+  rtu0 -->|"records, ticks, marks, hits:<br/>a 32 MiB ring"| ddr[("DDR")]
+  rtu1 -->|"records, ticks, marks, hits:<br/>a 32 MiB ring"| ddr
+  fab(("the fabric")) -->|"marks"| rtu0
+  fab -->|"marks"| rtu1
   ddr -->|"/dev/mem"| ai64["ai64 la"]
 ```
 
 | Core | Job | Source |
 | --- | --- | --- |
 | PRU0, PRU1 | Read their pins, and at each change write an edge record: IEP0's count and the new state | `firmware/la_pru.c`, `firmware/la_sample.asm` |
-| RTU0, RTU1 | Copy their PRU's records to its ring in DDR, add a tick each millisecond, keep the stream's header up to date; RTU0 also starts IEP0 | `firmware/la_rtu.c` |
-| Tx_PRU0, Tx_PRU1 | Report that they are up; the triggers on their PRU's channels come next | `firmware/la_txpru.c` |
+| RTU0, RTU1 | Copy their PRU's records to its ring in DDR, add a tick each millisecond, keep the stream's header up to date; pass the trigger to the Tx_PRU and its hits into the stream; fabric nodes 10 and 11, which put marks in the stream; RTU0 also starts IEP0 | `firmware/la_rtu.c` |
+| Tx_PRU0, Tx_PRU1 | Read their PRU's records as they come, and match the trigger on that PRU's pins | `firmware/la_txpru.c` |
 
 **The PRU's loop** (`la_sample.asm`) takes two cycles, 8 ns, a pass: read R31 through the PRU's mask, and loop while it matches the last state. On a change it reads IEP0's count and stores the record, time then state, into its ring in ICSSG1's shared RAM, then the ring's write count. It touches nothing outside ICSSG1, and never waits for its RTU, so nothing else on the chip can slow it.
 
@@ -62,7 +68,17 @@ flowchart LR
 
 **Linux** (`linux-app/la.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
 
-`zephyr/include/ai64_la.h` has the record format and the addresses; `firmware/la_map.h` how each slice's data RAM and ICSSG1's shared RAM are split.
+`zephyr/include/ai64_la.h` has the record format and the addresses; `firmware/la_map.h` how each slice's data RAM and ICSSG1's shared RAM are split, and `firmware/la_ipc.h` the records the RTU and Tx_PRU share.
+
+### Triggers
+
+`ai64 la trigger` sets one: an edge on a channel (`6 rise`, `fall`, or `any`), or the moment some channels come to a pattern (`3=0 4=1`: SPI7's CS low with its clock high, the first clock of a transfer). A trigger takes the channels of one PRU. Linux writes it into that stream's header; the RTU passes it on to its Tx_PRU through ICSSG1's shared RAM, and the Tx_PRU, reading the PRU's edge records as fast as they come, writes each hit into its hit ring. The RTU puts each hit in the stream as a trig record, with the time of the edge that met it. So the Tx_PRU never touches DDR either, and a hit is found within microseconds of the edge, with nothing from Linux in between.
+
+`ai64 la capture <seconds> <file> --trigger` waits for the next hit and writes the capture around it, a tenth before and the rest after: the part before comes out of the ring, which already holds it. The `trig` signal in the VCD file changes at each hit. Triggered on SPI7's first clock, a 2 ms capture holds the `spi hello` transfer from its start, and the clock and data decode to `hello`.
+
+### Marks and the fabric
+
+RTU0 and RTU1 are fabric nodes 10 and 11 ([The fabric](../../docs/fabric.md)): they answer every other core's pings, add to the tally, join R5F0_0's tour, and publish their stream's numbers in their fabric page, which the web page shows. A route that brings either of them the `mark` action puts a mark record in its stream, with the route's origin and a 16-bit value, at the time the RTU read it: `ai64 la mark 7`, or a route through other cores first, such as `ai64 fabric route c7x r5f0_1 g1rtu1 mark 42`. A capture shows the marks as a 16-bit signal, `mark`, which holds each value until the next. So whatever a core does can be lined up against the pins, on the same clock.
 
 **Starting after another firmware set.** A core's task manager keeps its setup when the core stops, and the multicore scheduler leaves IEP0 starting a task on every core every 100 ns. A core stopped in the middle of a task stays in it, and its next yield would return to wherever the old firmware was interrupted. So before `ai64-demo` stops ICSSG1's cores it runs `ai64 la quiet`, which stops IEP0 and maps no event to any task, so each core stops outside one; each analyzer core then turns its own task manager off before anything else (`firmware/la_tm.h`).
 
@@ -77,20 +93,24 @@ Checked against the bench's Saleae Logic Pro 8 at 250 MS/s on P8.11, P9.12, and 
 | Slice 0's A at 20 kHz, 25% | high 12,472 to 12,532 ns | 12,476 to 12,524 ns |
 | The same edge on PRU0 and on PRU1 (ch13 against ch7) | −4 ns apart, half of them; 98% within ±8 ns | |
 
+**How close two edges can be.** Slice 1's hardware PWM puts A's fall and B's rise exactly its dead band apart, both on PRU1, so stepping the dead band down measures it (`fabric route g0rtu1 dead <ns>`). From 200 ns down to 64, the analyzer reads the gap right. Below 56 ns it reads 56, or both changes in one record when they fall between two reads of the pins: writing a record takes the PRU 14 cycles, 56 ns, and a change in that time waits for the next pass.
+
+**How fast.** With both ICSSG0 slices at their fastest, a 2 µs period with a 100 ns dead band, PRU1 sees 5 million edges a second and PRU0 1 million: no gap from either RTU, nothing missed by Linux, and every period of a 1 s capture there. The demo's generators go no faster, so the analyzer's own ceiling is higher still. Linux reads the rings with 64-byte loads: uncached, each load costs about 190 ns whatever its size, so 64 bytes at a time read 266 MB/s, about 33 million records a second, where a word at a time read 21 MB/s.
+
 The limits, then:
 
-- **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; one that comes while the PRU is busy with another edge on its pins can be up to about 50 ns late.
-- **Short pulses**: a pulse shorter than that busy time, right after another edge on the same PRU, can be missed. The PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record.
-- **Rate**: each PRU writes a record in about a dozen cycles, and its RTU copies them on; the demo's 180,000 edges a second on PRU1 leave both far from their limits, which are still to be measured.
+- **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; one that comes while the PRU is busy with another edge on its pins can be up to 56 ns late.
+- **Short pulses**: a pulse shorter than 56 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record.
+- **Rate**: 6 million edges a second, both PRUs together, with nothing lost; higher not yet measured.
 
 ## Using it
 
 `ai64-demo` starts it on ICSSG1, and opens the `la` window:
 
 ```
-ICSSG1 logic analyzer, the last 1.001 s; IEP0 at 75.096 s
-  PRU0     31926 edges/s, 31971 in all; RTU0 gaps 0 (0 records), reader missed 0
-  PRU1    179192 edges/s, 179487 in all; RTU1 gaps 0 (0 records), reader missed 0
+ICSSG1 logic analyzer, the last 1.000 s; IEP0 at 176.965 s
+  PRU0     31861 edges/s, 31905 in all; RTU0 gaps 0 (0 records), reader missed 0, marks 0, trigger hits 0
+  PRU1    179173 edges/s, 179625 in all; RTU1 gaps 0 (0 records), reader missed 0, marks 0, trigger hits 0
 
   ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty
    0  P8.03  0/19     -                 low            0      0.0 Hz     0.0%
@@ -109,10 +129,26 @@ ICSSG1 logic analyzer, the last 1.001 s; IEP0 at 75.096 s
 
 The frequency and duty are over the whole second, so the PWM channels show the average of their steps: 15 kHz, and 50% on A. B's duty is A's complement less the dead band. SPI7 only moves at startup and for each `spi`, so its channels sit still.
 
+`ai64 la measure` goes into each edge. Its pairs, by default:
+
+```
+  from each change of a, to the nearest change of b       a rises:  min      med      max      a falls:  min      med      max
+  ch7 S0_A -> ch8 S0_B                                      -1048    -1040    -1036             968      988     1024
+  ch8 S0_B -> ch7 S0_A                                      -1024     -988     -968            1036     1040     1048
+  ch9 S1_A -> ch10 S1_B                                     -1044    -1040    -1036             996     1000     1004
+  ch10 S1_B -> ch9 S1_A                                     -1004    -1000     -996            1036     1040     1044
+  ch7 S0_A -> ch13 S0_A                                        -4       -4        4              -8       -4        4
+```
+
+When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, and 968 to 1024 on slice 0, whose PRU writes its pins in software. When A rises, B fell 1040 ns before: the dead band, and the 40 ns A starts into its period. The last line is one signal on both PRUs: they agree to within a few ns.
+
 | Command | What it does |
 | --- | --- |
 | `sudo ai64 la [seconds\|once\|lines]` | the `la` window, every second; once; or a line every 10 s for the merged console |
-| `sudo ai64 la capture <seconds> <file.vcd\|->` | records all 19 channels for that long and writes a VCD file, in ns from the start |
+| `sudo ai64 la capture <seconds> <file.vcd\|-> [--trigger]` | records all 19 channels for that long and writes a VCD file, in ns from the start; with `--trigger`, around the next trigger hit |
+| `sudo ai64 la measure [seconds] [a:b ...]` | each channel's edges, frequency, period and high time (min, median, max), and duty; and for each pair, the time from a's changes to b's nearest, by default the demo's A/B pairs and ch7 against ch13 |
+| `sudo ai64 la trigger off \| <ch> rise\|fall\|any \| <ch>=0\|1 ...` | sets the Tx_PRUs' trigger |
+| `sudo ai64 la mark <value>` | puts a mark in the stream, through the fabric to RTU0 |
 | `sudo ai64 la quiet` | stops IEP0 and every task, before ICSSG1's cores stop; `ai64-demo` runs it |
 
 `ai64-demo --icssg1 scheduler` runs TI's multicore scheduler on ICSSG1 instead ([extra-demos/](../../extra-demos/README.md)), and `--icssg1 off` leaves ICSSG1 stopped.

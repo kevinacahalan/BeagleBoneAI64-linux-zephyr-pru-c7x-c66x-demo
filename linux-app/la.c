@@ -6,9 +6,28 @@
  *   interval (1 s), and each PRU's totals. lines prints one line every
  *   10 s, for the merged console.
  *
- * ai64 la capture <seconds> <file.vcd|->
+ * ai64 la capture <seconds> <file.vcd|-> [--trigger]
  *   Records all 19 channels for that long and writes a VCD file, for
- *   PulseView or GTKWave, in nanoseconds from the start.
+ *   PulseView or GTKWave, in nanoseconds from the start. With --trigger,
+ *   waits for the next trigger hit and records around it, a tenth of the
+ *   time before it, read back from the ring, and the rest after.
+ *
+ * ai64 la trigger off | <ch> rise|fall|any | <ch>=0|1 ...
+ *   Sets the trigger the Tx_PRUs match (ai64_la.h): an edge on a channel,
+ *   or the channels coming to a pattern. A trigger takes the channels of
+ *   one PRU.
+ *
+ * ai64 la measure [seconds] [a:b ...]
+ *   Records for that long (1 s) and prints each channel's edges, frequency,
+ *   and the spread of its periods and high times; then, for each pair a:b
+ *   (the demo's A/B pairs and the two PRUs' copy of one signal if none is
+ *   given), the time from each change of a to b's nearest one.
+ *
+ * ai64 la mark <value>
+ *   Puts a mark with that 16-bit value in the analyzer's stream, through a
+ *   fabric route to ICSSG1 RTU0 (ai64 fabric route g1rtu0 mark <value>);
+ *   any fabric node can send one. A capture shows the marks as a 16-bit
+ *   signal, mark, each value held until the next.
  *
  * ai64 la quiet
  *   Before ICSSG1's cores stop: stops IEP0, zeroes its count, and maps no
@@ -83,9 +102,28 @@ struct stream {
 	uint64_t edges;
 	uint64_t gaps;      /* gap records: the RTU fell behind the PRU */
 	uint64_t missed;    /* records this reader fell a ring behind on */
+	uint64_t marks;
+	uint64_t trigs;
+	uint32_t wr0;       /* wr when the reader started */
+	struct mark *mark;  /* the marks and hits, if keep_marks */
+	size_t nmark, capmark;
+	int keep_marks;
 };
 
 typedef void (*edge_fn)(void *ctx, struct stream *st, uint64_t t, uint32_t state);
+
+/*
+ * A mark or a trigger hit (ai64_la.h): when; for a mark, which fabric node
+ * sent it and its value; for a hit, the PRU's pins after the edge. fresh is
+ * whether it came after the reader started (not from the ring's history).
+ */
+struct mark {
+	uint64_t t;
+	uint32_t trig;
+	uint32_t from;
+	uint32_t value;
+	uint32_t fresh;
+};
 
 static int la_map(void)
 {
@@ -118,11 +156,52 @@ static void stream_init(struct stream *st, int s)
 	st->h = &la->s[s];
 	st->ring = rings + (AI64_LA_RING_ADDR(s) - AI64_LA_RES_ADDR) / 4u;
 	st->rd = st->h->wr;
+	st->wr0 = st->rd;
 }
 
-static inline uint32_t ring_word(const struct stream *st, uint32_t at)
+static void keep_mark(struct stream *st, uint64_t t, uint32_t trig, uint32_t v)
 {
-	return st->ring[(at & (AI64_LA_RING_SIZE - 1u)) / 4u];
+	if (st->nmark == st->capmark) {
+		st->capmark = st->capmark ? st->capmark * 2 : 64;
+		st->mark = realloc(st->mark, st->capmark * sizeof(*st->mark));
+		if (!st->mark) {
+			fprintf(stderr, "out of memory\n");
+			exit(1);
+		}
+	}
+	st->mark[st->nmark].t = t;
+	st->mark[st->nmark].trig = trig;
+	st->mark[st->nmark].from = trig ? 0 : (v >> 16) & 0xffu;
+	st->mark[st->nmark].value = trig ? v & 0xffffffu : v & 0xffffu;
+	st->mark[st->nmark++].fresh = (int32_t)(st->rd - st->wr0) >= 0;
+}
+
+/*
+ * The part of a ring being decoded, copied out of DDR 64 bytes at a time.
+ * Linux maps the rings uncached, and an uncached load costs about the same,
+ * some 190 ns, whatever its size: 64-byte loads read about 266 MB/s, a word
+ * at a time 21 MB/s, too slow for both PRUs at full rate.
+ */
+#define CHUNK 65536u
+static uint32_t chunk[CHUNK / 4u] __attribute__((aligned(64)));
+
+static void copy_blocks(const struct stream *st, uint32_t from, uint32_t to)
+{
+	uint32_t at;
+
+	for (at = from; at != to; at += 64u) {
+		const volatile uint32_t *src = st->ring + (at & (AI64_LA_RING_SIZE - 1u)) / 4u;
+		uint32_t *dst = chunk + (at - from) / 4u;
+#ifdef __aarch64__
+		__asm__ volatile("ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%0]\n\t"
+				 "st1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%1]"
+				 : : "r"(src), "r"(dst) : "v0", "v1", "v2", "v3", "memory");
+#else
+		for (int i = 0; i < 16; i++) {
+			dst[i] = src[i];
+		}
+#endif
+	}
 }
 
 /*
@@ -139,37 +218,65 @@ static void stream_poll(struct stream *st, edge_fn fn, void *ctx)
 		st->ticked = 0;
 	}
 	while (wr - st->rd >= AI64_LA_REC_SIZE) {
-		uint32_t t = ring_word(st, st->rd), v = ring_word(st, st->rd + 4u);
-		uint64_t at = st->base + (uint64_t)(int64_t)(int32_t)(t - (uint32_t)st->base);
+		uint32_t from = st->rd & ~63u, to = (wr + 63u) & ~63u, end, was = st->rd;
 
-		switch (AI64_LA_TYPE(v)) {
-		case AI64_LA_TICK: {
-			uint32_t hi = ring_word(st, st->rd + 12u);
+		if (to - from > CHUNK) {
+			to = from + CHUNK;
+		}
+		end = wr - from < to - from ? wr : to;
+		copy_blocks(st, from, to);
+		while (end - st->rd >= AI64_LA_REC_SIZE) {
+			uint32_t t = chunk[(st->rd - from) / 4u], v = chunk[(st->rd - from) / 4u + 1u];
+			uint64_t at = st->base + (uint64_t)(int64_t)(int32_t)(t - (uint32_t)st->base);
 
-			st->base = (uint64_t)(hi & 0xffffu) << 32 | t;
-			if (!st->ticked) {
-				st->ticked = 1;
-				st->state = v & 0xffffffu;
-				if (!st->first) {
-					st->first = st->base;
-					st->first_state = st->state;
+			switch (AI64_LA_TYPE(v)) {
+			case AI64_LA_TICK: {
+				uint32_t hi;
+
+				if (end - st->rd < 2u * AI64_LA_REC_SIZE) {
+					goto next; /* its second record is past this chunk */
 				}
+				hi = chunk[(st->rd - from) / 4u + 3u];
+				st->base = (uint64_t)(hi & 0xffffu) << 32 | t;
+				if (!st->ticked) {
+					st->ticked = 1;
+					st->state = v & 0xffffffu;
+					if (!st->first) {
+						st->first = st->base;
+						st->first_state = st->state;
+					}
+				}
+				st->rd += 2u * AI64_LA_REC_SIZE;
+				continue;
 			}
-			st->rd += 2u * AI64_LA_REC_SIZE;
-			continue;
-		}
-		case AI64_LA_GAP:
-			st->gaps++;
-			break;
-		default:
-			if (st->ticked) {
-				st->state = v;
-				st->edges++;
-				fn(ctx, st, at, v);
+			case AI64_LA_GAP:
+				st->gaps++;
+				break;
+			case AI64_LA_MARK:
+			case AI64_LA_TRIG:
+				if (AI64_LA_TYPE(v) == AI64_LA_TRIG) {
+					st->trigs++;
+				} else {
+					st->marks++;
+				}
+				if (st->keep_marks && st->ticked) {
+					keep_mark(st, at, AI64_LA_TYPE(v) == AI64_LA_TRIG, v);
+				}
+				break;
+			default:
+				if (st->ticked) {
+					st->state = v;
+					st->edges++;
+					fn(ctx, st, at, v);
+				}
+				break;
 			}
+			st->rd += AI64_LA_REC_SIZE;
+		}
+next:
+		if (st->rd == was) {
 			break;
 		}
-		st->rd += AI64_LA_REC_SIZE;
 	}
 }
 
@@ -319,10 +426,11 @@ static int view_main(int argc, char **argv)
 			       t1 / 1e9);
 			for (s = 0; s < 2; s++) {
 				printf("  PRU%d %9.0f edges/s, %llu in all; RTU%d gaps %u (%u records), "
-				       "reader missed %llu\n",
+				       "reader missed %llu, marks %llu, trigger hits %llu\n",
 				       s, (st[s].edges - prev_edges[s]) * 1e9 / span,
 				       (unsigned long long)st[s].edges, s, st[s].h->gaps, st[s].h->lost,
-				       (unsigned long long)st[s].missed);
+				       (unsigned long long)st[s].missed, (unsigned long long)st[s].marks,
+				       (unsigned long long)st[s].trigs);
 			}
 			printf("\n  ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty\n");
 			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
@@ -398,50 +506,195 @@ static void vcd_name(char *buf, size_t len, int c)
 		 wired[c].name ? wired[c].name : "");
 }
 
-static int capture_main(int argc, char **argv)
-{
+/*
+ * A recording: both streams' edges over a span both cover, from the later
+ * first tick to the earlier last one, and every pin's state at its start.
+ * rec_next() hands the edges back merged by time.
+ */
+struct recording {
 	struct stream st[2];
-	struct events ev[2] = { { 0 } };
+	struct events ev[2];
 	uint32_t state[2];
 	uint64_t begin, finish;
-	size_t i[2] = { 0, 0 };
-	double secs, start;
-	FILE *f;
-	time_t now;
-	int s, c;
+	uint64_t hit;       /* the trigger hit it was taken around, or 0 */
+	size_t i[2];
+};
 
-	if (argc != 5 || (secs = atof(argv[3])) <= 0) {
-		fprintf(stderr, "usage: %s la capture <seconds> <file.vcd|->\n", argv[0]);
-		return 2;
+/* The first trigger hit since the reader started, or 0. */
+static uint64_t first_fresh_trig(struct recording *r)
+{
+	uint64_t t = 0;
+	size_t i;
+	int s;
+
+	for (s = 0; s < 2; s++) {
+		for (i = 0; i < r->st[s].nmark; i++) {
+			struct mark *m = &r->st[s].mark[i];
+
+			if (m->trig && m->fresh && (!t || m->t < t)) {
+				t = m->t;
+				break;
+			}
+		}
 	}
+	return t;
+}
+
+/*
+ * secs of both streams from now; or, with trigger, around the next trigger
+ * hit: a tenth of secs before it, from the ring's history, and the rest
+ * after. A trigger recording starts HISTORY_BYTES back in each ring, about
+ * 5 s of the demo's signals on PRU1.
+ */
+#define HISTORY_BYTES (8u << 20)
+
+static int record(struct recording *r, double secs, int trigger)
+{
+	double start;
+	uint64_t hit = 0;
+	int s;
+
+	memset(r, 0, sizeof(*r));
 	if (la_map()) {
-		return 1;
+		return -1;
 	}
 	for (s = 0; s < 2; s++) {
-		stream_init(&st[s], s);
+		stream_init(&r->st[s], s);
+		r->st[s].keep_marks = 1;
+		if (trigger) {
+			/* Back into the ring for the time before the hit, but no further
+			 * than the RTU has written since it started (wr counts from 0). */
+			uint32_t back = r->st[s].rd < HISTORY_BYTES ? r->st[s].rd : HISTORY_BYTES;
+
+			r->st[s].rd -= back & ~(AI64_LA_REC_SIZE - 1u);
+		}
 	}
-	if (wait_ticks(st, keep_edge, ev)) {
-		return 1;
+	if (wait_ticks(r->st, keep_edge, r->ev)) {
+		return -1;
 	}
 	start = now_us();
-	while (now_us() - start < secs * 1e6) {
+	for (;;) {
 		for (s = 0; s < 2; s++) {
-			stream_poll(&st[s], keep_edge, ev);
+			stream_poll(&r->st[s], keep_edge, r->ev);
+		}
+		if (!trigger) {
+			if (now_us() - start >= secs * 1e6) {
+				break;
+			}
+		} else if (!hit) {
+			hit = first_fresh_trig(r);
+			if (!hit && now_us() - start > 30e6) {
+				fprintf(stderr, "no trigger hit in 30 s (ai64 la trigger sets one)\n");
+				return -1;
+			}
+		} else if (r->st[0].base >= hit + (uint64_t)(secs * 0.9e9) &&
+			   r->st[1].base >= hit + (uint64_t)(secs * 0.9e9)) {
+			break;
 		}
 		usleep(2000);
 	}
 	for (s = 0; s < 2; s++) {
-		stream_poll(&st[s], keep_edge, ev);
-		if (st[s].missed || st[s].gaps) {
+		stream_poll(&r->st[s], keep_edge, r->ev);
+		if (r->st[s].missed || r->st[s].gaps) {
 			fprintf(stderr, "PRU%d: %llu records missed here, %llu gaps in the stream: "
-				"the capture has holes\n", s, (unsigned long long)st[s].missed,
-				(unsigned long long)st[s].gaps);
+				"the recording has holes\n", s, (unsigned long long)r->st[s].missed,
+				(unsigned long long)r->st[s].gaps);
 		}
 	}
-	/* The span both streams cover, from the later first tick to the earlier last one. */
-	begin = st[0].first > st[1].first ? st[0].first : st[1].first;
-	finish = st[0].base < st[1].base ? st[0].base : st[1].base;
+	r->begin = r->st[0].first > r->st[1].first ? r->st[0].first : r->st[1].first;
+	r->finish = r->st[0].base < r->st[1].base ? r->st[0].base : r->st[1].base;
+	if (hit) {
+		uint64_t pre = (uint64_t)(secs * 0.1e9), post = (uint64_t)(secs * 0.9e9);
 
+		if (hit - r->begin > pre) {
+			r->begin = hit - pre;
+		}
+		if (r->finish > hit + post) {
+			r->finish = hit + post;
+		}
+		r->hit = hit;
+	}
+	/* Each stream's state at begin: its first tick's, then its edges before begin. */
+	for (s = 0; s < 2; s++) {
+		r->state[s] = r->st[s].first_state;
+		while (r->i[s] < r->ev[s].n && r->ev[s].e[r->i[s]].t <= r->begin) {
+			r->state[s] = r->ev[s].e[r->i[s]++].state;
+		}
+	}
+	return 0;
+}
+
+/* The next edge in time, up to finish: its time, and the state before it in was. */
+static int rec_next(struct recording *r, uint64_t *t, uint32_t was[2])
+{
+	int a = r->i[0] < r->ev[0].n && r->ev[0].e[r->i[0]].t <= r->finish;
+	int b = r->i[1] < r->ev[1].n && r->ev[1].e[r->i[1]].t <= r->finish;
+	int s;
+
+	if (!a && !b) {
+		return 0;
+	}
+	was[0] = r->state[0];
+	was[1] = r->state[1];
+	s = a && (!b || r->ev[0].e[r->i[0]].t <= r->ev[1].e[r->i[1]].t) ? 0 : 1;
+	*t = r->ev[s].e[r->i[s]].t;
+	r->state[s] = r->ev[s].e[r->i[s]++].state;
+	return 1;
+}
+
+static void rec_free(struct recording *r)
+{
+	free(r->ev[0].e);
+	free(r->ev[1].e);
+	free(r->st[0].mark);
+	free(r->st[1].mark);
+}
+
+/* Both streams' marks in [begin, finish], merged by time, into *out; how many. */
+static size_t rec_marks(struct recording *r, struct mark **out)
+{
+	size_t n = 0, i = 0, j = 0;
+	struct mark *m = malloc((r->st[0].nmark + r->st[1].nmark + 1) * sizeof(*m));
+
+	if (!m) {
+		fprintf(stderr, "out of memory\n");
+		exit(1);
+	}
+	while (i < r->st[0].nmark || j < r->st[1].nmark) {
+		struct mark *a = i < r->st[0].nmark ? &r->st[0].mark[i] : NULL;
+		struct mark *b = j < r->st[1].nmark ? &r->st[1].mark[j] : NULL;
+		struct mark *k = a && (!b || a->t <= b->t) ? (i++, a) : (j++, b);
+
+		if (k->t >= r->begin && k->t <= r->finish) {
+			m[n++] = *k;
+		}
+	}
+	*out = m;
+	return n;
+}
+
+static int capture_main(int argc, char **argv)
+{
+	static struct recording r;
+	struct mark *mk;
+	size_t nmk, im = 0;
+	int ntrig = 0;
+	size_t nedge[2] = { 0, 0 };
+	uint32_t was[2];
+	uint64_t t;
+	double secs;
+	FILE *f;
+	time_t now;
+	int c;
+
+	if ((argc != 5 && (argc != 6 || strcmp(argv[5], "--trigger"))) ||
+	    (secs = atof(argv[3])) <= 0) {
+		fprintf(stderr, "usage: %s la capture <seconds> <file.vcd|-> [--trigger]\n", argv[0]);
+		return 2;
+	}
+	if (record(&r, secs, argc == 6)) {
+		return 1;
+	}
 	f = strcmp(argv[4], "-") ? fopen(argv[4], "w") : stdout;
 	if (!f) {
 		perror(argv[4]);
@@ -450,56 +703,273 @@ static int capture_main(int argc, char **argv)
 	now = time(NULL);
 	fprintf(f, "$date %s$end\n$version ai64 la, ICSSG1 IEP0 at %llu ns $end\n"
 		"$timescale 1 ns $end\n$scope module la $end\n", ctime(&now),
-		(unsigned long long)begin);
+		(unsigned long long)r.begin);
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		char name[48];
 
 		vcd_name(name, sizeof(name), c);
 		fprintf(f, "$var wire 1 %c %s $end\n", '!' + c, name);
 	}
-	fprintf(f, "$upscope $end\n$enddefinitions $end\n");
-
-	/* Each stream's state at begin: its first tick's, then its edges before begin. */
-	for (s = 0; s < 2; s++) {
-		state[s] = st[s].first_state;
-		while (i[s] < ev[s].n && ev[s].e[i[s]].t <= begin) {
-			state[s] = ev[s].e[i[s]++].state;
-		}
-	}
-	fprintf(f, "#0\n$dumpvars\n");
+	/* The marks (ai64 la mark): each holds its value until the next; trig
+	 * changes at each trigger hit. */
+	fprintf(f, "$var wire 16 ~ mark $end\n$var wire 1 } trig $end\n");
+	fprintf(f, "$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n");
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		fprintf(f, "%d%c\n", level(state, c), '!' + c);
+		fprintf(f, "%d%c\n", level(r.state, c), '!' + c);
 	}
-	fprintf(f, "$end\n");
-
+	fprintf(f, "b0 ~\n0}\n$end\n");
+	nmk = rec_marks(&r, &mk);
 	for (;;) {
-		uint32_t was[2] = { state[0], state[1] };
-		int a = i[0] < ev[0].n && ev[0].e[i[0]].t <= finish;
-		int b = i[1] < ev[1].n && ev[1].e[i[1]].t <= finish;
-		uint64_t t;
+		int edge = rec_next(&r, &t, was);
 
-		if (!a && !b) {
+		/* The marks up to this edge, or all that are left after the last. */
+		while (im < nmk && (!edge || mk[im].t <= t)) {
+			if (mk[im].trig) {
+				ntrig++;
+				fprintf(f, "#%llu\n$comment trigger hit%s $end\n%d}\n",
+					(unsigned long long)(mk[im].t - r.begin),
+					mk[im].t == r.hit ? ", the one the capture is around" : "",
+					ntrig & 1);
+				im++;
+				continue;
+			}
+			fprintf(f, "#%llu\n$comment mark %u from fabric node %u $end\nb",
+				(unsigned long long)(mk[im].t - r.begin), mk[im].value, mk[im].from);
+			for (c = 15; c >= 0; c--) {
+				fputc('0' + (mk[im].value >> c & 1u), f);
+			}
+			fprintf(f, " ~\n");
+			im++;
+		}
+		if (!edge) {
 			break;
 		}
-		s = a && (!b || ev[0].e[i[0]].t <= ev[1].e[i[1]].t) ? 0 : 1;
-		t = ev[s].e[i[s]].t;
-		state[s] = ev[s].e[i[s]++].state;
-		fprintf(f, "#%llu\n", (unsigned long long)(t - begin));
+		fprintf(f, "#%llu\n", (unsigned long long)(t - r.begin));
+		nedge[r.state[0] != was[0] ? 0 : 1]++;
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			if (level(state, c) != level(was, c)) {
-				fprintf(f, "%d%c\n", level(state, c), '!' + c);
+			if (level(r.state, c) != level(was, c)) {
+				fprintf(f, "%d%c\n", level(r.state, c), '!' + c);
 			}
 		}
 	}
-	fprintf(f, "#%llu\n", (unsigned long long)(finish - begin));
+	fprintf(f, "#%llu\n", (unsigned long long)(r.finish - r.begin));
 	if (f != stdout) {
 		fclose(f);
 	}
-	fprintf(stderr, "%.6f s of 19 channels: PRU0 %zu edges, PRU1 %zu edges%s%s\n",
-		(finish - begin) / 1e9, i[0], i[1], f != stdout ? ", in " : "",
-		f != stdout ? argv[4] : "");
-	free(ev[0].e);
-	free(ev[1].e);
+	fprintf(stderr, "%.6f s of 19 channels%s: PRU0 %zu edges, PRU1 %zu edges, %zu marks "
+		"and trigger hits%s%s\n", (r.finish - r.begin) / 1e9,
+		r.hit ? ", from a tenth before the trigger hit" : "", nedge[0], nedge[1], nmk,
+		f != stdout ? ", in " : "", f != stdout ? argv[4] : "");
+	free(mk);
+	rec_free(&r);
+	return 0;
+}
+
+/* ---- measure ---- */
+
+/* One channel's changes: times, and the level after each. */
+struct changes {
+	uint64_t *t;
+	uint8_t *up;
+	size_t n, cap;
+};
+
+static void changes_add(struct changes *ch, uint64_t t, int up)
+{
+	if (ch->n == ch->cap) {
+		ch->cap = ch->cap ? ch->cap * 2 : 4096;
+		ch->t = realloc(ch->t, ch->cap * sizeof(*ch->t));
+		ch->up = realloc(ch->up, ch->cap);
+		if (!ch->t || !ch->up) {
+			fprintf(stderr, "out of memory\n");
+			exit(1);
+		}
+	}
+	ch->t[ch->n] = t;
+	ch->up[ch->n++] = (uint8_t)up;
+}
+
+static int cmp_i64(const void *a, const void *b)
+{
+	int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* min, median, and max of v[0..n), sorted in place, printed as "min med max". */
+static void spread(char *buf, size_t len, int64_t *v, size_t n)
+{
+	if (!n) {
+		snprintf(buf, len, "%26s", "-");
+		return;
+	}
+	qsort(v, n, sizeof(*v), cmp_i64);
+	snprintf(buf, len, "%8lld %8lld %8lld", (long long)v[0], (long long)v[n / 2],
+		 (long long)v[n - 1]);
+}
+
+/* For each change of a that goes up (or down), the signed time to b's nearest change. */
+static size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out)
+{
+	size_t i, j = 0, n = 0;
+
+	if (!b->n) {
+		return 0;
+	}
+	for (i = 0; i < a->n; i++) {
+		int64_t best;
+
+		if (a->up[i] != up) {
+			continue;
+		}
+		while (j + 1 < b->n && b->t[j + 1] <= a->t[i]) {
+			j++;
+		}
+		best = (int64_t)(b->t[j] - a->t[i]);
+		if (j + 1 < b->n && llabs((int64_t)(b->t[j + 1] - a->t[i])) < llabs(best)) {
+			best = (int64_t)(b->t[j + 1] - a->t[i]);
+		}
+		out[n++] = best;
+	}
+	return n;
+}
+
+static const char *chan_name(int c)
+{
+	return wired[c].name ? wired[c].name : chans[c].pin;
+}
+
+static int measure_main(int argc, char **argv)
+{
+	static struct recording r;
+	static const int demo_pairs[][2] = { { 7, 8 }, { 8, 7 }, { 9, 10 }, { 10, 9 }, { 7, 13 } };
+	struct changes ch[AI64_LA_NCHAN] = { { 0 } };
+	int pairs[16][2], npairs = 0;
+	uint32_t was[2];
+	uint64_t t, span;
+	double secs = 1;
+	int64_t *v;
+	size_t vcap = 0;
+	int c, k, argi = 3;
+
+	if (argc > 3 && strchr(argv[3], ':') == NULL) {
+		secs = atof(argv[3]);
+		argi = 4;
+	}
+	for (; argi < argc && npairs < 16; argi++) {
+		if (sscanf(argv[argi], "%d:%d", &pairs[npairs][0], &pairs[npairs][1]) != 2 ||
+		    pairs[npairs][0] < 0 || pairs[npairs][0] >= (int)AI64_LA_NCHAN ||
+		    pairs[npairs][1] < 0 || pairs[npairs][1] >= (int)AI64_LA_NCHAN) {
+			secs = 0;
+			break;
+		}
+		npairs++;
+	}
+	if (secs <= 0) {
+		fprintf(stderr, "usage: %s la measure [seconds] [a:b ...]\n", argv[0]);
+		return 2;
+	}
+	if (!npairs) {
+		for (k = 0; k < (int)(sizeof(demo_pairs) / sizeof(demo_pairs[0])); k++) {
+			pairs[npairs][0] = demo_pairs[k][0];
+			pairs[npairs++][1] = demo_pairs[k][1];
+		}
+	}
+	if (record(&r, secs, 0)) {
+		return 1;
+	}
+	{
+		uint32_t start[2] = { r.state[0], r.state[1] };
+
+		while (rec_next(&r, &t, was)) {
+			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+				if (level(r.state, c) != level(was, c)) {
+					changes_add(&ch[c], t, level(r.state, c));
+				}
+			}
+		}
+		r.state[0] = start[0];
+		r.state[1] = start[1];
+	}
+	span = r.finish - r.begin;
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (ch[c].n > vcap) {
+			vcap = ch[c].n;
+		}
+	}
+	v = malloc((vcap + 1) * sizeof(*v));
+	if (!v) {
+		fprintf(stderr, "out of memory\n");
+		return 1;
+	}
+
+	printf("ICSSG1 logic analyzer, %.6f s measured; times in ns\n\n", span / 1e9);
+	printf("  ch  pin    wired to          edges   frequency    period  min      med      max"
+	       "    high  min      med      max    duty\n");
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		char hz[24], per[40], high[40], from[24];
+		uint64_t hi_ns = 0, last = r.begin;
+		size_t i, np = 0, nh = 0, rises = 0;
+		int lv = level(r.state, c);
+
+		for (i = 0; i < ch[c].n; i++) {
+			if (lv) {
+				hi_ns += ch[c].t[i] - last;
+			}
+			last = ch[c].t[i];
+			lv = ch[c].up[i];
+			rises += lv;
+		}
+		if (lv) {
+			hi_ns += r.finish - last;
+		}
+		/* Periods, rise to rise; then high times, rise to the next fall. */
+		for (i = 0; i < ch[c].n; i++) {
+			size_t j;
+
+			if (!ch[c].up[i]) {
+				continue;
+			}
+			for (j = i + 1; j < ch[c].n && ch[c].up[j]; j++) {
+			}
+			if (j + 1 < ch[c].n) {
+				v[np++] = (int64_t)(ch[c].t[j + 1] - ch[c].t[i]);
+			}
+		}
+		spread(per, sizeof(per), v, np);
+		for (i = 0; i + 1 < ch[c].n; i++) {
+			if (ch[c].up[i] && !ch[c].up[i + 1]) {
+				v[nh++] = (int64_t)(ch[c].t[i + 1] - ch[c].t[i]);
+			}
+		}
+		spread(high, sizeof(high), v, nh);
+		fmt_hz(hz, sizeof(hz), rises * 1e9 / span);
+		snprintf(from, sizeof(from), "%s%s%s", wired[c].name ? wired[c].name : "-",
+			 wired[c].from ? " " : "", wired[c].from ? wired[c].from : "");
+		printf("  %2d  %-5s  %-16s %7zu  %s  %s  %s  %5.1f%%\n", c, chans[c].pin, from,
+		       ch[c].n, hz, per, high, 100.0 * hi_ns / span);
+	}
+
+	printf("\n  from each change of a, to the nearest change of b       a rises:  min      med      max"
+	       "      a falls:  min      med      max\n");
+	for (k = 0; k < npairs; k++) {
+		int a = pairs[k][0], b = pairs[k][1];
+		char up[40], down[40], label[48];
+		size_t n;
+
+		n = nearest(&ch[a], &ch[b], 1, v);
+		spread(up, sizeof(up), v, n);
+		n = nearest(&ch[a], &ch[b], 0, v);
+		spread(down, sizeof(down), v, n);
+		snprintf(label, sizeof(label), "ch%d %s -> ch%d %s", a, chan_name(a), b, chan_name(b));
+		printf("  %-54s %s        %s\n", label, up, down);
+	}
+	free(v);
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		free(ch[c].t);
+		free(ch[c].up);
+	}
+	rec_free(&r);
 	return 0;
 }
 
@@ -528,6 +998,100 @@ static int quiet_main(void)
 	return 0;
 }
 
+/*
+ * ai64 la trigger off | <ch> rise|fall|any | <ch>=0|1 ...: the trigger, on
+ * the PRU those channels belong to, set in that stream's header for its
+ * RTU to pass to the Tx_PRU; the other PRU's goes off.
+ */
+static int trigger_main(int argc, char **argv)
+{
+	uint32_t mode = AI64_LA_TRIG_OFF, mask = 0, value = 0;
+	int pru = -1, i, s;
+
+	if (argc < 4) {
+		goto usage;
+	}
+	if (strcmp(argv[3], "off")) {
+		int c;
+		char edge[8];
+
+		if (argc == 5 && sscanf(argv[3], "%d", &c) == 1 && !strchr(argv[3], '=')) {
+			snprintf(edge, sizeof(edge), "%s", argv[4]);
+			if (c < 0 || c >= (int)AI64_LA_NCHAN) {
+				goto usage;
+			}
+			pru = chans[c].pru;
+			mask = 1u << chans[c].bit;
+			if (!strcmp(edge, "rise")) {
+				mode = AI64_LA_TRIG_ENTER;
+				value = mask;
+			} else if (!strcmp(edge, "fall")) {
+				mode = AI64_LA_TRIG_ENTER;
+			} else if (!strcmp(edge, "any")) {
+				mode = AI64_LA_TRIG_ANY;
+			} else {
+				goto usage;
+			}
+		} else {
+			mode = AI64_LA_TRIG_ENTER;
+			for (i = 3; i < argc; i++) {
+				int lv;
+
+				if (sscanf(argv[i], "%d=%d", &c, &lv) != 2 || c < 0 ||
+				    c >= (int)AI64_LA_NCHAN || (lv != 0 && lv != 1)) {
+					goto usage;
+				}
+				if (pru >= 0 && chans[c].pru != pru) {
+					fprintf(stderr, "ch%d is on PRU%d, the others on PRU%d: a trigger "
+						"takes one PRU's channels (pru/logic_analyzer/README.md)\n",
+						c, chans[c].pru, pru);
+					return 2;
+				}
+				pru = chans[c].pru;
+				mask |= 1u << chans[c].bit;
+				value |= (uint32_t)lv << chans[c].bit;
+			}
+		}
+	} else if (argc != 4) {
+		goto usage;
+	}
+	if (la_map()) {
+		return 1;
+	}
+	for (s = 0; s < 2; s++) {
+		volatile struct ai64_la_stream *h = &la->s[s];
+
+		h->trig_mode = s == pru ? mode : AI64_LA_TRIG_OFF;
+		h->trig_mask = s == pru ? mask : 0;
+		h->trig_value = s == pru ? value : 0;
+		__sync_synchronize();
+		h->trig_seq++;
+	}
+	if (mode == AI64_LA_TRIG_OFF) {
+		printf("trigger off\n");
+	} else {
+		printf("trigger on PRU%d: %s, pins mask 0x%05x value 0x%05x; Tx_PRU%d matches it\n",
+		       pru, mode == AI64_LA_TRIG_ANY ? "any change" : "the pins come to value",
+		       mask, value, pru);
+	}
+	return 0;
+usage:
+	fprintf(stderr, "usage: %s la trigger off | <ch> rise|fall|any | <ch>=0|1 ...\n", argv[0]);
+	return 2;
+}
+
+/* A mark in the analyzer's stream: a fabric route from Linux to ICSSG1 RTU0. */
+static int mark_main(int argc, char **argv)
+{
+	char *av[] = { argv[0], "fabric", "route", "g1rtu0", "mark", argv[3], NULL };
+
+	if (argc != 4) {
+		fprintf(stderr, "usage: %s la mark <value>\n", argv[0]);
+		return 2;
+	}
+	return fabric_main(6, av);
+}
+
 int la_main(int argc, char **argv)
 {
 	if (argc == 3 && !strcmp(argv[2], "quiet")) {
@@ -535,6 +1099,15 @@ int la_main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "capture")) {
 		return capture_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "trigger")) {
+		return trigger_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "mark")) {
+		return mark_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "measure")) {
+		return measure_main(argc, argv);
 	}
 	return view_main(argc, argv);
 }

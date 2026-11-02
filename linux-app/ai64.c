@@ -22,7 +22,10 @@ static const struct {
 	{ "pwm", pwm_main, "pwm [seconds|once]        the four PWM generators (the pwm window)" },
 	{ "la", la_main,
 	  "la [seconds|once|lines]   ICSSG1's logic analyzer: every channel (the la window)\n"
-	  "  la capture <seconds> <file.vcd|->  record all 19 channels to a VCD file" },
+	  "  la capture <seconds> <file.vcd|-> [--trigger]  record all 19 channels to a VCD file\n"
+	  "  la trigger off | <ch> rise|fall|any | <ch>=0|1 ...  set the Tx_PRUs' trigger\n"
+	  "  la measure [seconds] [a:b ...]  each channel's periods and high times, and a to b timing\n"
+	  "  la mark <value>           a mark in the analyzer's stream, through the fabric" },
 	{ "sched", sched_main, "sched [seconds|once]      ICSSG1's multicore scheduler, with --icssg1 scheduler" },
 	{ "pads", pads_main, "pads                      check the pin mux of every demo pin" },
 	{ "cores", cores_main, "cores                     every demo core: its remoteproc, firmware, node" },

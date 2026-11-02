@@ -15,11 +15,16 @@
  *   0x10000  PRU0's ring  16 KiB, 2048 records
  *   0x14000  PRU1's ring  16 KiB
  *   0x18000  PRU0's write count, then PRU1's at 0x18040
+ *   0x18080  slice 0's trigger, as the RTU passes it on; slice 1's at 0x180c0
+ *   0x18100  slice 0's trigger hits: a write count, then a ring of 64; slice
+ *            1's at 0x18400
  *
  * A ring's write count is the bytes its PRU has written since it started,
  * free-running. The PRU writes the record first and the count after it, and
  * never looks at its RTU: an RTU more than a ring behind finds the count
- * past it, and skips to it (a gap record, ai64_la.h).
+ * past it, and skips to it (a gap record, ai64_la.h). The Tx_PRU reads the
+ * same ring, as fast as the records come, to match the trigger; it writes
+ * each hit, time and state, into its hit ring for the RTU.
  *
  * ICSSG1's task managers and IEP0 keep their setup when its cores stop: the
  * multicore scheduler (extra-demos/) leaves IEP0 firing a compare every
@@ -44,5 +49,8 @@
 #define LA_SRING(s)        (0x00010000 + (s) * 0x4000)
 #define LA_SRING_SIZE      0x00004000
 #define LA_SCTL(s)         (0x00018000 + (s) * 0x40)
+#define LA_TRIG(s)         (0x00018080 + (s) * 0x40)
+#define LA_HITS(s)         (0x00018100 + (s) * 0x300)
+#define LA_HIT_RING        64
 
 #endif

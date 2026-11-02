@@ -108,7 +108,7 @@ check_demo() {
 
 	# The fabric, from its window: Linux can be node 0 only once.
 	fabric=$(tmux capture-pane -p -J -t ai64:fabric 2>/dev/null)
-	echo "$fabric" | grep -q -E 'and the 10 counts sum to' &&
+	echo "$fabric" | grep -q -E 'and the 12 counts sum to' &&
 		ok "the fabric's spinlock tally agrees" || bad "the fabric's tally: $(echo "$fabric" | grep tally)"
 	n=$(echo "$fabric" | awk '$1 ~ /^(linux|r5f|c66x|c7x|g0rtu)/ && NF >= 10 && $3 ~ /^[0-9]+$/ { s += $9 + $10 } END { print s + 0 }')
 	[ "$n" -eq 0 ] && ok "no fabric timeouts or errors in the last second" || bad "$n fabric timeouts or errors in the last second"
@@ -137,6 +137,19 @@ check_demo() {
 		[ -n "$hz" ] && [ "$hz" -ge $lo ] && [ "$hz" -le $hi ] &&
 			ok "the analyzer's ch$c reads $hz Hz" || bad "the analyzer's ch$c reads ${hz:-nothing} Hz, not $lo-$hi"
 	done
+	# Slice 1's dead band, from A falling to B rising: 1000 ns, exact in hardware.
+	n=$("$AI64" la measure 1 9:10 2>&1 | awk '/ch9 S1_A -> ch10 S1_B/ { print $(NF - 1) }')
+	[ -n "$n" ] && [ "$n" -ge 992 ] && [ "$n" -le 1008 ] &&
+		ok "la measure: slice 1's dead band $n ns" || bad "la measure: slice 1's dead band ${n:-not measured} ns"
+	# A trigger on the square wave's rising edge, matched by Tx_PRU0: about 1000 hits a second.
+	"$AI64" la trigger 6 rise >/dev/null
+	n=$("$AI64" la once 2>&1 | awk '/^ +PRU0/ { print $NF }')
+	"$AI64" la trigger off >/dev/null
+	[ -n "$n" ] && [ "$n" -ge 900 ] && [ "$n" -le 1100 ] &&
+		ok "Tx_PRU0's trigger on the square wave: $n hits" || bad "the trigger: ${n:-no} hits, not about 1000"
+	# A mark through the fabric, from Linux to ICSSG1 RTU0, fabric node 10.
+	"$AI64" la mark 1 2>&1 | grep -q 'g1rtu0 marked its stream' &&
+		ok "a mark reached the analyzer's stream through the fabric" || bad "ai64 la mark"
 
 	# The pads, and the web page's server.
 	check "every demo pad is muxed as the overlay and Zephyr ask" "$AI64" pads

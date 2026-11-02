@@ -21,6 +21,21 @@
  *         IEP0's bits 47:32: gtc_hi16 << 16 | iep_hi16
  *   gap   time   IEP0's count when the RTU found it had fallen behind
  *         state  AI64_LA_GAP << 24 | the records it skipped (24 bits)
+ *   mark  time   IEP0's count when the RTU read a fabric route's mark
+ *         state  AI64_LA_MARK << 24 | the route's origin << 16 | its value
+ *   trig  time   the time of the edge that met the trigger
+ *         state  AI64_LA_TRIG << 24 | the PRU's pins after that edge
+ *
+ * Any fabric node can mark the timeline: a route with the mark action to
+ * ICSSG1 RTU0 or RTU1 (AI64_FAB_ACT_MARK) puts a mark in that RTU's stream,
+ * so a capture shows when a core did something, next to the pins.
+ *
+ * Each slice's Tx_PRU reads its PRU's edge records as they come and
+ * matches a trigger on that PRU's pins: an edge (AI64_LA_TRIG_ANY: any
+ * change of a masked pin), or a pattern (AI64_LA_TRIG_ENTER: the masked
+ * pins come to value, from any other state). Linux sets it in the stream's
+ * header, and the RTU passes it to the Tx_PRU, which writes each hit for
+ * the RTU to put in the stream as a trig record.
  *
  * IEP0 counts nanoseconds on the 250 MHz core clock, from when RTU0 starts.
  * An edge's 32 bits are a time within about 2 s of its stream's last tick.
@@ -43,6 +58,12 @@
 #define AI64_LA_REC_SIZE   8u
 #define AI64_LA_TICK       0x80u
 #define AI64_LA_GAP        0x81u
+#define AI64_LA_MARK       0x82u
+#define AI64_LA_TRIG       0x83u
+
+#define AI64_LA_TRIG_OFF   0u
+#define AI64_LA_TRIG_ENTER 1u /* (state & mask) becomes value */
+#define AI64_LA_TRIG_ANY   2u /* any pin in mask changes */
 #define AI64_LA_TYPE(state) ((state) >> 24)
 #define AI64_LA_TICK_GTC   (200000000u / 1000u) /* a tick each ms, in GTC counts */
 
@@ -58,7 +79,30 @@ struct ai64_la_stream {
 	uint32_t mask;      /* the PRU's GPI pins */
 	uint32_t ring;      /* the ring's SoC address */
 	uint32_t ring_size;
-	uint32_t pad[6];
+	uint32_t marks;     /* mark records */
+	/* The trigger: Linux writes mode, mask, and value, then bumps seq. */
+	uint32_t trig_mode;
+	uint32_t trig_mask;
+	uint32_t trig_value;
+	uint32_t trig_seq;
+	uint32_t trigs;     /* trig records, written by the RTU */
+};
+
+/*
+ * What each analyzer RTU publishes in the app block of its fabric page
+ * (ai64_fabric.h), for any core to read, every 10 ms.
+ */
+struct ai64_la_status {
+	uint32_t magic;     /* AI64_LA_MAGIC */
+	uint32_t edges;
+	uint32_t gaps;
+	uint32_t lost;
+	uint32_t marks;
+	uint32_t state;     /* the PRU's pins, as it last saw them */
+	uint32_t mask;
+	uint32_t ticks;
+	uint32_t trigs;
+	uint32_t pad[7];
 };
 
 struct ai64_la {

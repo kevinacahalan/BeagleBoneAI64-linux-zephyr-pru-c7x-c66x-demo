@@ -8,6 +8,15 @@
  *
  * RTU0 also starts IEP0, the analyzer's clock, before either PRU runs:
  * nanoseconds on the 250 MHz core clock, with no compare resetting it.
+ *
+ * Each RTU is a fabric node too (ai64_fabric.h), RTU0 node 10 and RTU1
+ * node 11: it answers pings, adds to the tally, publishes its stream's
+ * numbers in its page, and puts a mark record in its stream for each route
+ * that brings it the mark action.
+ *
+ * And it is the Tx_PRU's link to Linux: it passes on the trigger Linux sets
+ * in the stream's header, and puts each hit the Tx_PRU finds in the stream
+ * as a trig record (la_ipc.h).
  */
 
 #include <stdint.h>
@@ -16,6 +25,7 @@
 #include "ai64_la.h"
 #include "la_map.h"
 #include "la_tm.h"
+#include "la_ipc.h"
 
 #define AI64_TRACE_SIZE 512
 #if AI64_SLICE == 0
@@ -37,6 +47,8 @@
 
 /* Bytes, free-running: rd in the shared ring, wr in the DDR ring. */
 static uint32_t rd, wr;
+/* The trigger seq last passed on, and the Tx_PRU's hits taken. */
+static uint32_t trig_seq, hits_rd;
 
 static void iep_start(void)
 {
@@ -57,6 +69,87 @@ static inline void put(uint32_t time, uint32_t state)
 	r[0] = time;
 	r[1] = state;
 	wr += AI64_LA_REC_SIZE;
+}
+
+struct ai64_fab_msg;
+static uint32_t fab_action(struct ai64_fab_msg *m);
+
+#define FAB_NODE          (AI64_FAB_G1RTU0 + AI64_SLICE)
+#define AI64_FAB_NOW()    GTC_LO()
+#define AI64_FAB_BASE     AI64_FAB_ADDR
+#define AI64_FAB_MBOX     AI64_FAB_MBOX_ADDR
+#define AI64_FAB_LOCKREG  (AI64_SPINLOCK_ADDR + AI64_FAB_LOCK_OFF)
+#define AI64_FAB_ACTION(m) fab_action(m)
+#include "ai64_fabric.h"
+
+#define STATUS_TICKS AI64_FAB_US(10000)
+
+/* A route's mark: when this RTU read it, who sent it, and its value. */
+static uint32_t fab_action(struct ai64_fab_msg *m)
+{
+	if (m->action != AI64_FAB_ACT_MARK) {
+		return 1;
+	}
+	put(IEP_LO(), (uint32_t)AI64_LA_MARK << 24 | (m->origin & 0xffu) << 16 | (m->arg0 & 0xffffu));
+	HDR->marks++;
+	HDR->wr = wr;
+	return 0;
+}
+
+/* The stream's numbers, in this node's fabric page. */
+static void publish(uint32_t state)
+{
+	volatile struct ai64_la_stream *h = HDR;
+	volatile struct ai64_la_status *st = (volatile struct ai64_la_status *)FAB_PAGE(FAB_NODE)->app;
+
+	st->edges = h->edges;
+	st->gaps = h->gaps;
+	st->lost = h->lost;
+	st->marks = h->marks;
+	st->state = state;
+	st->mask = h->mask;
+	st->ticks = h->ticks;
+	st->trigs = h->trigs;
+	st->magic = AI64_LA_MAGIC;
+}
+
+/* A new trigger from Linux, to the Tx_PRU. */
+static void pass_trigger(void)
+{
+	volatile struct ai64_la_stream *h = HDR;
+	volatile struct la_trig *cfg = LA_TRIG_REC(AI64_SLICE);
+	uint32_t seq = h->trig_seq;
+
+	if (seq == trig_seq) {
+		return;
+	}
+	trig_seq = seq;
+	cfg->mode = h->trig_mode;
+	cfg->mask = h->trig_mask;
+	cfg->value = h->trig_value;
+	cfg->seq = seq;
+}
+
+/* The Tx_PRU's hits since the last call, into the stream. */
+static void take_hits(void)
+{
+	volatile struct la_hits *hits = LA_HITS_REC(AI64_SLICE);
+	uint32_t hw = hits->wr;
+
+	if (hw == hits_rd) {
+		return;
+	}
+	if (hw - hits_rd > LA_HIT_RING) {
+		hits_rd = hw - LA_HIT_RING;
+	}
+	while (hits_rd != hw) {
+		volatile uint32_t *hit = hits->hit[hits_rd % LA_HIT_RING];
+
+		put(hit[0], (uint32_t)AI64_LA_TRIG << 24 | (hit[1] & 0xffffffu));
+		HDR->trigs++;
+		hits_rd++;
+	}
+	HDR->wr = wr;
 }
 
 /* A tick: IEP0's and the GTC's counts together, and the state now. */
@@ -80,7 +173,7 @@ static void tick(uint32_t state)
 void main(void)
 {
 	volatile struct ai64_la_stream *h = HDR;
-	uint32_t state = 0, last_tick;
+	uint32_t state = 0, last_tick, status_at;
 
 	tm_clear(AI64_SLICE ? ICSSG_TM_RTU1 : ICSSG_TM_RTU0);
 	trace_init();
@@ -100,10 +193,25 @@ void main(void)
 	h->mask = AI64_LA_MASK(AI64_SLICE);
 	h->ring = AI64_LA_RING_ADDR(AI64_SLICE);
 	h->ring_size = AI64_LA_RING_SIZE;
+	h->marks = 0;
+	h->trigs = 0;
+	/* No trigger at start: the header's may be an old run's, or garbage. */
+	h->trig_mode = AI64_LA_TRIG_OFF;
+	h->trig_mask = 0;
+	h->trig_value = 0;
+	trig_seq = h->trig_seq - 1u;
+	hits_rd = 0;
+	LA_HITS_REC(AI64_SLICE)->wr = 0;
+	pass_trigger();
 	h->magic = AI64_LA_MAGIC;
 	trace_puts(AI64_SLICE ? "ICSSG1 RTU1 up: PRU1's edges to DDR\n" :
 				"ICSSG1 RTU0 up: IEP0 counting ns; PRU0's edges to DDR\n");
+	fab_init(FAB_NODE);
+	trace_puts(AI64_SLICE ? "ICSSG1 RTU1 is fabric node " : "ICSSG1 RTU0 is fabric node ");
+	trace_u32(FAB_NODE);
+	trace_putc('\n');
 	last_tick = GTC_LO();
+	status_at = last_tick;
 
 	for (;;) {
 		uint32_t n = SWR - rd;
@@ -142,6 +250,13 @@ void main(void)
 			}
 			tick(state);
 			h->wr = wr;
+			pass_trigger();
+		}
+		take_hits();
+		fab_poll();
+		if (FAB_AFTER(GTC_LO(), status_at)) {
+			status_at = GTC_LO() + STATUS_TICKS;
+			publish(state);
 		}
 	}
 }

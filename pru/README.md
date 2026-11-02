@@ -41,7 +41,7 @@ In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 - **The trace log is the exception.** Every core keeps a remoteproc trace buffer in its own data RAM, which Linux reads (`ai64 trace <core>`); writing a line is a few local stores. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace calls out of the PRUs and Tx_PRUs. The RTUs always keep theirs.
 - **One RTU talks over RPMsg and one over shared memory only**, so the template has a working example of each. RPMsg needs a vring interrupt in the overlay and a few KiB of data RAM. Both RTUs are fabric nodes, and both publish what they know in their fabric page.
 
-ICSSG1's logic analyzer splits its work the same way: each PRU only watches its pins and stamps their changes into ICSSG1's shared RAM, and its RTU carries the records to DDR. Its RTUs are not fabric nodes yet.
+ICSSG1's logic analyzer splits its work the same way: each PRU only watches its pins and stamps their changes into ICSSG1's shared RAM, and its RTU carries the records to DDR. Its RTUs are fabric nodes 10 and 11, and its Tx_PRUs match triggers on the records as they come.
 
 ## ICSSG0: PWM, three ways
 

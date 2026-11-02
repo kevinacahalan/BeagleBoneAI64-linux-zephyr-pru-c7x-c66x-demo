@@ -230,7 +230,8 @@ summary { cursor: pointer; color: var(--ink-2); }
 const HZ = [10000, 15000, 20000];
 const PCT = [10, 25, 50, 75, 90];
 const CLASSES = 15;
-const NODE_NAMES = ["linux", "r5f0_0", "r5f0_1", "r5f1_0", "r5f1_1", "c66x0", "c66x1", "c7x", "g0rtu0", "g0rtu1"];
+const NODE_NAMES = ["linux", "r5f0_0", "r5f0_1", "r5f1_0", "r5f1_1", "c66x0", "c66x1", "c7x", "g0rtu0", "g0rtu1",
+  "g1rtu0", "g1rtu1"];
 // Pipeline stage records, as ai64_pipe.h numbers them.
 const ST = { RTU: 0, DMA: 1, FFT0: 2, FFT1: 3, MMA: 4, PWM: 5 };
 const PWM_GENS = [
@@ -252,7 +253,19 @@ const SHOW = {
   c66x0: s => stageLine(s, ST.FFT0, "FFTs"),
   c66x1: s => stageLine(s, ST.FFT1, "FFTs"),
   c7x: s => stageLine(s, ST.MMA, "windows classified"),
+  g1pru0: s => laLine(s, 0, "edges stamped"),
+  g1pru1: s => laLine(s, 1, "edges stamped"),
+  g1rtu0: s => laLine(s, 0, "edges to DDR"),
+  g1rtu1: s => laLine(s, 1, "edges to DDR"),
 };
+
+// A logic analyzer stream's edges a second, from its RTU's fabric page.
+function laLine(s, i, what) {
+  const c = s.cur.la && s.cur.la[i], o = s.ref.la && s.ref.la[i];
+  if (!c || !c.ok) return "not running";
+  const r = o && o.ok && c.edges >= o.edges ? (c.edges - o.edges) / s.dt : NaN;
+  return `${fmt(r)} ${what}/s; ${c.gaps ? c.gaps + " gaps" : "nothing lost"}` + (c.marks ? `; ${c.marks} marks` : "");
+}
 
 const PIPE_STAGES = [
   { st: ST.RTU, core: "ICSSG0 PRU1 + RTU1", job: "sample P8.31, stamp the window" },

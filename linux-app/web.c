@@ -39,6 +39,7 @@
 
 #include "ai64_shm.h"
 #include "ai64_fabric.h"
+#include "ai64_la.h"
 #include "ai64.h"
 #include "ai64_pipe.h"
 
@@ -236,6 +237,18 @@ static void status_json(void)
 		}
 		out("],");
 	}
+
+	/* The logic analyzer's two streams, from its RTUs' fabric pages (ai64_la.h). */
+	out("\"la\":[");
+	for (n = 0; n < 2; n++) {
+		volatile struct ai64_la_status *s =
+			(volatile struct ai64_la_status *)page(AI64_FAB_G1RTU0 + n)->app;
+
+		out("%s{\"ok\":%u,\"edges\":%u,\"gaps\":%u,\"lost\":%u,\"marks\":%u,"
+		    "\"state\":%u,\"mask\":%u}", n ? "," : "", s->magic == AI64_LA_MAGIC, s->edges,
+		    s->gaps, s->lost, s->marks, s->state, s->mask);
+	}
+	out("],");
 
 	/*
 	 * The pipeline: each stage's

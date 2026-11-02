@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * The fabric: every demo core talks to every other one, with no Linux in
- * the path. Ten nodes take part: Linux (while `ai64 fabric` runs), the four
- * main-domain R5Fs, both C66x, the C7x, and the RTU of each ICSSG0 slice.
- * The RTU is its slice's link to the rest of the SoC; the slice's PRU and
- * Tx_PRU keep to their real-time work and never touch the fabric. ICSSG1
- * runs TI's multicore scheduler on all six of its cores (extra-demos/
- * icssg1-multicore-scheduler/), with no core left to talk, so it is not a
- * node.
- * The layout has room for AI64_FAB_SLOTS nodes; the last two are spare.
+ * the path. Twelve nodes take part: Linux (while `ai64 fabric` runs), the
+ * four main-domain R5Fs, both C66x, the C7x, the RTU of each ICSSG0 slice,
+ * and the RTU of each ICSSG1 slice, which runs the logic analyzer
+ * (pru/logic_analyzer/). The RTU is its slice's link to the rest of the
+ * SoC; the slice's PRU and Tx_PRU keep to their real-time work and never
+ * touch the fabric. With the multicore scheduler on ICSSG1 instead
+ * (extra-demos/), nodes 10 and 11 do not answer, as a stopped node.
+ * The layout has room for AI64_FAB_SLOTS nodes, all of them used.
  * Linux, Zephyr, both DSP compilers, and the PRU compiler all include this
  * file, so it only uses 32-bit fields at fixed offsets.
  *
@@ -58,7 +58,7 @@
 #define AI64_FAB_SIZE      0x00020000u /* what the cores map; the overlay reserves 1 MiB */
 #define AI64_FAB_PAGE      0x2000u
 #define AI64_FAB_SLOTS     12u /* what the layout has room for */
-#define AI64_FAB_NODES     10u /* the nodes there are */
+#define AI64_FAB_NODES     12u /* the nodes there are */
 #define AI64_FAB_MAGIC     0x46364941u /* "AI6F" */
 #define AI64_FAB_TALLY_OFF (AI64_FAB_SLOTS * AI64_FAB_PAGE)
 
@@ -72,6 +72,8 @@
 #define AI64_FAB_C7X       7u
 #define AI64_FAB_G0RTU0    8u /* ICSSG0 RTU0: slice 0, the software PWM */
 #define AI64_FAB_G0RTU1    9u /* ICSSG0 RTU1: slice 1, the ICSSG PWM */
+#define AI64_FAB_G1RTU0    10u /* ICSSG1 RTU0: the logic analyzer's slice 0 */
+#define AI64_FAB_G1RTU1    11u /* ICSSG1 RTU1: its slice 1 */
 
 #define AI64_FAB_REQ       0u
 #define AI64_FAB_REPLY     1u
@@ -107,14 +109,15 @@
 
 /*
  * What a route does at action_node on its way. Each PWM generator's
- * talking core takes them: ICSSG0 RTU0 and RTU1 all four, R5F0_1 (its
- * EHRPWM) pwm and steps.
+ * talking core takes the first four: ICSSG0 RTU0 and RTU1 all four,
+ * R5F0_1 (its EHRPWM) pwm and steps. The logic analyzer's RTUs take mark.
  */
 #define AI64_FAB_ACT_NONE  0u
 #define AI64_FAB_ACT_PWM   1u /* arg0 period ns, arg1 duty ns, as "pwm" */
 #define AI64_FAB_ACT_DEAD  2u /* arg0 dead band ns, as "dead" */
 #define AI64_FAB_ACT_SWEEP 3u /* arg0 ms, 0 to stop, as "sweep" */
 #define AI64_FAB_ACT_STEPS 4u /* arg0 ms a step, 0 to stop, as "steps" */
+#define AI64_FAB_ACT_MARK  5u /* arg0 a 16-bit value: a marker in the analyzer's stream, as "mark" */
 
 /*
  * One message, 64 bytes. A ping is its first AI64_FAB_PING_WORDS words;
@@ -532,8 +535,8 @@ static void fab_ping(uint32_t to, uint32_t now)
  * crossing between kinds of core, then home. */
 static const uint8_t fab_tour_order[] = {
 	AI64_FAB_C66X0, AI64_FAB_G0RTU0, AI64_FAB_R5F1_0, AI64_FAB_C7X,
-	AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0RTU1, AI64_FAB_R5F1_1,
-	AI64_FAB_LINUX,
+	AI64_FAB_G1RTU0, AI64_FAB_R5F0_1, AI64_FAB_C66X1, AI64_FAB_G0RTU1,
+	AI64_FAB_R5F1_1, AI64_FAB_G1RTU1, AI64_FAB_LINUX,
 };
 
 static void fab_tour(uint32_t now)

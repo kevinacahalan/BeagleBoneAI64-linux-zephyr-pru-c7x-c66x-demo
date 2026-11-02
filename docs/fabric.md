@@ -1,6 +1,6 @@
 # The fabric
 
-The demo's other links go through Linux, or join two cores that sit next to each other. The fabric joins every demo core that talks directly to every other one, Linux included: ten nodes, 90 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the RTUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
+The demo's other links go through Linux, or join two cores that sit next to each other. The fabric joins every demo core that talks directly to every other one, Linux included: twelve nodes, 132 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the RTUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
 
 | Node | Name | Core | When it looks at its inbox |
 | --- | --- | --- | --- |
@@ -10,8 +10,9 @@ The demo's other links go through Linux, or join two cores that sit next to each
 | 7 | `c7x` | C7x | every pass of its main loop |
 | 8 | `g0rtu0` | ICSSG0 RTU0 (`pru/pwm/firmware/pwm_rtu.c`) | every pass of its main loop, next to its RPMsg check |
 | 9 | `g0rtu1` | ICSSG0 RTU1 (the same source) | every pass of its main loop |
+| 10, 11 | `g1rtu0`, `g1rtu1` | ICSSG1 RTU0 and RTU1, the logic analyzer's (`pru/logic_analyzer/firmware/la_rtu.c`) | every pass of its main loop, between batches of edge records |
 
-The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). Nor, yet, are ICSSG1's RTUs, which move the logic analyzer's records ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md)). The layout has room for twelve nodes (`AI64_FAB_SLOTS`), so two more can join without moving anything.
+The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). ICSSG1's RTUs, which move the logic analyzer's records, are nodes, and take the `mark` action: any route can put a mark in the analyzer's stream ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md#marks-and-the-fabric)). With the multicore scheduler on ICSSG1 instead (`ai64-demo --icssg1 scheduler`), nodes 10 and 11 do not answer, as a stopped node. The layout's twelve slots (`AI64_FAB_SLOTS`) are all used.
 
 **What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
 
@@ -49,40 +50,44 @@ A node that starts takes the counts it finds as already seen, and zeroes its own
 
 ```
 fabric: one-way latency in us, from the row's node to the column's, over the last 1.0 s
-         linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x g0rtu0 g0rtu1
-linux        .    4.2    4.5    3.9    4.4    5.2    3.6    2.6    3.5    3.3
-r5f0_0    45.4      .    4.5    4.6    4.8    5.8    4.0    3.2    3.7    3.8
-r5f0_1    40.7    5.1      .    5.0    5.4    5.8    4.3    3.3    4.0    3.9
-r5f1_0    46.1    5.1    5.2      .    5.3    5.9    4.4    3.2    4.0    4.3
-r5f1_1    45.6    5.4    5.2    5.2      .    5.9    4.5    3.4    4.1    4.1
-c66x0     46.7    4.2    4.4    4.5    4.3      .    3.6    2.6    3.1    3.3
-c66x1     41.3    4.2    3.8    4.0    4.3    5.5      .    2.5    3.3    3.1
-c7x       36.7    4.3    3.7    3.7    4.1    5.2    3.0      .    2.9    2.8
-g0rtu0    39.1    4.3    4.1    4.3    4.5    5.3    3.9    2.7      .    3.4
-g0rtu1    38.2    4.3    4.3    4.4    4.5    5.5    3.8    2.8    3.3      .
+         linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x g0rtu0 g0rtu1 g1rtu0 g1rtu1
+linux        .    6.4    6.3    5.1    4.9    8.7    6.6    3.1    4.1    4.5    4.8    4.7
+r5f0_0    46.5      .    7.4    5.3    5.7   10.7    9.9    4.0    4.9    5.4    5.7    5.4
+r5f0_1    46.2    9.2      .    7.2    5.6    8.5   10.4    3.8    5.3    5.3    5.2    5.1
+r5f1_0    49.9    7.2    6.7      .    5.2    9.3    9.8    3.6    4.9    4.9    5.1    5.0
+r5f1_1    41.5    7.0    7.1    5.5      .    8.5    9.0    3.8    4.7    5.1    5.5    5.1
+c66x0     34.6    5.8    7.2    4.7    4.7      .    8.0    2.9    4.0    4.4    4.6    4.4
+c66x1     37.7    6.8    6.7    4.9    4.7    9.7      .    3.2    4.3    4.3    5.2    4.3
+c7x       33.9    5.6    5.6    3.8    4.5    7.5    7.9      .    3.5    3.6    4.7    4.1
+g0rtu0    42.8    6.6    5.7    4.9    5.1    8.3    7.8    3.1      .    4.3    4.8    4.8
+g0rtu1    46.2    6.7    6.3    4.9    4.7    7.5    8.7    3.2    4.1      .    4.7    4.9
+g1rtu0    45.6    6.0    6.7    4.9    5.4    8.2    9.3    3.1    4.0    4.3      .    4.8
+g1rtu1    42.0    6.4    6.3    5.1    4.9    8.4    8.8    3.1    4.4    4.4    5.0      .
 
 node    starts   polls/s  pongs/s    rtt us  rtt min to max us timeouts errors  passed/s
-linux       32     13238      900      76.8     58.4 to  192.9        0      0       100
-r5f0_0      20    338874      900      14.7      5.2 to   82.6        0      0         0
-r5f0_1      20    393392      900      12.7      5.0 to   84.7        0      0       100
-r5f1_0      20    392984      900      13.5      5.0 to   83.2        0      0       100
-r5f1_1      20    392637      900      13.6      5.1 to   82.7        0      0       100
-c66x0       17   1155155      900      13.7      4.9 to   83.3        0      0       100
-c66x1       17   1176422      900      11.5      4.4 to   80.7        0      0       100
-c7x         17   1041957      900      10.1      4.3 to   78.3        0      0       100
-g0rtu0      19    587503      900      11.3      4.6 to   83.2        0      0       100
-g0rtu1      19    588491      900      11.3      4.3 to   80.0        0      0       100
+linux       15     13130     1100      77.8     37.7 to  156.3        0      0       100
+r5f0_0      15    262788     1100      18.6      6.3 to  124.9        0      0         0
+r5f0_1      15    257106     1100      16.3      5.9 to  110.3        0      0       100
+r5f1_0      15    328239     1100      14.9      5.9 to  102.3        0      0       100
+r5f1_1      15    360885     1100      13.9      4.9 to  101.1        0      0       100
+c66x0       15    804658     1100      12.3      4.1 to  127.1        0      0       100
+c66x1       15    802735     1100      13.3      4.8 to  170.9        0      0       100
+c7x         15    801001     1100      10.7      4.2 to   96.9        0      0       100
+g0rtu0      15    442011     1100      13.0      4.9 to   98.5        0      0       100
+g0rtu1      15    420796     1100      13.6      5.3 to   97.4        0      0       100
+g1rtu0       6    305480     1100      14.0      4.5 to  784.5        0      0       100
+g1rtu1       6    289146     1100      13.6      4.5 to   99.0        0      0       100
 
-tour from r5f0_0 round every node that answers its pings: 100 laps/s, 103.2 us a lap (64.0 to 138.4), errors 0, timeouts 5
-  r5f0_0 >16.4> c66x0 >4.3> g0rtu0 >5.3> r5f1_0 >4.3> c7x >5.6> r5f0_1 >9.9> c66x1 >3.8> g0rtu1 >6.9> r5f1_1 >32.7> linux >4.3> r5f0_0
+tour from r5f0_0 round every node that answers its pings: 100 laps/s, 125.2 us a lap (71.3 to 192.1), errors 0, timeouts 7
+  r5f0_0 >46.3> c66x0 >4.2> g0rtu0 >5.3> r5f1_0 >4.2> c7x >4.2> g1rtu0 >6.7> r5f0_1 >9.4> c66x1 >5.0> g0rtu1 >5.5> r5f1_1 >10.6> g1rtu1 >44.6> linux >6.4> r5f0_0
 
-tally under hardware spinlock 255: 25908 adds, and the 10 counts sum to 25908
+tally under hardware spinlock 255: 117315 adds, and the 12 counts sum to 117315
 ```
 
-- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 2.5 to 6 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one. Linux sleeps between looks, so a message to it takes about 35 to 50 µs.
+- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 3 to 11 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one; the C66x cores, the slowest, at 7.5 to 10.7 µs. Linux sleeps between looks, so a message to it takes about 35 to 50 µs.
 - **The nodes.** `starts` counts each node's starts since the board booted. `rtt us` is the mean round trip to all of the node's peers, which Linux pulls up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
-- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 5 timeouts.
-- **The tally.** Every add from all ten nodes is in the total, so the lock held.
+- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 7 timeouts.
+- **The tally.** Every add from all twelve nodes is in the total, so the lock held.
 
 The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric lines`).
 
@@ -109,8 +114,8 @@ g0rtu0 -> linux       2.5 us
 4 hops, 42.8 us, value ok
 ```
 
-P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_1 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
+P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_1 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. A route through `g1rtu0` or `g1rtu1` can carry `mark <value>`, which puts a mark in the logic analyzer's stream (`ai64 la mark <value>` sends one straight there). `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
-**Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both.
+**Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both. Those runs had ten nodes, with the multicore scheduler on ICSSG1; with the analyzer's two RTUs as nodes 10 and 11, `tests/run.sh soak` restarts every core and checks the same, all twelve up.
 
 **What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ICSSG0 RTUs' polling does not show in their slices' edges: with both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late. And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr apps park in WFI with their interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
