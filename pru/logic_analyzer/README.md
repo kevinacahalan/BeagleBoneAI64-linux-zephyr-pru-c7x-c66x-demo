@@ -155,27 +155,39 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 
 ## The web viewer
 
-While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser, with no software to install: the board streams the edges as they come, and the browser keeps them, as a Saleae's software does, so a capture runs until it is stopped or until it reaches the memory limit chosen at the top of the page (1 GB to start: about 130 million changes).
+While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser, with nothing to install: the board streams the edges as they come, and the browser keeps them, as a Saleae's software does, so a capture runs until it is stopped or reaches the memory limit at the top of the page (1 GB to start: about 130 million changes), or, with **Spill to disk**, the disk space the browser allows.
 
-![The web viewer, on the board's own signals: the PWM generators' A and B pairs, the eCAP's copy, P9.25, the square wave, and cursors one 15 kHz period apart](../../media/la-viewer.png)
+![The web viewer on the board's own signals: a pulse on ch9 measured by pointing at it, its period bracketed, and markers A and B one period of ch7 apart](../../media/la-viewer.png)
 
-- **Follow** keeps the newest data at the right; the wheel zooms, a drag pans, and **Fit all** shows the whole capture. Where a pixel column holds more than one change, the viewer draws a block, so a zoomed-out view of millions of edges still says where the activity is.
-- **Cursors**: a click puts A, a shift-click B, and the line under the waveforms gives B − A and its frequency.
-- **The table** under them measures every channel over the time in view: changes, period and frequency from its rising edges, duty, and its level at the right edge.
-- **Marks** (purple), **trigger hits** (amber), and **gaps** (red) are drawn across all the rows.
-- **Export VCD** saves the time in view as a VCD file, as `ai64 la capture` does.
-- **Decoders**: SPI (chip select active low, any of the four modes, MOSI and MISO), UART (8N1, any baud, inverted or not), and I²C (starts, stops, addresses, data, acknowledges) each add a row under the channels, decoded over the time in view, and a list under the page's measurements. Click an entry in the list to put it in the middle of the view.
-- **Marks, trigger hits, and gaps** are listed under them too, newest first, each a click away.
-- **Save** writes the whole capture to a `.lacap` file, and **Open** reads one back, to look at later or on another computer.
-- **Spill to disk**: with it on, a capture that fills the memory limit moves its oldest blocks of changes into the browser's own disk storage, IndexedDB, and reads them back when they come into view, so a capture can run on past the memory limit, up to the disk space the browser allows. (The origin private file system would be quicker, but browsers keep it for secure contexts, and this page comes over plain HTTP.)
+The waveforms fill the window, a row per channel in its own color, with the time ruler over them, an overview of the whole capture's activity under them, a side panel, and a status bar.
 
-![The SPI decoder on SPI7's hello: CS falling at the trigger hit, then the five bytes, 0x68 0x65 0x6c 0x6c 0x6f](../../media/la-decode.png)
+- **Point at a waveform** to measure the pulse under the pointer: how long it is high or low, the period of the cycle it starts, its frequency, and its duty, in a tooltip and in the status bar. The pulse is drawn bold and its period bracketed. Zoomed out, where many edges share a pixel, it says how many and estimates the frequency from the median time between rising edges, so a burst reads at its own rate.
+- **Markers**: a click puts marker A, a right-click marker B; each snaps to an edge within a few pixels and can be dragged. The Measure tab and the status bar give B − A and its frequency, and **time zero** can be the capture's start, the first trigger hit, or marker A.
+- **Shift-drag** selects a range: the Measure tab then measures every channel over it (frequency, duty, and the mean high and low widths) instead of over the view, Z zooms to it, and Export VCD saves it.
+- **Navigation**: the wheel zooms at the pointer, a drag or a trackpad's sideways swipe pans, double-click fits the whole capture, and the overview strip at the bottom shows where the view is and moves it with a click or a drag. `[` and `]` jump to the previous or next edge on the channel pointed at. **Live** keeps the newest data at the right. The ruler labels times to the digits the zoom resolves.
+- **Analyzers**: SPI (chip select active low, any of the four modes, MOSI and MISO), UART (8N1, any baud, inverted or not), and I²C (starts, stops, addresses, data, acknowledges) each add a row under the channels, decoded over the time in view; pointing at a decoded byte gives its value, time, and length, and the Analyzers tab lists them, searchable, a click away.
+- **Events**: marks, trigger hits, and gaps are drawn as flags on the ruler and lines down the rows, and listed in the Events tab.
+- **Channels**: show or hide each channel, name it, and pick its color; the browser remembers them, and the theme (light or dark) and the side panel.
+- **Save** writes the capture to a `.lacap` file, and **Open** reads one back.
+- **Spill to disk** moves the oldest blocks of changes into the browser's own disk storage, IndexedDB, when the capture fills the memory limit, and reads them back as they come into view. (The origin private file system would be quicker, but browsers keep it for secure contexts, and this page comes over plain HTTP.)
 
-The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`. Each channel's changes are kept as times in growing arrays, 8 bytes each, and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions.
+| Mouse and keys | |
+| --- | --- |
+| point | a pulse's width, period, frequency, and duty |
+| wheel; `Shift` wheel, trackpad | zoom at the pointer; pan |
+| drag; `Shift` drag | pan; select a range to measure |
+| click, right-click | marker A, marker B: they snap to edges, and drag |
+| double-click, `Home`, `F` or `End` | the whole capture; its start; live |
+| `[` `]` | the previous or next edge on the channel pointed at |
+| `A` `B` | a marker at the pointer |
+| `←` `→`, `+` `−` | pan, zoom |
+| `Z`, `Esc`, `Space`, `?` | zoom to the selection; clear it, then the markers; start or stop; these keys |
 
-Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms, and the last 2 s at that rate in 7 ms. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s and the MCP server's.
+![The SPI analyzer on SPI7's hello: CS falling at the trigger hit, then the five bytes, and the Analyzers tab's list](../../media/la-decode.png)
 
-Checked in Firefox on the board's live stream: the SPI decoder reads `hello` from a `spi hello` transfer, found by its trigger hit in the list; with the memory limit at 16 MB and Spill to disk on, 36 s of the demo's signals ran with 15.5 MB in RAM and 46.5 MB on disk, Fit all read the blocks back, and the 68 MB saved file opened again with every one of its 8.56 million changes. The UART and I²C decoders, which no signal of the demo's exercises, decode synthetic captures: "Hi!" at 115200 baud, and an I²C write of 0x50 W, 0xa5.
+The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`. Each channel's changes are kept as times in blocks of growing arrays, 8 bytes each, and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions. The waveforms draw on one canvas, when the data or the view changes; the pointer, the markers, and the selection on a second canvas over it, so pointing stays smooth while the capture runs.
+
+Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms. Pointing at the demo's signals reads them as the generators make them: S1_A high 33.328 µs of a 66.660 µs period, 15.0015 kHz, at 50% duty; SPI7's clock low 496 ns of a 1.004 µs period. The SPI analyzer reads `hello` from a `spi hello` transfer; with the memory limit at 16 MB and Spill to disk on, 36 s of the demo's signals ran with 15.5 MB in RAM and 46.5 MB on disk, Fit read the blocks back, and the 68 MB saved file opened again with every one of its 8.57 million changes. The UART and I²C analyzers, which no signal of the demo's exercises, decode synthetic captures: "Hi!" at 115200 baud, and an I²C write of 0x50 W, 0xa5. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s and the MCP server's.
 
 ## MCP: the analyzer for a model
 

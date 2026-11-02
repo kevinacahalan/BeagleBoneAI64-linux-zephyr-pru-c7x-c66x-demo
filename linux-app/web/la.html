@@ -5,12 +5,13 @@
   It opens the WebSocket /la/stream (linux-app/la_ws.c), which sends the
   edges of ICSSG1's 19 channels as they come, and keeps them all here, in
   the browser: a capture runs until it is stopped, or until it reaches the
-  memory limit chosen at the top, or, with Spill to disk, until the disk
-  space the browser allows. Each channel's changes are kept as their
-  times, in ns, in blocks of growing arrays; drawing does one binary search
-  per pixel column, so millions of edges draw as fast as a few. Decoders
-  (SPI, UART, I2C) read the time in view; a capture saves to a file and
-  opens again. No external files: the board may have no internet.
+  memory limit, or, with Spill to disk, until the disk space the browser
+  allows. Each channel's changes are kept as their times, in ns, in blocks
+  of growing arrays; drawing does one binary search per pixel column, so
+  millions of edges draw as fast as a few. The waveforms draw on one
+  canvas, only when the data or the view changes, and the pointer's
+  measurements, the markers, and the selection on a second one over it.
+  No external files: the board may have no internet.
 -->
 <html lang="en">
 <head>
@@ -20,159 +21,307 @@
 <style>
 :root {
   color-scheme: light;
-  --bg: #f4f3f0;
-  --surface: #fcfcfb;
-  --surface-2: #f0efec;
-  --border: #dddcd7;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --ink-3: #7a7973;
-  --accent: #2a78d6;
-  --wave: #2a78d6;
-  --busy: rgba(42, 120, 214, 0.35);
-  --mark: #8a3ffc;
+  --bg: #eceae6;
+  --panel: #fbfbfa;
+  --panel-2: #f2f1ee;
+  --plot: #ffffff;
+  --row-alt: #f6f5f2;
+  --grid: #e6e4df;
+  --border: #d8d6d0;
+  --ink: #141413;
+  --ink-2: #4f4e4a;
+  --ink-3: #7c7b75;
+  --accent: #2563eb;
+  --accent-ink: #ffffff;
+  --sel: rgba(37, 99, 235, 0.10);
+  --mark: #7c3aed;
   --trig: #c47f00;
-  --good: #0ca30c;
-  --critical: #d03b3b;
-  --cursor: #0b0b0b;
+  --good: #16a34a;
+  --critical: #dc2626;
+  --marker-a: #0891b2;
+  --marker-b: #db2777;
+  --tip: #1d1d1b;
+  --tip-ink: #f4f3ef;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #121211;
-    --surface: #1a1a19;
-    --surface-2: #232321;
-    --border: #383835;
-    --ink: #f0efec;
-    --ink-2: #c3c2b7;
-    --ink-3: #8d8c84;
-    --accent: #3987e5;
-    --wave: #5598e7;
-    --busy: rgba(85, 152, 231, 0.4);
-    --mark: #b388ff;
-    --trig: #fab219;
-    --cursor: #f0efec;
+    --bg: #0f1012;
+    --panel: #17181b;
+    --panel-2: #1e2024;
+    --plot: #121316;
+    --row-alt: #16181b;
+    --grid: #23262b;
+    --border: #2c2f35;
+    --ink: #ecedef;
+    --ink-2: #b4b7be;
+    --ink-3: #7d818a;
+    --accent: #3b82f6;
+    --sel: rgba(59, 130, 246, 0.16);
+    --mark: #a78bfa;
+    --trig: #fbbf24;
+    --marker-a: #22d3ee;
+    --marker-b: #f472b6;
+    --tip: #f4f3ef;
+    --tip-ink: #141413;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #121211;
-  --surface: #1a1a19;
-  --surface-2: #232321;
-  --border: #383835;
-  --ink: #f0efec;
-  --ink-2: #c3c2b7;
-  --ink-3: #8d8c84;
-  --accent: #3987e5;
-  --wave: #5598e7;
-  --busy: rgba(85, 152, 231, 0.4);
-  --mark: #b388ff;
-  --trig: #fab219;
-  --cursor: #f0efec;
+  --bg: #0f1012;
+  --panel: #17181b;
+  --panel-2: #1e2024;
+  --plot: #121316;
+  --row-alt: #16181b;
+  --grid: #23262b;
+  --border: #2c2f35;
+  --ink: #ecedef;
+  --ink-2: #b4b7be;
+  --ink-3: #7d818a;
+  --accent: #3b82f6;
+  --sel: rgba(59, 130, 246, 0.16);
+  --mark: #a78bfa;
+  --trig: #fbbf24;
+  --marker-a: #22d3ee;
+  --marker-b: #f472b6;
+  --tip: #f4f3ef;
+  --tip-ink: #141413;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0; background: var(--bg); color: var(--ink); overflow: hidden;
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: grid; grid-template-rows: auto 1fr auto;
 }
-main { max-width: 1600px; margin: 0 auto; padding: 16px 16px 40px; }
-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 12px; }
-h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
-a { color: var(--accent); }
-.sub { color: var(--ink-2); }
-.num { font-variant-numeric: tabular-nums; }
-.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+button, select, input { font: inherit; color: var(--ink); }
 button, select {
-  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
 }
-button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-label { font-size: 13px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
-.status { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); display: inline-block; }
-.dot.good { background: var(--good); }
+button:hover, select:hover { border-color: var(--ink-3); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; min-width: 84px; }
+button.primary.stopped { background: var(--good); border-color: var(--good); }
+button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.icon { padding: 4px 8px; min-width: 30px; }
+input[type=text], input[type=number], input[type=search] {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+}
+.num { font-variant-numeric: tabular-nums; }
+
+/* The toolbar */
+.toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.toolbar .title { font-weight: 650; font-size: 14px; margin-right: 6px; white-space: nowrap; }
+.toolbar .grp { display: inline-flex; gap: 4px; align-items: center; }
+.toolbar .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+.toolbar .grow { flex: 1; }
+.toolbar label { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-2); white-space: nowrap; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); display: inline-block; }
+.dot.good { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 .dot.critical { background: var(--critical); }
-section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 12px; }
-#wrap { position: relative; }
-canvas { display: block; width: 100%; touch-action: none; cursor: crosshair; }
-.facts { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
-.facts b { color: var(--ink); font-weight: 600; }
-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+a { color: var(--accent); }
+
+/* The middle: waveforms, and the side panel */
+.main { display: grid; grid-template-columns: 1fr 372px; min-height: 0; }
+.main.noside { grid-template-columns: 1fr 0; }
+.wave { display: grid; grid-template-rows: 1fr auto; min-width: 0; min-height: 0; background: var(--plot); }
+#plot { position: relative; overflow-y: auto; overflow-x: hidden; min-height: 0; }
+#plot canvas { position: absolute; left: 0; top: 0; display: block; }
+#ov { cursor: crosshair; touch-action: none; }
+#ov.grab { cursor: grabbing; }
+#ov.ew { cursor: ew-resize; }
+.overview { border-top: 1px solid var(--border); background: var(--panel); height: 38px; position: relative; }
+.overview canvas { display: block; width: 100%; height: 38px; cursor: pointer; }
+
+.side { background: var(--panel); border-left: 1px solid var(--border); display: grid; grid-template-rows: auto 1fr; min-height: 0; overflow: hidden; }
+.tabs { display: flex; border-bottom: 1px solid var(--border); }
+.tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 9px 4px; color: var(--ink-2); border-bottom: 2px solid transparent; }
+.tabs button.sel { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.pane { display: none; overflow: auto; padding: 10px 12px; min-height: 0; }
+.pane.sel { display: block; }
+.pane h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin: 12px 0 6px; font-weight: 600; }
+.pane h3:first-child { margin-top: 2px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.kv span:nth-child(odd) { color: var(--ink-3); }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+#meas td, #meas th { padding: 4px 4px; font-size: 11.5px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--ink-3); font-weight: 600; font-size: 11.5px; }
 td.r, th.r { text-align: right; }
-.scroll { overflow-x: auto; }
-.help { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
 tr.go { cursor: pointer; }
-tr.go:hover td { background: var(--surface-2); }
-.dec { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; padding: 4px 0; }
-.dec select, .dec input { font-size: 12.5px; padding: 2px 6px; }
-.dec input[type=number] { width: 90px; }
-.banner { display: none; background: var(--surface-2); border-left: 3px solid var(--critical); padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
+tr.go:hover td { background: var(--panel-2); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+.chrow { display: grid; grid-template-columns: 20px 54px 1fr 26px; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.chrow input[type=text] { width: 100%; padding: 2px 6px; }
+.chrow .pin { color: var(--ink-3); font-size: 11.5px; }
+.chrow .color { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; padding: 0; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--panel-2); }
+.card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-weight: 600; }
+.card .head button { margin-left: auto; padding: 1px 8px; }
+.card .fields { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 6px; align-items: center; font-size: 12px; }
+.card .fields label { color: var(--ink-3); }
+.card select, .card input { padding: 2px 4px; font-size: 12px; width: 100%; }
+.hint { color: var(--ink-3); font-size: 12px; margin: 6px 0; }
+
+/* The status bar */
+.status {
+  display: flex; gap: 18px; align-items: center; padding: 5px 12px; background: var(--panel);
+  border-top: 1px solid var(--border); color: var(--ink-2); font-size: 12px; white-space: nowrap; overflow: hidden;
+}
+.status b { color: var(--ink); font-weight: 600; }
+.status .grow { flex: 1; }
+
+/* The pointer's tooltip */
+#tip {
+  position: fixed; pointer-events: none; z-index: 20; display: none;
+  background: var(--tip); color: var(--tip-ink); border-radius: 8px; padding: 7px 10px;
+  font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.25); min-width: 150px;
+}
+#tip .t { font-weight: 650; margin-bottom: 3px; }
+#tip .g { display: grid; grid-template-columns: auto auto; gap: 1px 12px; }
+#tip .g span:nth-child(odd) { opacity: 0.7; }
+
+.banner { display: none; position: fixed; left: 50%; top: 56px; transform: translateX(-50%); z-index: 30;
+  background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--critical);
+  padding: 8px 12px; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.2); max-width: 680px; }
+#help { display: none; position: fixed; right: 16px; top: 56px; z-index: 30; width: 360px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+  box-shadow: 0 10px 32px rgba(0,0,0,0.25); font-size: 12.5px; }
+#help .kv { grid-template-columns: 120px 1fr; }
+kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+@media (max-width: 900px) {
+  .main { grid-template-columns: 1fr; }
+  .side { display: none; }
+}
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Logic analyzer</h1>
-    <span class="sub">ICSSG1's 19 channels, streamed live from the board</span>
-    <a href="/">the demo's page</a>
-  </header>
-  <div class="banner" id="banner"></div>
-
-  <div class="bar">
-    <button id="run" class="on">Stop</button>
-    <button id="follow" class="on">Follow</button>
-    <button id="fit">Fit all</button>
-    <button id="clear">Clear</button>
-    <button id="vcd">Export VCD</button>
-    <button id="save">Save</button>
-    <button id="open">Open</button>
+<header class="toolbar">
+  <span class="title">Logic analyzer</span>
+  <button id="run" class="primary" title="Start or stop the capture (Space)">Stop</button>
+  <button id="follow" class="on" title="Keep the newest data at the right (F)">Live</button>
+  <span class="sep"></span>
+  <span class="grp">
+    <button id="zout" class="icon" title="Zoom out (−)">−</button>
+    <button id="zin" class="icon" title="Zoom in (+)">+</button>
+    <button id="fit" title="The whole capture (double-click)">Fit</button>
+    <button id="zsel" title="Zoom to the selection (Z)" disabled>Zoom to selection</button>
+  </span>
+  <span class="sep"></span>
+  <span class="grp">
+    <button id="save" title="Save the capture to a file">Save</button>
+    <button id="open" title="Open a saved capture">Open</button>
+    <button id="vcd" title="The time in view, as a VCD file for PulseView or GTKWave">Export VCD</button>
     <input type="file" id="file" accept=".lacap" hidden>
-    <label>Memory <select id="limit">
-      <option value="268435456">256 MB</option>
-      <option value="1073741824" selected>1 GB</option>
-      <option value="2147483648">2 GB</option>
-      <option value="4294967296">4 GB</option>
-    </select></label>
-    <label title="When the capture fills the memory limit, write its oldest blocks to the browser's own disk storage (IndexedDB) and read them back when they are viewed"><input type="checkbox" id="spill"> Spill to disk</label>
-    <span class="status"><span class="dot" id="dot"></span><span id="state">connecting</span></span>
+  </span>
+  <span class="sep"></span>
+  <label>Memory <select id="limit">
+    <option value="268435456">256 MB</option>
+    <option value="1073741824" selected>1 GB</option>
+    <option value="2147483648">2 GB</option>
+    <option value="4294967296">4 GB</option>
+  </select></label>
+  <label title="When the capture fills the memory limit, move its oldest blocks to the browser's disk storage (IndexedDB) and read them back when they come into view"><input type="checkbox" id="spill"> Spill to disk</label>
+  <span class="grow"></span>
+  <span class="live"><span class="dot" id="dot"></span><span id="state">connecting</span></span>
+  <button id="theme" class="icon" title="Light or dark">◐</button>
+  <button id="sidebtn" class="icon on" title="The side panel">▤</button>
+  <button id="helpbtn" class="icon" title="Mouse and keys">?</button>
+  <a href="/" title="The demo's page">demo</a>
+</header>
+
+<div class="main" id="main">
+  <div class="wave">
+    <div id="plot"><canvas id="cv"></canvas><canvas id="ov"></canvas></div>
+    <div class="overview"><canvas id="mini"></canvas></div>
   </div>
-
-  <section>
-    <div id="wrap"><canvas id="cv"></canvas></div>
-    <div class="facts" id="facts"></div>
-    <div class="help">Wheel to zoom, drag to pan, click for cursor A, shift-click for B, Esc to clear them, F to follow, double-click to fit all.</div>
-  </section>
-
-  <section>
-    <div class="scroll"><table id="meas"></table></div>
-    <div class="help">Over the visible time. A channel's period is the mean from its first rising edge in view to its last, so it takes two; its duty is the time it spends high.</div>
-  </section>
-
-  <section>
-    <div class="bar">
-      <b>Decoders</b>
+  <aside class="side">
+    <div class="tabs">
+      <button data-tab="measure" class="sel">Measure</button>
+      <button data-tab="decode">Analyzers</button>
+      <button data-tab="events">Events</button>
+      <button data-tab="chans">Channels</button>
+    </div>
+    <div class="pane sel" id="p-measure">
+      <h3>Markers</h3>
+      <div class="kv num" id="markers"></div>
+      <h3>Time zero</h3>
+      <select id="tzero">
+        <option value="start">the capture's start</option>
+        <option value="trig">the first trigger hit</option>
+        <option value="a">marker A</option>
+      </select>
+      <h3 id="mtitle">The time in view</h3>
+      <div class="hint" id="mhint"></div>
+      <table id="meas"></table>
+    </div>
+    <div class="pane" id="p-decode">
+      <h3>Analyzers</h3>
       <select id="adddec">
-        <option value="">add a decoder…</option>
+        <option value="">add an analyzer…</option>
         <option value="spi">SPI</option>
-        <option value="uart">UART</option>
+        <option value="uart">UART (async serial)</option>
         <option value="i2c">I²C</option>
       </select>
+      <div id="decs" style="margin-top:8px"></div>
+      <h3>Decoded, in view</h3>
+      <input type="search" id="dsearch" placeholder="search: hex or text" style="width:100%">
+      <div id="dsum" class="hint"></div>
+      <table id="dectab"></table>
     </div>
-    <div id="decs"></div>
-    <div class="scroll"><table id="dectab"></table></div>
-    <div class="help">A decoder reads the time in view, and draws a row under the channels. SPI takes chip select active low; UART is 8N1; I²C shows starts (S), stops (P), addresses, and acknowledges (A, or N for none). The demo's SPI7 is CS ch3, CLK ch4, MOSI ch5, mode 0.</div>
-  </section>
+    <div class="pane" id="p-events">
+      <h3>Marks, trigger hits, and gaps</h3>
+      <div class="hint">Newest first. Click one to center it. <code>ai64 la mark</code>, <code>ai64 la trigger</code>, and the MCP server make them.</div>
+      <table id="evtab"></table>
+    </div>
+    <div class="pane" id="p-chans">
+      <h3>Channels</h3>
+      <div class="hint">Show, name, and color each channel. This browser remembers them.</div>
+      <div id="chlist"></div>
+      <div style="margin-top:8px; display:flex; gap:6px">
+        <button id="showall">Show all</button>
+        <button id="showact">Only active</button>
+        <button id="resetch">Reset</button>
+      </div>
+    </div>
+  </aside>
+</div>
 
-  <section>
-    <b>Marks, trigger hits, and gaps</b>
-    <div class="scroll"><table id="evtab"></table></div>
-    <div class="help">The newest 200. Click one to put it in the middle of the view.</div>
-  </section>
-</main>
+<footer class="status">
+  <span id="s-hover">point at a waveform to measure it</span>
+  <span class="grow"></span>
+  <span id="s-markers"></span>
+  <span id="s-stream"></span>
+  <span id="s-mem"></span>
+</footer>
+
+<div id="tip"></div>
+<div class="banner" id="banner"></div>
+<div id="help">
+  <b>Mouse and keys</b>
+  <div class="kv" style="margin-top:8px">
+    <span>point</span><span>a pulse's width, period, frequency, and duty</span>
+    <span>wheel</span><span>zoom at the pointer</span>
+    <span><kbd>Shift</kbd> wheel, trackpad</span><span>pan</span>
+    <span>drag</span><span>pan</span>
+    <span><kbd>Shift</kbd> drag</span><span>select a range to measure</span>
+    <span>click, right-click</span><span>marker A, marker B; they snap to edges, and drag</span>
+    <span>double-click</span><span>the whole capture</span>
+    <span><kbd>[</kbd> <kbd>]</kbd></span><span>the previous or next edge on the channel pointed at</span>
+    <span><kbd>A</kbd> <kbd>B</kbd></span><span>a marker at the pointer</span>
+    <span><kbd>←</kbd> <kbd>→</kbd></span><span>pan</span>
+    <span><kbd>+</kbd> <kbd>−</kbd> or <kbd>↑</kbd> <kbd>↓</kbd></span><span>zoom</span>
+    <span><kbd>Z</kbd></span><span>zoom to the selection</span>
+    <span><kbd>F</kbd> <kbd>End</kbd></span><span>live: follow the newest data</span>
+    <span><kbd>Home</kbd></span><span>the capture's start</span>
+    <span><kbd>Space</kbd></span><span>start or stop</span>
+    <span><kbd>Esc</kbd></span><span>clear the selection, then the markers</span>
+  </div>
+</div>
 <script>
 "use strict";
 // ---- the data: per channel, the times of its changes, ns from the first tick ----
@@ -286,23 +435,42 @@ const Spill = {
   },
 };
 
+
+// ---- the state ----
+
+const PALETTE = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16"];
+const DEC_COLORS = ["#8b5cf6", "#0ea5e9", "#f97316", "#14b8a6"];
+
 const S = {
   meta: null, tracks: [], bitCh: [[], []], prev: [null, null],
   t0: null, now: [0, 0], events: [], held: 0,
-  view: { a: 0, b: 1e6 }, follow: true, cursor: [null, null],
+  view: { a: 0, b: 1e6 }, follow: true,
+  markers: [null, null], sel: null, hover: null, tzero: "start",
   ws: null, running: true, limit: 1073741824,
   stats: null, statsAt: 0, lastStats: null, rate: 0, rx: 0, rxRate: 0, rxAt: performance.now(),
   decoders: [], decoded: [],
-  dirty: true,
+  chan: { names: {}, colors: {}, hidden: [] }, rows: [],
+  dirty: true, overlayDirty: true,
 };
 
 const $ = id => document.getElementById(id);
+
+function store(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* no storage */ } }
+function recall(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; } }
+
+function chColor(c) { return S.chan.colors[c] || PALETTE[c % PALETTE.length]; }
+function chName(c) {
+  const m = S.meta && S.meta.channels[c];
+  return S.chan.names[c] || (m && m.name ? m.name : "");
+}
+function chHidden(c) { return S.chan.hidden.includes(c); }
+function saveChan() { store("ai64-la-channels", S.chan); }
 
 function reset() {
   Spill.ram = 0;
   S.tracks = S.meta ? S.meta.channels.map(c => new Track(c.ch)) : [];
   S.prev = [null, null]; S.t0 = null; S.now = [0, 0]; S.events = []; S.held = 0;
-  S.cursor = [null, null]; S.view = { a: 0, b: 1e6 }; S.dirty = true;
+  S.markers = [null, null]; S.sel = null; S.view = { a: 0, b: 1e6 }; S.dirty = true;
 }
 
 async function clearAll() {
@@ -316,8 +484,9 @@ function setMeta(m) {
   S.bitCh = [new Array(32).fill(-1), new Array(32).fill(-1)];
   m.channels.forEach(c => { S.bitCh[c.pru][c.bit] = c.ch; });
   reset();
-  resize();
+  buildChanList();
   drawDecoderForms();
+  layout();
 }
 
 function rel(abs) {
@@ -395,7 +564,7 @@ function start() {
   ws.binaryType = "arraybuffer";
   S.ws = ws; S.running = true; S.lastStats = null;
   setState("connecting", "");
-  ws.onopen = () => { setState("streaming", "good"); $("banner").style.display = "none"; };
+  ws.onopen = () => { setState("capturing", "good"); $("banner").style.display = "none"; };
   ws.onmessage = e => {
     S.rx += typeof e.data === "string" ? e.data.length : e.data.byteLength;
     if (typeof e.data === "string") onText(e.data); else onBinary(e.data);
@@ -404,7 +573,7 @@ function start() {
     if (S.ws === ws && S.running) {
       S.running = false;
       setState("not connected", "critical");
-      banner("The stream closed. Is the demo running with the logic analyzer on ICSSG1 (ai64-demo, ai64 la once)? Start again with the button above.");
+      banner("The stream closed. Is the demo running with the logic analyzer on ICSSG1 (ai64-demo, ai64 la once)? Start again with the button at the top.");
     }
     updateRun();
   };
@@ -419,23 +588,48 @@ function stop(why) {
 }
 
 function setState(text, cls) { $("state").textContent = text; $("dot").className = "dot " + cls; }
-function banner(text) { const b = $("banner"); b.textContent = text; b.style.display = "block"; }
-function updateRun() { const r = $("run"); r.textContent = S.running ? "Stop" : "Start"; r.classList.toggle("on", S.running); }
+function banner(text) {
+  const b = $("banner");
+  b.textContent = text; b.style.display = "block";
+  clearTimeout(banner.t); banner.t = setTimeout(() => { b.style.display = "none"; }, 12000);
+}
+function updateRun() {
+  const r = $("run");
+  r.textContent = S.running ? "Stop" : "Start";
+  r.classList.toggle("stopped", !S.running);
+}
 
 // ---- formats ----
 
-function fmtTime(ns, digits) {
-  const a = Math.abs(ns);
-  if (a >= 1e9) return (ns / 1e9).toFixed(digits ?? 6) + " s";
-  if (a >= 1e6) return (ns / 1e6).toFixed(digits ?? 3) + " ms";
-  if (a >= 1e3) return (ns / 1e3).toFixed(digits ?? 3) + " µs";
-  return ns.toFixed(0) + " ns";
+// A duration, to about five figures, in the unit that suits it.
+function fmtTime(ns) {
+  if (!isFinite(ns)) return "–";
+  const a = Math.abs(ns), sign = ns < 0 ? "−" : "";
+  const [u, n] = a >= 1e9 ? [1e9, "s"] : a >= 1e6 ? [1e6, "ms"] : a >= 1e3 ? [1e3, "µs"] : [1, "ns"];
+  const v = a / u, d = u === 1 ? 0 : v >= 100 ? 2 : v >= 10 ? 3 : 4;
+  return sign + v.toFixed(d) + " " + n;
+}
+// A time relative to time zero, signed, to as many digits as the view resolves.
+function fmtAt(t) {
+  const d = t - tzero(), a = Math.abs(d), res = Math.max(1, nsPerPx());
+  const [u, n] = a >= 1e9 ? [1e9, "s"] : a >= 1e6 ? [1e6, "ms"] : a >= 1e3 ? [1e3, "µs"] : [1, "ns"];
+  const digits = Math.max(0, Math.min(9, Math.ceil(Math.log10(u / res))));
+  return (d >= 0 ? "+" : "−") + group((a / u).toFixed(u === 1 ? 0 : digits)) + " " + n;
+}
+// Thin spaces between groups of three decimals, as on an instrument.
+function group(v) {
+  const [i, f] = v.split(".");
+  return f ? i + "." + f.replace(/(\d{3})(?=\d)/g, "$1\u2009") : i;
 }
 function fmtHz(hz) {
   if (!isFinite(hz) || hz <= 0) return "–";
-  if (hz >= 1e6) return (hz / 1e6).toFixed(3) + " MHz";
-  if (hz >= 1e3) return (hz / 1e3).toFixed(3) + " kHz";
-  return hz.toFixed(1) + " Hz";
+  if (hz >= 1e6) return (hz / 1e6).toFixed(4) + " MHz";
+  if (hz >= 1e3) return (hz / 1e3).toFixed(4) + " kHz";
+  return hz.toFixed(hz >= 100 ? 2 : 3) + " Hz";
+}
+function fmtHzShort(hz) {
+  if (!isFinite(hz) || hz <= 0) return "–";
+  return hz >= 1e6 ? (hz / 1e6).toFixed(3) + " MHz" : hz >= 1e3 ? (hz / 1e3).toFixed(3) + " kHz" : hz.toFixed(1) + " Hz";
 }
 function fmtBytes(b) {
   if (b >= 1 << 30) return (b / (1 << 30)).toFixed(2) + " GB";
@@ -547,7 +741,7 @@ function addDecoder(type) {
   const d = { type };
   DEC[type].fields.forEach(([k, , , dflt]) => { d[k] = dflt; });
   S.decoders.push(d);
-  drawDecoderForms(); resize();
+  drawDecoderForms(); layout();
 }
 
 function drawDecoderForms() {
@@ -555,17 +749,19 @@ function drawDecoderForms() {
   const box = $("decs");
   box.innerHTML = "";
   S.decoders.forEach((d, k) => {
-    const row = document.createElement("div");
-    row.className = "dec";
-    row.innerHTML = `<b>${DEC[d.type].name}</b>`;
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="head"><span class="sw" style="background:${DEC_COLORS[k % DEC_COLORS.length]}"></span>${DEC[d.type].name}<button>Remove</button></div><div class="fields"></div>`;
+    card.querySelector("button").onclick = () => { S.decoders.splice(k, 1); drawDecoderForms(); layout(); };
+    const fields = card.querySelector(".fields");
     DEC[d.type].fields.forEach(([key, label, kind]) => {
       const l = document.createElement("label");
-      l.textContent = label + " ";
+      l.textContent = label;
       let el;
       if (kind === "ch") {
         el = document.createElement("select");
         el.innerHTML = (key === "miso" || key === "cs" ? `<option value="-1">none</option>` : "") +
-          chs.map(c => `<option value="${c.ch}">ch${c.ch} ${esc(c.pin)}${c.name ? " " + esc(c.name) : ""}</option>`).join("");
+          chs.map(c => `<option value="${c.ch}">ch${c.ch} ${esc(chName(c.ch) || c.pin)}</option>`).join("");
         el.value = String(d[key]);
         el.onchange = () => { d[key] = Number(el.value); S.dirty = true; };
       } else if (kind === "num") {
@@ -574,94 +770,148 @@ function drawDecoderForms() {
         el.onchange = () => { d[key] = Number(el.value); S.dirty = true; };
       } else {
         el = document.createElement("input");
-        el.type = "checkbox"; el.checked = d[key];
+        el.type = "checkbox"; el.checked = d[key]; el.style.width = "auto";
         el.onchange = () => { d[key] = el.checked; S.dirty = true; };
       }
-      l.appendChild(el);
-      row.appendChild(l);
+      fields.appendChild(l); fields.appendChild(el);
     });
-    const rm = document.createElement("button");
-    rm.textContent = "Remove";
-    rm.onclick = () => { S.decoders.splice(k, 1); drawDecoderForms(); resize(); };
-    row.appendChild(rm);
-    box.appendChild(row);
+    box.appendChild(card);
   });
 }
 
-// ---- drawing ----
+// ---- geometry ----
 
-const cv = $("cv"), ctx = cv.getContext("2d");
-const LABEL = 190, AXIS = 26, ROW = 26, PAD = 5;
-let W = 800, H = 400, dpr = 1, colors = {};
+const plot = $("plot"), cv = $("cv"), ctx = cv.getContext("2d"), ov = $("ov"), octx = ov.getContext("2d");
+const mini = $("mini"), mctx = mini.getContext("2d");
+const LABEL = 172, RULER = 30;
+let W = 800, H = 400, rowH = 26, dpr = 1, colors = {};
 
 function readColors() {
   const cs = getComputedStyle(document.documentElement);
-  ["ink", "ink-2", "ink-3", "border", "surface", "surface-2", "wave", "busy", "mark", "trig", "critical", "cursor"]
-    .forEach(k => { colors[k] = cs.getPropertyValue("--" + k).trim(); });
+  ["bg", "panel", "panel-2", "plot", "row-alt", "grid", "border", "ink", "ink-2", "ink-3", "accent", "sel",
+   "mark", "trig", "critical", "marker-a", "marker-b"].forEach(k => { colors[k] = cs.getPropertyValue("--" + k).trim(); });
 }
 
-function nrows() { return (S.meta ? S.meta.channels.length : 19) + S.decoders.length; }
-
-function resize() {
+function layout() {
+  S.rows = [];
+  if (S.meta) S.meta.channels.forEach(c => { if (!chHidden(c.ch)) S.rows.push({ kind: "ch", ch: c.ch }); });
+  S.decoders.forEach((d, k) => S.rows.push({ kind: "dec", k }));
   dpr = window.devicePixelRatio || 1;
-  W = $("wrap").clientWidth;
-  H = AXIS + ROW * nrows() + 4;
-  cv.style.height = H + "px";
-  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  W = plot.clientWidth;
+  const avail = plot.clientHeight, n = Math.max(1, S.rows.length);
+  rowH = Math.max(20, Math.min(44, Math.floor((avail - RULER - 2) / n)));
+  H = Math.max(avail, RULER + rowH * n + 2);
+  for (const c of [cv, ov]) {
+    c.style.width = W + "px"; c.style.height = H + "px";
+    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  }
+  mini.width = Math.round(mini.clientWidth * dpr); mini.height = Math.round(38 * dpr);
   readColors();
-  S.dirty = true;
+  S.dirty = true; S.overlayDirty = true;
 }
 
 function dataEnd() { return Math.min(S.now[0], S.now[1]); }
-function plotW() { return Math.max(50, W - LABEL - 8); }
+function plotW() { return Math.max(50, W - LABEL - 6); }
 function xOf(t) { return LABEL + (t - S.view.a) / (S.view.b - S.view.a) * plotW(); }
 function tOf(x) { return S.view.a + (x - LABEL) / plotW() * (S.view.b - S.view.a); }
+function nsPerPx() { return (S.view.b - S.view.a) / plotW(); }
+function rowAt(y) { const i = Math.floor((y - RULER) / rowH); return y >= RULER && i >= 0 && i < S.rows.length ? i : -1; }
+function rowY(i) { return RULER + i * rowH; }
+
+function tzero() {
+  if (S.tzero === "trig") { const e = S.events.find(e => e.kind === "trig"); return e ? e.t : 0; }
+  if (S.tzero === "a" && S.markers[0] !== null) return S.markers[0];
+  return 0;
+}
+
+function setView(a, b) {
+  const span = Math.max(20, b - a);
+  S.view = { a, b: a + span };
+  S.dirty = true; S.overlayDirty = true;
+}
+function zoomAt(t, k) {
+  const a = t - (t - S.view.a) * k, b = t + (S.view.b - t) * k;
+  if (b - a < 20) return;
+  setView(a, b);
+}
+function setFollow(on) { S.follow = on; $("follow").classList.toggle("on", on); S.dirty = true; }
+function fitAll() { setFollow(false); setView(0, Math.max(1000, dataEnd())); }
+function centerOn(t) { const span = S.view.b - S.view.a; setFollow(false); setView(t - span / 2, t + span / 2); }
+
+// ---- the waveforms: drawn when the data or the view changes ----
 
 function niceStep(span, px) {
-  const raw = span / Math.max(2, px / 110), p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const raw = span / Math.max(2, px / 120), p = Math.pow(10, Math.floor(Math.log10(raw)));
   for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
   return 10 * p;
 }
 
-function drawAxis() {
-  const { a, b } = S.view, step = niceStep(b - a, plotW());
-  ctx.fillStyle = colors["ink-2"]; ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle";
-  ctx.strokeStyle = colors.border; ctx.lineWidth = 1;
-  for (let t = Math.ceil(a / step) * step; t <= b; t += step) {
+function unitOf(step) { return step >= 1e9 ? [1e9, "s"] : step >= 1e6 ? [1e6, "ms"] : step >= 1e3 ? [1e3, "µs"] : [1, "ns"]; }
+
+function drawRuler() {
+  const { a, b } = S.view, step = niceStep(b - a, plotW()), tz = tzero();
+  // The unit the times' size calls for; as many decimals as the step needs.
+  const big = Math.max(Math.abs(a - tz), Math.abs(b - tz));
+  const [u, un] = unitOf(Math.max(step, big >= 1e9 ? 1e9 : big >= 1e6 ? 1e6 : big >= 1e3 ? 1e3 : 1));
+  const d = Math.max(0, Math.ceil(-Math.log10(step / u) - 1e-9));
+  ctx.fillStyle = colors.panel; ctx.fillRect(0, 0, W, RULER);
+  ctx.strokeStyle = colors.border; ctx.beginPath(); ctx.moveTo(0, RULER - 0.5); ctx.lineTo(W, RULER - 0.5); ctx.stroke();
+  ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle";
+  const first = Math.ceil((a - tz) / step) * step + tz;
+  for (let t = first - step; t <= b + step; t += step / 5) {
+    const k = Math.round((t - tz) / (step / 5));
     const x = Math.round(xOf(t)) + 0.5;
-    ctx.beginPath(); ctx.moveTo(x, AXIS - 6); ctx.lineTo(x, H); ctx.stroke();
-    // In seconds from the capture's start, with as many decimals as the step needs.
-    const d = Math.max(0, Math.min(9, Math.ceil(-Math.log10(step / 1e9) - 1e-9)));
-    ctx.fillText((t / 1e9).toFixed(d) + " s", x + 3, AXIS / 2);
+    if (x < LABEL || x > W) continue;
+    const major = k % 5 === 0;
+    ctx.strokeStyle = major ? colors["ink-3"] : colors.border;
+    ctx.beginPath(); ctx.moveTo(x, major ? RULER - 9 : RULER - 4); ctx.lineTo(x, RULER - 1); ctx.stroke();
+    if (major) {
+      ctx.strokeStyle = colors.grid;
+      ctx.beginPath(); ctx.moveTo(x, RULER); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillStyle = colors["ink-2"];
+      const v = (t - tz) / u;
+      ctx.fillText(group((Math.abs(v) < 1e-12 ? 0 : v).toFixed(d)) + " " + un, x + 4, 11);
+    }
   }
+  ctx.fillStyle = colors.panel; ctx.fillRect(0, 0, LABEL, RULER);
+  ctx.fillStyle = colors["ink-3"]; ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText(S.tzero === "start" ? "from the start" : S.tzero === "trig" ? "from the trigger" : "from marker A", 10, 11);
+  ctx.fillText(fmtTime(step) + " a division", 10, 22);
 }
 
-function drawTrack(tr, y, end) {
-  const { a, b } = S.view, pw = plotW(), hi = y + PAD, lo = y + ROW - PAD;
+function drawTrack(tr, y, color, end) {
+  const { a, b } = S.view, pw = plotW(), pad = Math.max(4, rowH * 0.2), hi = y + pad, lo = y + rowH - pad;
   if (tr.init === null) return;
   const right = Math.min(b, end);
   if (right <= a) return;
   let i = tr.upper(a), lvl = tr.levelAt(i);
   const iEnd = tr.upper(right);
-  ctx.strokeStyle = colors.wave; ctx.fillStyle = colors.busy; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.lineJoin = "miter";
+  // A faint fill under the high level, which makes the pulses easy to read.
+  const highs = [];
+  let hx = lvl ? LABEL : null;
   ctx.beginPath();
-  let x = LABEL, yy = lvl ? hi : lo;
-  ctx.moveTo(x, yy);
+  let yy = lvl ? hi : lo;
+  ctx.moveTo(LABEL, yy);
   if (iEnd - i <= pw * 2) {
-    // Few enough to draw each change.
     for (let k = i; k < iEnd; k++) {
-      const xt = xOf(tr.at(k));
+      const xt = Math.round(xOf(tr.at(k))) + 0.5;
       ctx.lineTo(xt, yy);
+      if (lvl) highs.push([hx, xt]); else hx = xt;
       lvl ^= 1; yy = lvl ? hi : lo;
       ctx.lineTo(xt, yy);
     }
-    ctx.lineTo(xOf(right), yy);
+    const xr = xOf(right);
+    ctx.lineTo(xr, yy);
+    if (lvl) highs.push([hx, xr]);
     ctx.stroke();
+    ctx.globalAlpha = 0.09; ctx.fillStyle = color;
+    for (const [x0, x1] of highs) ctx.fillRect(x0, hi, x1 - x0, lo - hi);
+    ctx.globalAlpha = 1;
     return;
   }
-  // Too many: one binary search per pixel column, and a block where a column holds more than one change.
-  const tpp = (b - a) / pw, xr = xOf(right);
-  const busy = [];
+  // Too many changes to draw each: one binary search per pixel column, and a block where a column holds more than one.
+  const tpp = (b - a) / pw, xr = xOf(right), busy = [];
   for (let col = 0; LABEL + col < xr; col++) {
     const j = tr.upper(a + (col + 1) * tpp), xc = LABEL + col;
     if (j - i > 1) {
@@ -669,27 +919,36 @@ function drawTrack(tr, y, end) {
       lvl = tr.levelAt(j); yy = lvl ? hi : lo;
       ctx.moveTo(xc + 1, yy);
     } else if (j - i === 1) {
-      ctx.lineTo(xc, yy); lvl ^= 1; yy = lvl ? hi : lo; ctx.lineTo(xc, yy);
+      ctx.lineTo(xc + 0.5, yy); lvl ^= 1; yy = lvl ? hi : lo; ctx.lineTo(xc + 0.5, yy);
     }
     i = j;
-    if (j >= iEnd && j === tr.n) { ctx.lineTo(xr, yy); break; }
   }
   ctx.lineTo(xr, yy);
   ctx.stroke();
+  ctx.globalAlpha = 0.55; ctx.fillStyle = color;
   for (let k = 0; k < busy.length; k++) {
     let e = k;
     while (e + 1 < busy.length && busy[e + 1] === busy[e] + 1) e++;
     ctx.fillRect(busy[k], hi, busy[e] - busy[k] + 1, lo - hi);
     k = e;
   }
+  ctx.globalAlpha = 1;
 }
 
-function drawDecoded(res, y) {
-  const hi = y + 4, lo = y + ROW - 4;
-  ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle";
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r); c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h); c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r); c.quadraticCurveTo(x, y, x + r, y);
+}
+
+function drawDecoded(res, y, color) {
+  const top = y + 4, h = rowH - 8;
+  ctx.font = "11.5px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textBaseline = "middle";
   if (res === null) {
-    ctx.fillStyle = colors["ink-3"];
-    ctx.fillText("too many changes in view to decode: zoom in", LABEL + 6, y + ROW / 2);
+    ctx.fillStyle = colors["ink-3"]; ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText("too many changes in view to decode: zoom in", LABEL + 8, y + rowH / 2);
     return;
   }
   let lastX = -1;
@@ -698,18 +957,38 @@ function drawDecoded(res, y) {
     if (x1 < LABEL || x0 > W) continue;
     if (x1 - x0 < 3 && x0 - lastX < 2) continue;
     lastX = x0;
-    ctx.fillStyle = colors["surface-2"]; ctx.strokeStyle = colors.wave; ctx.lineWidth = 1;
     if (r.t0 === r.t1) {
-      ctx.fillStyle = colors.trig; ctx.fillText(r.text, x0 + 2, y + ROW / 2);
-      ctx.beginPath(); ctx.moveTo(x0 + 0.5, hi); ctx.lineTo(x0 + 0.5, lo); ctx.strokeStyle = colors.trig; ctx.stroke();
+      ctx.strokeStyle = colors.trig; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x0 + 0.5, top); ctx.lineTo(x0 + 0.5, top + h); ctx.stroke();
+      ctx.fillStyle = colors.trig; ctx.fillText(r.text, x0 + 3, y + rowH / 2);
       continue;
     }
-    ctx.fillRect(x0, hi, x1 - x0, lo - hi); ctx.strokeRect(x0 + 0.5, hi + 0.5, x1 - x0 - 1, lo - hi - 1);
+    ctx.globalAlpha = 0.18; ctx.fillStyle = color;
+    roundRect(ctx, x0, top, x1 - x0, h, Math.min(4, (x1 - x0) / 2)); ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke();
     const label = r.ch && r.ch !== "." ? `${r.text} '${r.ch}'` : r.text;
-    // The widest of the value and its character, the value, or the character, that fits.
-    const fits = [label, r.text, r.ch && r.ch !== "." ? r.ch : ""].find(l => l && ctx.measureText(l).width < x1 - x0 - 4);
-    if (fits) { ctx.fillStyle = colors.ink; ctx.fillText(fits, x0 + 3, y + ROW / 2); }
+    const fits = [label, r.text, r.ch && r.ch !== "." ? r.ch : ""].find(l => l && ctx.measureText(l).width < x1 - x0 - 6);
+    if (fits) { ctx.fillStyle = colors.ink; ctx.fillText(fits, x0 + 4, y + rowH / 2); }
   }
+}
+
+function drawLabel(i, y, title, sub, color, sub2) {
+  if (i % 2) { ctx.fillStyle = colors["row-alt"]; ctx.fillRect(0, y, W, rowH); }
+  ctx.fillStyle = colors.panel; ctx.fillRect(0, y, LABEL, rowH);
+  ctx.fillStyle = color; ctx.fillRect(0, y + 2, 4, rowH - 4);
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = colors.ink; ctx.font = "600 12px system-ui, sans-serif";
+  ctx.fillText(title, 12, rowH >= 32 ? y + rowH / 2 - 7 : y + rowH / 2);
+  if (rowH >= 32) {
+    ctx.fillStyle = colors["ink-3"]; ctx.font = "11px system-ui, sans-serif";
+    ctx.fillText(sub2, 12, y + rowH / 2 + 8);
+  }
+  ctx.fillStyle = colors["ink-2"]; ctx.font = "12px system-ui, sans-serif";
+  const subX = rowH >= 32 ? 64 : 48;
+  let s = sub;
+  while (s && ctx.measureText(s).width > LABEL - subX - 8) s = s.slice(0, -1);
+  ctx.fillText(s, subX, rowH >= 32 ? y + rowH / 2 - 7 : y + rowH / 2);
+  ctx.strokeStyle = colors.border; ctx.beginPath(); ctx.moveTo(LABEL - 0.5, y); ctx.lineTo(LABEL - 0.5, y + rowH); ctx.stroke();
 }
 
 function draw() {
@@ -719,71 +998,50 @@ function draw() {
   }
   Spill.missing = false;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = colors.plot; ctx.fillRect(0, 0, W, H);
   if (!S.meta) return;
-  drawAxis();
-  const label = (y, bold, rest) => {
-    ctx.fillStyle = colors.ink; ctx.font = "600 12px system-ui, sans-serif"; ctx.textBaseline = "middle";
-    ctx.fillText(bold, 6, y + ROW / 2);
-    ctx.fillStyle = colors["ink-2"]; ctx.font = "12px system-ui, sans-serif";
-    ctx.fillText(rest, 42, y + ROW / 2);
-  };
-  S.meta.channels.forEach((c, i) => {
-    const y = AXIS + i * ROW, tr = S.tracks[c.ch];
-    if (i % 2) { ctx.fillStyle = colors["surface-2"]; ctx.fillRect(0, y, W, ROW); }
-    label(y, "ch" + c.ch, c.pin + (c.name ? "  " + c.name : ""));
-    ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), ROW); ctx.clip();
-    drawTrack(tr, y, S.now[c.pru]);
-    ctx.restore();
-  });
-  // The decoders' rows.
-  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
+  drawRuler();
+  const end = dataEnd(), a = Math.max(0, S.view.a), b = Math.min(S.view.b, end);
   S.decoded = S.decoders.map(d => decode(d, a, b));
-  S.decoders.forEach((d, k) => {
-    const y = AXIS + (S.meta.channels.length + k) * ROW;
-    ctx.fillStyle = colors.surface; ctx.fillRect(0, y, W, ROW);
-    ctx.strokeStyle = colors.border; ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
-    label(y, DEC[d.type].name, "decoder " + (k + 1));
-    ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), ROW); ctx.clip();
-    drawDecoded(S.decoded[k], y);
-    ctx.restore();
+  S.rows.forEach((r, i) => {
+    const y = rowY(i);
+    if (r.kind === "ch") {
+      const c = S.meta.channels[r.ch], name = chName(r.ch);
+      drawLabel(i, y, "ch" + r.ch, name || c.pin, chColor(r.ch), name ? c.pin + (c.from ? " · from " + c.from : "") : "PRU" + c.pru + " GPI" + c.bit);
+      ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), rowH); ctx.clip();
+      drawTrack(S.tracks[r.ch], y, chColor(r.ch), S.now[c.pru]);
+      ctx.restore();
+    } else {
+      const d = S.decoders[r.k], color = DEC_COLORS[r.k % DEC_COLORS.length];
+      drawLabel(i, y, DEC[d.type].name, "analyzer " + (r.k + 1), color, "");
+      ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), rowH); ctx.clip();
+      drawDecoded(S.decoded[r.k], y, color);
+      ctx.restore();
+    }
   });
-  // Marks, trigger hits, and gaps, across every row.
-  const top = AXIS, bot = H;
+  // No data yet past the newest tick.
+  const xe = xOf(end);
+  if (xe < W) { ctx.fillStyle = colors.sel; ctx.globalAlpha = 0.5; ctx.fillRect(Math.max(LABEL, xe), RULER, W - Math.max(LABEL, xe), H - RULER); ctx.globalAlpha = 1; }
+  // Marks, trigger hits, and gaps: a line down every row, and a flag on the ruler.
   ctx.save(); ctx.beginPath(); ctx.rect(LABEL, 0, plotW(), H); ctx.clip();
-  ctx.font = "11px system-ui, sans-serif";
+  ctx.font = "10.5px system-ui, sans-serif";
   let shown = 0, lastLabel = -1e9;
-  for (let k = lowerEvent(S.view.a); k < S.events.length && shown < 500; k++) {
+  for (let k = lowerEvent(S.view.a); k < S.events.length && shown < 800; k++) {
     const e = S.events[k];
     if (e.t > S.view.b) break;
     shown++;
-    const x = Math.round(xOf(e.t)) + 0.5;
-    ctx.strokeStyle = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
-    ctx.setLineDash(e.kind === "gap" ? [2, 3] : []);
-    ctx.lineWidth = e.kind === "gap" ? 2 : 1;
-    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke();
-    // A label only where it does not run into the last one.
-    if (x - lastLabel > 46) {
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.fillText(e.kind === "mark" ? "mark " + e.value : e.kind === "trig" ? "trig" : "gap", x + 3, 9);
+    const x = Math.round(xOf(e.t)) + 0.5, col = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash(e.kind === "gap" ? [3, 3] : [1, 0]);
+    ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(x, RULER); ctx.lineTo(x, H); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(x - 4, RULER - 8); ctx.lineTo(x + 4, RULER - 8); ctx.lineTo(x, RULER - 2); ctx.fill();
+    if (x - lastLabel > 52) {
+      ctx.fillText(e.kind === "mark" ? "M" + e.value : e.kind === "trig" ? "T" : "gap", x + 5, RULER - 7);
       lastLabel = x;
     }
   }
   ctx.setLineDash([]);
-  // Cursors.
-  ["A", "B"].forEach((n, k) => {
-    const t = S.cursor[k];
-    if (t === null) return;
-    const x = Math.round(xOf(t)) + 0.5;
-    ctx.strokeStyle = colors.cursor; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke();
-    ctx.setLineDash([]); ctx.fillStyle = colors.cursor; ctx.fillText(n, x + 3, H - 8);
-  });
   ctx.restore();
-  if (Spill.missing) {
-    ctx.fillStyle = colors["ink-3"]; ctx.font = "11px system-ui, sans-serif";
-    ctx.fillText("reading from disk…", W - 130, AXIS / 2);
-  }
 }
 
 // Events are kept in arrival order, which is time order per stream: close enough to search.
@@ -793,102 +1051,377 @@ function lowerEvent(t) {
   return Math.max(0, lo - 1);
 }
 
-function centerOn(t) {
-  const span = S.view.b - S.view.a;
-  setFollow(false);
-  S.view = { a: t - span / 2, b: t + span / 2 };
-  S.dirty = true;
+// ---- measuring at the pointer ----
+
+// The pulse under t: its level, its edges, its width, and the cycle it starts.
+function pulseAt(tr, t) {
+  if (!tr || tr.init === null) return null;
+  const i = tr.upper(t), lvl = tr.levelAt(i);
+  const r = { lvl, t0: i > 0 ? tr.at(i - 1) : null, t1: i < tr.n ? tr.at(i) : null };
+  if (r.t0 !== null && r.t1 !== null) r.width = r.t1 - r.t0;
+  // A cycle: from this pulse's first edge to the next edge going the same way; or, at the end, the one before.
+  if (r.t0 !== null && i + 1 < tr.n) { r.c0 = r.t0; r.c1 = tr.at(i + 1); }
+  else if (i >= 2 && r.t1 !== null) { r.c0 = tr.at(i - 2); r.c1 = r.t1; }
+  if (r.c0 !== undefined) {
+    r.period = r.c1 - r.c0;
+    const high = r.c0 === r.t0 ? (lvl ? r.width : r.period - r.width) : (lvl ? r.period - (r.t1 - r.t0 || 0) : r.width);
+    if (r.width !== undefined && isFinite(high)) r.duty = Math.max(0, Math.min(1, high / r.period));
+  }
+  return r;
 }
 
-// ---- the facts line, the measurements, the decoded list, the events ----
-
-function updateFacts() {
-  const now = performance.now(), dt = (now - S.rxAt) / 1000;
-  if (dt >= 1) {
-    S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now;
+// Changes within 40 pixels of t, for a view too zoomed out to see one pulse:
+// how many, and the frequency from the median time between rising edges,
+// so a burst reads at its own rate, not diluted by the gaps around it.
+function densityAt(tr, t) {
+  const w = 40 * nsPerPx(), i0 = tr.upper(t - w), i1 = tr.upper(t + w), n = i1 - i0;
+  const first = tr.levelAt(i0 + 1) === 1 ? i0 : i0 + 1;
+  const rises = first < i1 ? Math.floor((i1 - 1 - first) / 2) + 1 : 0;
+  let hz = NaN;
+  if (rises >= 2 && rises <= 4000) {
+    const gaps = [];
+    for (let k = first; k + 2 < i1; k += 2) gaps.push(tr.at(k + 2) - tr.at(k));
+    gaps.sort((x, y) => x - y);
+    hz = 1e9 / gaps[gaps.length >> 1];
+  } else if (rises > 4000) {
+    hz = (rises - 1) / (tr.at(first + 2 * (rises - 1)) - tr.at(first)) * 1e9;
   }
-  let edges = 0;
-  S.tracks.forEach(t => { edges += t.n; });
-  const st = S.stats, parts = [
-    `<span>view <b class="num">${fmtTime(S.view.b - S.view.a)}</b></span>`,
-    `<span>held <b class="num">${fmtTime(Math.max(0, dataEnd()))}</b>, <b class="num">${fmtCount(edges)}</b> changes: <b class="num">${fmtBytes(Spill.ram)}</b> in RAM of ${fmtBytes(S.limit)}` +
-      (Spill.disk ? `, <b class="num">${fmtBytes(Spill.disk)}</b> on disk` : "") + `</span>`,
-    `<span>stream <b class="num">${fmtCount(S.rate)}</b> edges/s, <b class="num">${fmtBytes(S.rxRate)}</b>/s</span>`,
-  ];
-  if (st) parts.push(`<span>lost: gaps <b class="num">${st.gaps[0] + st.gaps[1]}</b>, missed <b class="num">${st.missed[0] + st.missed[1]}</b></span>`);
-  parts.push(`<span>marks <b class="num">${S.events.filter(e => e.kind === "mark").length}</b>, trigger hits <b class="num">${S.events.filter(e => e.kind === "trig").length}</b></span>`);
-  if (S.cursor[0] !== null && S.cursor[1] !== null) {
-    const d = Math.abs(S.cursor[1] - S.cursor[0]);
-    parts.push(`<span>B − A <b class="num">${fmtTime(d)}</b>, 1/Δ <b class="num">${fmtHz(1e9 / d)}</b></span>`);
-  }
-  $("facts").innerHTML = parts.join("");
+  return { n, hz, w: 2 * w };
 }
 
-// A channel over [a, b]: changes, rising edges, and the time it is high.
+function snapEdge(tr, t) {
+  if (!tr || tr.init === null) return null;
+  const tol = 7 * nsPerPx(), i = tr.upper(t);
+  let best = null;
+  for (const k of [i - 1, i]) {
+    if (k < 0 || k >= tr.n) continue;
+    const tk = tr.at(k);
+    if (Math.abs(tk - t) <= tol && (best === null || Math.abs(tk - t) < Math.abs(best - t))) best = tk;
+  }
+  return best;
+}
+
+function hoverInfo() {
+  const h = S.hover;
+  if (!h || h.row < 0 || h.x < LABEL) return null;
+  const r = S.rows[h.row], t = tOf(h.x);
+  if (t < 0 || t > dataEnd()) return null;
+  if (r.kind === "dec") {
+    const res = S.decoded[r.k];
+    if (!res) return null;
+    const hit = res.find(d => t >= d.t0 - 2 * nsPerPx() && t <= Math.max(d.t1, d.t0 + 3 * nsPerPx()));
+    return hit ? { kind: "dec", r, hit } : null;
+  }
+  const tr = S.tracks[r.ch], dense = densityAt(tr, t);
+  if (tr.upper(t + 1.5 * nsPerPx()) - tr.upper(t - 1.5 * nsPerPx()) > 2) return { kind: "dense", r, t, dense };
+  const p = pulseAt(tr, t);
+  return p ? { kind: "pulse", r, t, p, edge: snapEdge(tr, t) } : null;
+}
+
+function tipHTML(info) {
+  if (info.kind === "dec") {
+    const d = info.hit;
+    return `<div class="t">${esc(d.text)}${d.ch && d.ch !== "." ? " '" + esc(d.ch) + "'" : ""}</div><div class="g">` +
+      `<span>at</span><span class="num">${fmtAt(d.t0)}</span>` +
+      (d.t1 > d.t0 ? `<span>lasts</span><span class="num">${fmtTime(d.t1 - d.t0)}</span>` : "") + `</div>`;
+  }
+  const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
+  if (info.kind === "dense") {
+    return `<div class="t">ch${c.ch} ${esc(name)}</div><div class="g">` +
+      `<span>edges near</span><span class="num">${info.dense.n} in ${fmtTime(info.dense.w)}</span>` +
+      `<span>about</span><span class="num">${fmtHz(info.dense.hz)}</span></div><div style="opacity:.7;margin-top:3px">zoom in to measure one pulse</div>`;
+  }
+  const p = info.p;
+  let g = "";
+  if (p.width !== undefined) g += `<span>${p.lvl ? "high" : "low"} for</span><span class="num">${fmtTime(p.width)}</span>`;
+  else g += `<span>${p.lvl ? "high" : "low"}</span><span>${p.t0 === null ? "since the start" : "until now"}</span>`;
+  if (p.period !== undefined) {
+    g += `<span>period</span><span class="num">${fmtTime(p.period)}</span><span>frequency</span><span class="num">${fmtHz(1e9 / p.period)}</span>`;
+    if (p.duty !== undefined) g += `<span>duty</span><span class="num">${(100 * p.duty).toFixed(2)} %</span>`;
+  }
+  if (info.edge !== null) g += `<span>edge at</span><span class="num">${fmtAt(info.edge)}</span>`;
+  return `<div class="t"><span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</div><div class="g">${g}</div>`;
+}
+
+function statusHover(info) {
+  if (!info) return "point at a waveform to measure it";
+  if (info.kind === "dec") return `${esc(info.hit.text)} at ${fmtAt(info.hit.t0)}`;
+  const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
+  if (info.kind === "dense") return `ch${c.ch} ${esc(name)}: about <b>${fmtHz(info.dense.hz)}</b>, ${info.dense.n} edges near: zoom in`;
+  const p = info.p, parts = [`ch${c.ch} ${esc(name)}`];
+  if (p.width !== undefined) parts.push(`${p.lvl ? "high" : "low"} <b>${fmtTime(p.width)}</b>`);
+  if (p.period !== undefined) parts.push(`period <b>${fmtTime(p.period)}</b>`, `<b>${fmtHz(1e9 / p.period)}</b>`);
+  if (p.duty !== undefined) parts.push(`duty <b>${(100 * p.duty).toFixed(1)} %</b>`);
+  return parts.join(" · ");
+}
+
+// ---- the overlay: the pointer, the markers, the selection ----
+
+function bracket(c, x0, x1, y, color, text) {
+  c.strokeStyle = color; c.fillStyle = color; c.lineWidth = 1.25;
+  c.beginPath(); c.moveTo(x0, y - 4); c.lineTo(x0, y + 4); c.moveTo(x1, y - 4); c.lineTo(x1, y + 4);
+  c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
+  if (x1 - x0 > 12) {
+    c.beginPath(); c.moveTo(x0, y); c.lineTo(x0 + 5, y - 3); c.lineTo(x0 + 5, y + 3); c.fill();
+    c.beginPath(); c.moveTo(x1, y); c.lineTo(x1 - 5, y - 3); c.lineTo(x1 - 5, y + 3); c.fill();
+  }
+  if (text) pill(c, (x0 + x1) / 2, y, text, color, true);
+}
+
+// Black or white, whichever reads better on color (#rrggbb).
+function inkOn(color) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color.trim());
+  if (!m) return "#fff";
+  const [r, g, b] = m.slice(1).map(h => { const v = parseInt(h, 16) / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111" : "#fff";
+}
+
+function pill(c, x, y, text, color, center) {
+  c.font = "600 11px system-ui, sans-serif";
+  const w = c.measureText(text).width + 10, h = 16;
+  let px = center ? x - w / 2 : x;
+  px = Math.max(LABEL + 2, Math.min(W - w - 2, px));
+  c.fillStyle = color; roundRect(c, px, y - h / 2, w, h, 4); c.fill();
+  c.fillStyle = inkOn(color); c.textBaseline = "middle"; c.fillText(text, px + 5, y + 0.5);
+}
+
+function drawOverlay() {
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.clearRect(0, 0, W, H);
+  if (!S.meta) return;
+  octx.save(); octx.beginPath(); octx.rect(LABEL, 0, plotW(), H); octx.clip();
+  // The selection.
+  if (S.sel) {
+    const x0 = xOf(Math.min(S.sel.a, S.sel.b)), x1 = xOf(Math.max(S.sel.a, S.sel.b));
+    octx.fillStyle = colors.sel; octx.fillRect(x0, RULER, x1 - x0, H - RULER);
+    octx.strokeStyle = colors.accent; octx.lineWidth = 1;
+    octx.beginPath(); octx.moveTo(x0 + 0.5, RULER); octx.lineTo(x0 + 0.5, H); octx.moveTo(x1 - 0.5, RULER); octx.lineTo(x1 - 0.5, H); octx.stroke();
+    bracket(octx, x0, x1, RULER - 8, colors.accent, fmtTime(Math.abs(S.sel.b - S.sel.a)));
+  }
+  // The markers.
+  const mcol = [colors["marker-a"], colors["marker-b"]];
+  S.markers.forEach((t, k) => {
+    if (t === null) return;
+    const x = Math.round(xOf(t)) + 0.5;
+    octx.strokeStyle = mcol[k]; octx.lineWidth = 1.5; octx.setLineDash([5, 3]);
+    octx.beginPath(); octx.moveTo(x, RULER); octx.lineTo(x, H); octx.stroke(); octx.setLineDash([]);
+    pill(octx, x - 7, RULER - 8, k ? "B" : "A", mcol[k], false);
+  });
+  if (S.markers[0] !== null && S.markers[1] !== null) {
+    const x0 = xOf(Math.min(...S.markers)), x1 = xOf(Math.max(...S.markers));
+    bracket(octx, x0, x1, H - 12, colors.accent, "Δ " + fmtTime(Math.abs(S.markers[1] - S.markers[0])));
+  }
+  // The pointer.
+  const h = S.hover, info = h ? hoverInfo() : null;
+  if (h && h.x >= LABEL && h.y >= 0) {
+    const x = Math.round(h.x) + 0.5;
+    octx.strokeStyle = colors["ink-3"]; octx.lineWidth = 1; octx.setLineDash([2, 3]);
+    octx.beginPath(); octx.moveTo(x, RULER); octx.lineTo(x, H); octx.stroke(); octx.setLineDash([]);
+    pill(octx, h.x, 9, fmtAt(tOf(h.x)), colors.ink, true);
+    if (h.row >= 0) {
+      const y = rowY(h.row);
+      octx.fillStyle = colors.sel; octx.fillRect(LABEL, y, plotW(), rowH);
+    }
+  }
+  if (info && info.kind === "pulse") {
+    const p = info.p, y = rowY(info.r.row !== undefined ? info.r.row : h.row), color = chColor(info.r.ch);
+    const pad = Math.max(4, rowH * 0.2), lvlY = p.lvl ? y + pad : y + rowH - pad;
+    if (p.t0 !== null && p.t1 !== null) {
+      const x0 = xOf(p.t0), x1 = xOf(p.t1);
+      octx.strokeStyle = color; octx.lineWidth = 3.5;
+      octx.beginPath(); octx.moveTo(x0, lvlY); octx.lineTo(x1, lvlY); octx.stroke();
+      octx.strokeStyle = colors["ink-3"]; octx.lineWidth = 1; octx.setLineDash([3, 3]);
+      octx.beginPath(); octx.moveTo(x0 + 0.5, RULER); octx.lineTo(x0 + 0.5, H); octx.moveTo(x1 + 0.5, RULER); octx.lineTo(x1 + 0.5, H); octx.stroke();
+      octx.setLineDash([]);
+      if (p.c0 !== undefined) {
+        const c0 = xOf(p.c0), c1 = xOf(p.c1), by = y + rowH + 9 <= H - 4 ? y + rowH + 9 : y - 9;
+        if (c1 - c0 > 30) bracket(octx, c0, c1, by, color, fmtTime(p.period));
+      }
+    }
+    if (info.edge !== null) {
+      const xe = xOf(info.edge);
+      octx.fillStyle = color; octx.beginPath(); octx.arc(xe, y + rowH / 2, 4, 0, 2 * Math.PI); octx.fill();
+    }
+  }
+  octx.restore();
+  // The tooltip and the status bar.
+  const tip = $("tip");
+  if (info && h && !S.drag) {
+    tip.innerHTML = tipHTML(info);
+    tip.style.display = "block";
+    const r = ov.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+    let tx = r.left + h.x + 16, ty = r.top + h.y + 18 - plot.scrollTop * 0;
+    if (tx + tw > window.innerWidth - 8) tx = r.left + h.x - tw - 16;
+    if (ty + th > window.innerHeight - 8) ty = r.top + h.y - th - 12;
+    tip.style.left = tx + "px"; tip.style.top = ty + "px";
+  } else {
+    tip.style.display = "none";
+  }
+  $("s-hover").innerHTML = statusHover(info);
+}
+
+// ---- the overview: the whole capture's activity, and where the view is ----
+
+let miniAt = 0;
+function drawMini(force) {
+  const now = performance.now();
+  if (!force && now - miniAt < 400) return;
+  miniAt = now;
+  const w = mini.width / dpr, h = 38, end = Math.max(1, dataEnd());
+  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mctx.fillStyle = colors.panel; mctx.fillRect(0, 0, w, h);
+  if (!S.meta || S.t0 === null) return;
+  const n = Math.max(20, Math.floor(w / 2)), counts = new Float64Array(n);
+  let max = 1;
+  for (const r of S.rows) {
+    if (r.kind !== "ch") continue;
+    const tr = S.tracks[r.ch];
+    if (tr.init === null || !tr.n) continue;
+    let prev = 0;
+    for (let k = 0; k < n; k++) {
+      const j = tr.upper(end * (k + 1) / n);
+      counts[k] += j - prev; prev = j;
+    }
+  }
+  for (let k = 0; k < n; k++) max = Math.max(max, counts[k]);
+  const bw = w / n;
+  mctx.fillStyle = colors.accent;
+  for (let k = 0; k < n; k++) {
+    if (!counts[k]) continue;
+    const v = Math.log1p(counts[k]) / Math.log1p(max), bh = Math.max(1, v * (h - 10));
+    mctx.globalAlpha = 0.25 + 0.6 * v;
+    mctx.fillRect(k * bw, h - 4 - bh, Math.max(1, bw - 0.5), bh);
+  }
+  mctx.globalAlpha = 1;
+  for (const e of S.events) {
+    if (e.kind === "gap") continue;
+    mctx.fillStyle = e.kind === "mark" ? colors.mark : colors.trig;
+    mctx.fillRect(e.t / end * w, 0, 1, 6);
+  }
+  const x0 = Math.max(0, S.view.a / end * w), x1 = Math.min(w, S.view.b / end * w);
+  mctx.fillStyle = colors.sel; mctx.fillRect(x0, 0, Math.max(2, x1 - x0), h);
+  mctx.strokeStyle = colors.accent; mctx.lineWidth = 1.5; mctx.strokeRect(x0 + 0.75, 0.75, Math.max(2, x1 - x0) - 1.5, h - 1.5);
+}
+
+// ---- the side panel ----
+
 function measure(tr, a, b) {
   if (tr.init === null || b <= a) return null;
   const i = tr.upper(a), j = tr.upper(b), n = j - i;
-  // Rising changes: those after which the level is 1, every other index.
   const firstUp = (tr.levelAt(i) === 0) ? i : i + 1;
   const rises = firstUp < j ? Math.floor((j - 1 - firstUp) / 2) + 1 : 0;
+  const falls = n - rises;
   let high = 0;
   if (n <= 200000) {
     let t = a, lvl = tr.levelAt(i);
     for (let k = i; k < j; k++) { const tk = tr.at(k); if (lvl) high += tk - t; t = tk; lvl ^= 1; }
     if (lvl) high += b - t;
   } else {
-    // Many changes: sample the level at 4000 points.
     const N = 4000;
     for (let k = 0; k < N; k++) high += tr.levelAtTime(a + (k + 0.5) * (b - a) / N);
     high = high / N * (b - a);
   }
-  // The period, from the first rising edge in view to the last.
   const period = rises >= 2 ? (tr.at(firstUp + 2 * (rises - 1)) - tr.at(firstUp)) / (rises - 1) : NaN;
-  return { n, rises, period, high, level: tr.levelAt(j) };
+  return { n, rises, falls, period, high, low: (b - a) - high, level: tr.levelAt(j) };
 }
 
-function updateMeas() {
+function updateMeasure() {
+  const m = S.markers, kv = [];
+  kv.push(`<span><span class="sw" style="background:${colors["marker-a"]}"></span>A</span><span>${m[0] === null ? "click a waveform" : fmtAt(m[0])}</span>`);
+  kv.push(`<span><span class="sw" style="background:${colors["marker-b"]}"></span>B</span><span>${m[1] === null ? "right-click a waveform" : fmtAt(m[1])}</span>`);
+  if (m[0] !== null && m[1] !== null) {
+    const d = Math.abs(m[1] - m[0]);
+    kv.push(`<span>B − A</span><span><b>${fmtTime(d)}</b></span><span>1 / Δ</span><span>${fmtHz(1e9 / d)}</span>`);
+  }
+  $("markers").innerHTML = kv.join("");
   if (!S.meta) return;
-  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd()), span = b - a;
-  let h = `<tr><th>ch</th><th>pin</th><th>wired to</th><th class="r">changes</th><th class="r">frequency</th><th class="r">period</th><th class="r">duty</th><th>level at the right</th></tr>`;
-  S.meta.channels.forEach(c => {
-    const m = measure(S.tracks[c.ch], a, b);
-    h += `<tr><td>${c.ch}</td><td>${c.pin}</td><td>${c.name ? c.name + " " + c.from : "–"}</td>`;
-    if (!m || span <= 0) { h += `<td class="r">–</td><td class="r">–</td><td class="r">–</td><td class="r">–</td><td>–</td></tr>`; return; }
-    h += `<td class="r num">${fmtCount(m.n)}</td><td class="r num">${isFinite(m.period) ? fmtHz(1e9 / m.period) : "–"}</td>` +
-         `<td class="r num">${isFinite(m.period) ? fmtTime(m.period) : "–"}</td><td class="r num">${(100 * m.high / span).toFixed(1)}%</td>` +
-         `<td>${m.level ? "high" : "low"}</td></tr>`;
+  const end = dataEnd();
+  let a, b;
+  if (S.sel && Math.abs(S.sel.b - S.sel.a) > 0) {
+    a = Math.max(0, Math.min(S.sel.a, S.sel.b)); b = Math.min(end, Math.max(S.sel.a, S.sel.b));
+    $("mtitle").textContent = "The selection";
+    $("mhint").textContent = `${fmtTime(b - a)}, from ${fmtAt(a)}. Esc clears it; Z zooms to it.`;
+  } else {
+    a = Math.max(0, S.view.a); b = Math.min(S.view.b, end);
+    $("mtitle").textContent = "The time in view";
+    $("mhint").textContent = `${fmtTime(Math.max(0, b - a))}. Shift-drag to measure a range instead.`;
+  }
+  const span = b - a;
+  let h = `<tr><th>channel</th><th class="r">freq</th><th class="r">duty</th><th class="r" title="the mean time high">+width</th><th class="r" title="the mean time low">−width</th></tr>`;
+  S.rows.forEach(r => {
+    if (r.kind !== "ch") return;
+    const c = S.meta.channels[r.ch], mm = span > 0 ? measure(S.tracks[r.ch], a, b) : null;
+    const name = chName(r.ch) || c.pin;
+    h += `<tr title="ch${c.ch} ${esc(c.pin)}${chName(r.ch) ? " " + esc(chName(r.ch)) : ""}: ${mm ? fmtCount(mm.n) : 0} edges"><td><span class="sw" style="background:${chColor(r.ch)}"></span>${c.ch} ${esc(name.slice(0, 10))}</td>`;
+    if (!mm || !mm.n) { h += `<td class="r">–</td><td class="r num">${mm ? (100 * mm.high / span).toFixed(1) + "%" : "–"}</td><td class="r">–</td><td class="r">–</td></tr>`; return; }
+    h += `<td class="r num">${isFinite(mm.period) ? fmtHzShort(1e9 / mm.period) : "–"}</td>` +
+      `<td class="r num">${(100 * mm.high / span).toFixed(1)}%</td>` +
+      `<td class="r num">${mm.rises ? fmtTime(mm.high / mm.rises) : "–"}</td><td class="r num">${mm.falls ? fmtTime(mm.low / mm.falls) : "–"}</td></tr>`;
   });
   $("meas").innerHTML = h;
 }
 
 function updateDecoded() {
-  let h = "";
+  const q = $("dsearch").value.trim().toLowerCase();
+  let h = "", sum = [];
   S.decoders.forEach((d, k) => {
     const res = S.decoded[k];
-    if (!res || !res.length) return;
+    if (res === null) { sum.push(`${DEC[d.type].name} ${k + 1}: too many changes in view, zoom in`); return; }
+    if (!res || !res.length) { sum.push(`${DEC[d.type].name} ${k + 1}: nothing in view`); return; }
     const text = res.filter(r => r.ch).map(r => r.ch).join("");
-    h += `<tr><th colspan="3">${DEC[d.type].name}, decoder ${k + 1}: ${res.length} in view${text ? ": “" + esc(text.slice(0, 120)) + "”" : ""}</th></tr>`;
-    res.slice(0, 100).forEach(r => {
-      h += `<tr class="go" data-t="${r.t0}"><td class="num">${fmtTime(r.t0)}</td><td class="num">${esc(r.text)}</td><td>${r.ch ? esc(r.ch) : ""}</td></tr>`;
-    });
+    sum.push(`${DEC[d.type].name} ${k + 1}: ${res.length}${text ? ", “" + esc(text.slice(0, 60)) + "”" : ""}`);
+    let n = 0;
+    for (const r of res) {
+      if (q && !(r.text.toLowerCase().includes(q) || (r.ch || "").toLowerCase() === q || text.toLowerCase().includes(q) && r.ch && q.includes(r.ch.toLowerCase()))) continue;
+      if (++n > 300) break;
+      h += `<tr class="go" data-t="${r.t0}"><td><span class="sw" style="background:${DEC_COLORS[k % DEC_COLORS.length]}"></span>${k + 1}</td><td class="num">${fmtAt(r.t0)}</td><td class="num">${esc(r.text)}</td><td>${r.ch ? esc(r.ch) : ""}</td></tr>`;
+    }
   });
-  $("dectab").innerHTML = h;
+  $("dsum").innerHTML = S.decoders.length ? sum.join("<br>") : "Add an analyzer to decode a bus in the time in view.";
+  $("dectab").innerHTML = h ? `<tr><th></th><th>at</th><th>value</th><th></th></tr>` + h : "";
 }
 
 function updateEvents() {
-  const ev = S.events.slice(-200).reverse();
+  const ev = S.events.slice(-300).reverse();
   let h = `<tr><th>at</th><th>what</th><th>from</th><th class="r">value</th></tr>`;
   ev.forEach(e => {
-    const what = e.kind === "mark" ? "mark" : e.kind === "trig" ? "trigger hit" : "gap: records lost";
-    const from = e.kind === "mark" ? "fabric node " + e.from : "PRU" + e.s;
-    const value = e.kind === "trig" ? "0x" + e.value.toString(16) : e.value;
-    h += `<tr class="go" data-t="${e.t}"><td class="num">${fmtTime(e.t)}</td><td>${what}</td><td>${from}</td><td class="r num">${value}</td></tr>`;
+    const what = e.kind === "mark" ? "mark" : e.kind === "trig" ? "trigger hit" : "gap";
+    const col = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
+    const from = e.kind === "mark" ? "node " + e.from : "PRU" + e.s;
+    const value = e.kind === "trig" ? "0x" + e.value.toString(16) : e.kind === "gap" ? e.value + " lost" : e.value;
+    h += `<tr class="go" data-t="${e.t}"><td class="num">${fmtAt(e.t)}</td><td><span class="sw" style="background:${col}"></span>${what}</td><td>${from}</td><td class="r num">${value}</td></tr>`;
   });
-  $("evtab").innerHTML = ev.length ? h : "<tr><td>none yet: ai64 la mark, ai64 la trigger, or the MCP server make them</td></tr>";
+  $("evtab").innerHTML = ev.length ? h : `<tr><td class="hint">none yet</td></tr>`;
 }
 
-// ---- reading a capture straight through: VCD export and saving ----
+function buildChanList() {
+  if (!S.meta) return;
+  const box = $("chlist");
+  box.innerHTML = "";
+  S.meta.channels.forEach(c => {
+    const row = document.createElement("div");
+    row.className = "chrow";
+    row.innerHTML = `<input type="checkbox" ${chHidden(c.ch) ? "" : "checked"} title="show">` +
+      `<span><button class="color" title="color" style="background:${chColor(c.ch)}"></button> ch${c.ch}</span>` +
+      `<span><input type="text" placeholder="${esc(c.name || "name")}" value="${esc(S.chan.names[c.ch] || "")}"><div class="pin">${esc(c.pin)}${c.from ? " · jumpered from " + esc(c.from) : ""} · PRU${c.pru} GPI${c.bit}</div></span>` +
+      `<span class="pin num" title="edges">${fmtCount(S.tracks[c.ch] ? S.tracks[c.ch].n : 0)}</span>`;
+    const [vis, name] = row.querySelectorAll("input"), color = row.querySelector(".color");
+    vis.onchange = () => {
+      S.chan.hidden = S.chan.hidden.filter(x => x !== c.ch);
+      if (!vis.checked) S.chan.hidden.push(c.ch);
+      saveChan(); layout();
+    };
+    color.onclick = () => {
+      const i = PALETTE.indexOf(chColor(c.ch));
+      S.chan.colors[c.ch] = PALETTE[(i + 1) % PALETTE.length];
+      color.style.background = chColor(c.ch); saveChan(); S.dirty = true;
+    };
+    name.onchange = () => { if (name.value.trim()) S.chan.names[c.ch] = name.value.trim(); else delete S.chan.names[c.ch]; saveChan(); S.dirty = true; drawDecoderForms(); };
+    box.appendChild(row);
+  });
+}
+
+// ---- saving, opening, exporting ----
 
 // Channel tr's change i, a block at a time, wherever the blocks are.
 async function cursorAt(tr, i, cur) {
@@ -908,12 +1441,14 @@ async function upperAsync(tr, t) {
   return c * CHUNK + l;
 }
 
+// The selection, or the time in view, as a VCD file: every channel.
 async function exportVcd() {
   if (!S.meta) return;
-  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
+  let a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
+  if (S.sel) { a = Math.max(0, Math.min(S.sel.a, S.sel.b)); b = Math.min(dataEnd(), Math.max(S.sel.a, S.sel.b)); }
   const chans = S.meta.channels, out = [];
   out.push(`$date ${new Date().toISOString()} $end\n$version ai64 la, the web viewer $end\n$timescale 1 ns $end\n$scope module la $end\n`);
-  chans.forEach((c, i) => out.push(`$var wire 1 ${String.fromCharCode(33 + i)} ch${c.ch}_${c.pin.replace(".", "_")}${c.name ? "_" + c.name : ""} $end\n`));
+  chans.forEach((c, i) => out.push(`$var wire 1 ${String.fromCharCode(33 + i)} ch${c.ch}_${c.pin.replace(".", "_")}${chName(c.ch) ? "_" + chName(c.ch).replace(/\W+/g, "_") : ""} $end\n`));
   out.push(`$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n`);
   const tr = chans.map(c => S.tracks[c.ch]), idx = [], end = [], cur = [], head = [];
   for (let i = 0; i < chans.length; i++) {
@@ -922,7 +1457,6 @@ async function exportVcd() {
     out.push(`${tr[i].init === null ? "x" : tr[i].levelAt(idx[i])}${String.fromCharCode(33 + i)}\n`);
   }
   out.push("$end\n");
-  // Merge the channels' changes by time.
   let lines = [], last = -1, total = 0;
   for (;;) {
     let best = -1, bt = Infinity;
@@ -959,7 +1493,7 @@ async function saveCapture() {
     format: "ai64-la capture 1", saved: new Date().toISOString(), meta: S.meta, now: S.now,
     events: S.events, tracks: S.tracks.map(t => ({ ch: t.ch, init: t.init, n: t.n })),
   };
-  let hj = new TextEncoder().encode(JSON.stringify(header));
+  const hj = new TextEncoder().encode(JSON.stringify(header));
   const pad = (8 - hj.length % 8) % 8;
   const head = new Uint8Array(16 + hj.length + pad).fill(32);
   head.set(new TextEncoder().encode("AI64LA1\n"));
@@ -1009,82 +1543,215 @@ async function openCapture(file) {
 
 // ---- interaction ----
 
-let drag = null;
+function pointer(e) { const r = ov.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
-cv.addEventListener("wheel", e => {
+// A time for a marker at x: an edge's, if one of the row's is within a few pixels.
+function markerTime(x, y) {
+  const t = tOf(x), i = rowAt(y);
+  if (i >= 0 && S.rows[i].kind === "ch") {
+    const e = snapEdge(S.tracks[S.rows[i].ch], t);
+    if (e !== null) return e;
+  }
+  return t;
+}
+
+function nearMarker(x) {
+  for (let k = 0; k < 2; k++) if (S.markers[k] !== null && Math.abs(xOf(S.markers[k]) - x) <= 5) return k;
+  return -1;
+}
+
+ov.addEventListener("pointermove", e => {
+  const p = pointer(e);
+  S.hover = { x: p.x, y: p.y, row: rowAt(p.y) };
+  const d = S.drag;
+  if (d) {
+    if (Math.abs(p.x - d.x) > 3) d.moved = true;
+    if (d.mode === "pan" && d.moved) {
+      const dt = (p.x - d.x) * (d.b - d.a) / plotW();
+      setFollow(false); setView(d.a - dt, d.b - dt);
+    } else if (d.mode === "sel") {
+      S.sel = { a: d.t, b: tOf(Math.max(LABEL, p.x)) };
+      $("zsel").disabled = false;
+    } else if (d.mode === "marker") {
+      S.markers[d.k] = markerTime(p.x, p.y);
+    }
+  }
+  ov.className = d && d.mode === "pan" && d.moved ? "grab" : nearMarker(p.x) >= 0 || (d && d.mode === "marker") ? "ew" : "";
+  S.overlayDirty = true;
+});
+ov.addEventListener("pointerleave", () => { if (!S.drag) { S.hover = null; S.overlayDirty = true; } });
+ov.addEventListener("pointerdown", e => {
+  if (e.button === 2) return;
+  const p = pointer(e);
+  if (p.x < LABEL) return;
+  ov.setPointerCapture(e.pointerId);
+  const k = nearMarker(p.x);
+  if (k >= 0) S.drag = { mode: "marker", k, x: p.x };
+  else if (e.shiftKey) { S.drag = { mode: "sel", t: tOf(p.x), x: p.x }; S.sel = null; }
+  else S.drag = { mode: "pan", x: p.x, a: S.view.a, b: S.view.b, moved: false };
+});
+ov.addEventListener("pointerup", e => {
+  const d = S.drag, p = pointer(e);
+  S.drag = null;
+  if (d && d.mode === "pan" && !d.moved && p.x >= LABEL) S.markers[0] = markerTime(p.x, p.y);
+  if (d && d.mode === "sel" && S.sel && Math.abs(xOf(S.sel.b) - xOf(S.sel.a)) < 3) { S.sel = null; $("zsel").disabled = true; }
+  S.overlayDirty = true;
+});
+ov.addEventListener("contextmenu", e => {
   e.preventDefault();
-  const k = Math.pow(1.2, e.deltaY > 0 ? 1 : -1), x = e.offsetX;
-  const t = S.follow ? S.view.b : tOf(Math.max(LABEL, x));
-  const a = t - (t - S.view.a) * k, b = t + (S.view.b - t) * k;
-  if (b - a < 20) return;
-  S.view = { a, b }; S.dirty = true;
+  const p = pointer(e);
+  if (p.x >= LABEL) { S.markers[1] = markerTime(p.x, p.y); S.overlayDirty = true; }
+});
+ov.addEventListener("dblclick", e => { if (pointer(e).x >= LABEL) fitAll(); });
+ov.addEventListener("wheel", e => {
+  e.preventDefault();
+  const p = pointer(e);
+  if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+    const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX, dt = dx * nsPerPx();
+    setFollow(false); setView(S.view.a + dt, S.view.b + dt);
+  } else {
+    const k = Math.exp(Math.max(-3, Math.min(3, e.deltaY * (e.deltaMode ? 0.05 : 0.0025))));
+    zoomAt(S.follow ? S.view.b : tOf(Math.max(LABEL, p.x)), k);
+  }
 }, { passive: false });
 
-cv.addEventListener("pointerdown", e => {
-  if (e.offsetX < LABEL) return;
-  drag = { x: e.offsetX, a: S.view.a, b: S.view.b, moved: false };
-  cv.setPointerCapture(e.pointerId);
-});
-cv.addEventListener("pointermove", e => {
-  if (!drag) return;
-  const dx = e.offsetX - drag.x;
-  if (Math.abs(dx) > 3) drag.moved = true;
-  if (!drag.moved) return;
-  const dt = dx / plotW() * (drag.b - drag.a);
-  S.view = { a: drag.a - dt, b: drag.b - dt }; setFollow(false); S.dirty = true;
-});
-cv.addEventListener("pointerup", e => {
-  if (drag && !drag.moved) { S.cursor[e.shiftKey ? 1 : 0] = tOf(e.offsetX); S.dirty = true; }
-  drag = null;
-});
-cv.addEventListener("dblclick", () => fitAll());
+function miniJump(e) {
+  const r = mini.getBoundingClientRect(), t = (e.clientX - r.left) / r.width * Math.max(1, dataEnd());
+  centerOn(t);
+}
+mini.addEventListener("pointerdown", e => { mini.setPointerCapture(e.pointerId); miniJump(e); mini.dragging = true; });
+mini.addEventListener("pointermove", e => { if (mini.dragging) miniJump(e); });
+mini.addEventListener("pointerup", () => { mini.dragging = false; });
 
-function fitAll() { setFollow(false); S.view = { a: 0, b: Math.max(1000, dataEnd()) }; S.dirty = true; }
-function setFollow(on) { S.follow = on; $("follow").classList.toggle("on", on); S.dirty = true; }
+function zoomSel() {
+  if (!S.sel) return;
+  const a = Math.min(S.sel.a, S.sel.b), b = Math.max(S.sel.a, S.sel.b);
+  setFollow(false); setView(a, b); S.sel = null; $("zsel").disabled = true;
+}
+
+// The next or previous edge on the channel pointed at, to the middle of the view.
+function jumpEdge(dir) {
+  const h = S.hover;
+  const i = h ? h.row : -1, r = i >= 0 ? S.rows[i] : S.rows.find(r => r.kind === "ch");
+  if (!r || r.kind !== "ch") return;
+  const tr = S.tracks[r.ch], mid = (S.view.a + S.view.b) / 2;
+  let k = tr.upper(mid + nsPerPx() * (dir > 0 ? 1 : -1));
+  if (dir < 0) k = Math.max(0, tr.upper(mid - nsPerPx()) - 1);
+  if (k >= 0 && k < tr.n) centerOn(tr.at(k));
+}
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-  if (e.key === "Escape") { S.cursor = [null, null]; S.dirty = true; }
-  if (e.key === "f" || e.key === "F") setFollow(!S.follow);
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  const span = S.view.b - S.view.a, k = e.key;
+  if (k === "Escape") { if (S.sel) S.sel = null; else S.markers = [null, null]; $("zsel").disabled = !S.sel; $("help").style.display = "none"; }
+  else if (k === "f" || k === "F" || k === "End") setFollow(true);
+  else if (k === "Home") { setFollow(false); setView(0, span); }
+  else if (k === "ArrowLeft") { setFollow(false); setView(S.view.a - span * 0.15, S.view.b - span * 0.15); }
+  else if (k === "ArrowRight") { setFollow(false); setView(S.view.a + span * 0.15, S.view.b + span * 0.15); }
+  else if (k === "+" || k === "=" || k === "ArrowUp") zoomAt(S.follow ? S.view.b : (S.view.a + S.view.b) / 2, 1 / 1.5);
+  else if (k === "-" || k === "_" || k === "ArrowDown") zoomAt(S.follow ? S.view.b : (S.view.a + S.view.b) / 2, 1.5);
+  else if (k === "z" || k === "Z") zoomSel();
+  else if (k === "[") jumpEdge(-1);
+  else if (k === "]") jumpEdge(1);
+  else if ((k === "a" || k === "A" || k === "b" || k === "B") && S.hover && S.hover.x >= LABEL) S.markers[k.toLowerCase() === "a" ? 0 : 1] = markerTime(S.hover.x, S.hover.y);
+  else if (k === " ") { if (S.running) stop(); else clearAll().then(start); }
+  else if (k === "?") { const hp = $("help"); hp.style.display = hp.style.display === "block" ? "none" : "block"; }
+  else return;
+  e.preventDefault();
+  S.dirty = true; S.overlayDirty = true;
 });
+
 for (const id of ["dectab", "evtab"]) {
-  $(id).addEventListener("click", e => {
-    const row = e.target.closest("tr.go");
-    if (row) centerOn(Number(row.dataset.t));
-  });
+  $(id).addEventListener("click", e => { const row = e.target.closest("tr.go"); if (row) centerOn(Number(row.dataset.t)); });
 }
-$("run").onclick = () => { if (S.running) stop(); else { clearAll().then(start); } };
+document.querySelectorAll(".tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("sel", x === b));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("sel", p.id === "p-" + b.dataset.tab));
+    store("ai64-la-tab", b.dataset.tab);
+    if (b.dataset.tab === "chans") buildChanList();
+  };
+});
+$("run").onclick = () => { if (S.running) stop(); else clearAll().then(start); };
 $("follow").onclick = () => setFollow(!S.follow);
+$("zin").onclick = () => zoomAt(S.follow ? S.view.b : (S.view.a + S.view.b) / 2, 1 / 2);
+$("zout").onclick = () => zoomAt(S.follow ? S.view.b : (S.view.a + S.view.b) / 2, 2);
 $("fit").onclick = fitAll;
-$("clear").onclick = () => { clearAll(); };
+$("zsel").onclick = zoomSel;
 $("vcd").onclick = () => { exportVcd().catch(e => banner("Export: " + e.message)); };
 $("save").onclick = () => { saveCapture().catch(e => banner("Save: " + e.message)); };
 $("open").onclick = () => $("file").click();
 $("file").onchange = e => { if (e.target.files[0]) openCapture(e.target.files[0]).catch(err => banner("Open: " + err.message)); };
 $("limit").onchange = e => { S.limit = Number(e.target.value); };
-$("adddec").onchange = e => { if (e.target.value) addDecoder(e.target.value); e.target.value = ""; };
+$("adddec").onchange = e => { if (e.target.value) { addDecoder(e.target.value); } e.target.value = ""; };
+$("dsearch").oninput = () => updateDecoded();
+$("tzero").onchange = e => { S.tzero = e.target.value; S.dirty = true; S.overlayDirty = true; };
 $("spill").onchange = e => {
   if (!e.target.checked) { Spill.on = false; return; }
   if (!Spill.supported()) { e.target.checked = false; banner("This browser has no IndexedDB, so the capture cannot spill to disk."); return; }
   Spill.enable().catch(err => { e.target.checked = false; banner("Spill to disk: " + err.message); });
 };
-window.addEventListener("resize", resize);
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); S.dirty = true; });
+$("showall").onclick = () => { S.chan.hidden = []; saveChan(); buildChanList(); layout(); };
+$("showact").onclick = () => { S.chan.hidden = S.tracks.filter(t => !t.n).map(t => t.ch); saveChan(); buildChanList(); layout(); };
+$("resetch").onclick = () => { S.chan = { names: {}, colors: {}, hidden: [] }; saveChan(); buildChanList(); drawDecoderForms(); layout(); };
+$("theme").onclick = () => {
+  const cur = document.documentElement.dataset.theme;
+  const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  store("ai64-la-theme", document.documentElement.dataset.theme);
+  readColors(); S.dirty = true; S.overlayDirty = true; drawMini(true);
+};
+$("sidebtn").onclick = () => {
+  const on = $("main").classList.toggle("noside");
+  $("sidebtn").classList.toggle("on", !on);
+  store("ai64-la-side", !on);
+  setTimeout(layout, 0);
+};
+$("helpbtn").onclick = () => { const hp = $("help"); hp.style.display = hp.style.display === "block" ? "none" : "block"; };
+new ResizeObserver(() => layout()).observe(plot);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); S.dirty = true; S.overlayDirty = true; });
 
 // ---- the loop ----
 
-let lastFacts = 0;
+let lastSlow = 0;
 function frame(now) {
-  if (S.dirty || (S.follow && S.running)) { draw(); S.dirty = false; }
-  if (now - lastFacts > 250) { updateFacts(); updateMeas(); updateDecoded(); updateEvents(); lastFacts = now; }
+  if (S.dirty || (S.follow && S.running)) { draw(); S.dirty = false; S.overlayDirty = true; }
+  if (S.overlayDirty) { drawOverlay(); S.overlayDirty = false; }
+  drawMini(false);
+  if (now - lastSlow > 250) {
+    lastSlow = now;
+    updateMeasure(); updateDecoded(); updateEvents();
+    const dt = (now - S.rxAt) / 1000;
+    if (dt >= 1) { S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now; }
+    let edges = 0;
+    S.tracks.forEach(t => { edges += t.n; });
+    const st = S.stats, lost = st ? st.gaps[0] + st.gaps[1] + st.missed[0] + st.missed[1] : 0;
+    $("s-stream").innerHTML = S.running ? `<b>${fmtCount(S.rate)}</b> edges/s · ${fmtBytes(S.rxRate)}/s` + (lost ? ` · <span style="color:var(--critical)">${lost} lost</span>` : "") : "";
+    $("s-mem").innerHTML = `${fmtTime(Math.max(0, dataEnd()))} held · ${fmtCount(edges)} changes · ${fmtBytes(Spill.ram)} of ${fmtBytes(S.limit)}` + (Spill.disk ? ` + ${fmtBytes(Spill.disk)} on disk` : "");
+    const m = S.markers;
+    $("s-markers").innerHTML = m[0] !== null && m[1] !== null ? `A→B <b>${fmtTime(Math.abs(m[1] - m[0]))}</b> · ${fmtHz(1e9 / Math.abs(m[1] - m[0]))}` : "";
+  }
   requestAnimationFrame(frame);
 }
+
+// What this browser remembers.
+(function remembered() {
+  const ch = recall("ai64-la-channels");
+  if (ch && ch.names && ch.colors && Array.isArray(ch.hidden)) S.chan = ch;
+  const th = recall("ai64-la-theme");
+  if (th === "dark" || th === "light") document.documentElement.dataset.theme = th;
+  if (recall("ai64-la-side") === false) { $("main").classList.add("noside"); $("sidebtn").classList.remove("on"); }
+  const tab = recall("ai64-la-tab");
+  const b = document.querySelector(`.tabs button[data-tab="${tab}"]`);
+  if (b) setTimeout(() => b.click(), 0);
+})();
 
 // For the browser's console and tests: the capture, as it stands.
 window.la = S;
 window.laSpill = Spill;
+window.laUI = { get rowH() { return rowH; }, get W() { return W; }, get H() { return H; } };
 
-resize();
+layout();
 start();
 requestAnimationFrame(frame);
 </script>
