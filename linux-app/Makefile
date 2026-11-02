@@ -30,19 +30,19 @@ ERPC_SRCS = \
 all: ai64
 
 # A file per subcommand (README.md), and what they share.
-SRCS = ai64.c util.c cores.c linux_window.c erpc_window.c rtu0_window.c pwm.c la.c sched.c \
+SRCS = ai64.c util.c cores.c linux_window.c erpc_window.c rtu0_window.c pwm.c la.c la_stream.c la_ws.c sched.c \
 	pads.c trace.c bench.c shutdown.c dsp.c mma.c fabric.c pipe.c web.c
 OBJS = $(SRCS:.c=.o) web_page.o
-HDRS = ai64.h ai64_erpc_linux.h $(wildcard $(ROOT)/zephyr/include/*.h) $(ROOT)/dsp/include/ai64_dsp_job.h
+HDRS = ai64.h la.h ai64_erpc_linux.h $(wildcard $(ROOT)/zephyr/include/*.h) $(ROOT)/dsp/include/ai64_dsp_job.h
 
 ai64: $(OBJS) $(ERPC_SRCS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $(OBJS) $(ERPC_SRCS) -lm
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(INCLUDES) -o $@ $(OBJS) $(ERPC_SRCS) -lm -pthread
 
 %.o: %.c $(HDRS)
 	$(CC) $(CFLAGS) -I. -I$(ROOT)/zephyr/include -I$(ROOT)/dsp/include -c -o $@ $<
 
 # The page, built into the program (.incbin, relative to this directory).
-web_page.o: web_page.S web/index.html
+web_page.o: web_page.S web/index.html web/la.html
 	$(CC) -c -o $@ web_page.S
 
 clean:

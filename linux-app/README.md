@@ -8,11 +8,11 @@
 | `erpc [core] <rpmsg-dev> <fifo>` | `erpc_window.c` | an R5F core's window: eRPC calls to Zephyr on that core; R5F0_0's also writes the bulk buffer for `chunk` and `dma` |
 | `peer <label> <rpmsg-dev> <fifo>` | `rtu0_window.c` | the `rtu0` window: RPMsg text to and from ICSSG0 RTU0 |
 | `pwm [seconds\|once]` | `pwm.c` | the `pwm` window: what each of the four PWM generators runs, from its status record |
-| `la [seconds\|once\|lines]`, `la capture`, `la measure`, `la trigger`, `la mark`, `la quiet` | `la.c` | the `la` window: ICSSG1's logic analyzer, every channel; a VCD capture, plain or around a trigger hit; measurements; the Tx_PRUs' trigger; a mark through the fabric; quieting ICSSG1 between firmware sets |
+| `la [seconds\|once\|lines]`, `la capture`, `la measure`, `la trigger`, `la mark`, `la quiet` | `la.c`, and `la_stream.c`, the stream reader it shares with `la_ws.c` | the `la` window: ICSSG1's logic analyzer, every channel; a VCD capture, plain or around a trigger hit; measurements; the Tx_PRUs' trigger; a mark through the fabric; quieting ICSSG1 between firmware sets |
 | `sched [seconds\|once]` | `sched.c` | the `sched` window, with `--icssg1 scheduler`: ICSSG1's schedule, read from its registers |
 | `fabric ...` | `fabric.c` | the `fabric` window, Linux's node on the fabric, and `fabric route` |
 | `pipe ...` | `pipe.c` | the `pipe` window, and `pipe start`, which trains the pipeline's layer |
-| `web [port]` | `web.c`, `web_page.S`, `web/index.html` | the `web` window: the live page, and its `/status.json` |
+| `web [port]` | `web.c`, `web_page.S`, `web/index.html`, `web/la.html`, `la_ws.c` | the `web` window: the live page, and its `/status.json`; the logic analyzer's viewer at `/la`, and its stream, the WebSocket `/la/stream` |
 | `cores` | `cores.c` | every demo core: label, remoteproc name, firmware, fabric node |
 | `pads` | `pads.c` | checks the pin mux of every demo pin |
 | `trace <core>` | `trace.c` | follows a core's remoteproc trace log through `/dev/mem` |

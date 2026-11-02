@@ -66,7 +66,7 @@ flowchart LR
 
 **The RTU** takes the slow, unpredictable work: DDR, and the GTC, the SoC's shared clock. Each millisecond it adds a tick, which pairs IEP0's count with the GTC and says every pin's state. An edge record holds only IEP0's low 32 bits; Linux finds the rest from the stream's last tick, which is never more than a millisecond away. If the RTU ever fell a whole ring behind its PRU, it would skip to where the PRU is and write a gap record, so a hole in the data is always marked.
 
-**Linux** (`linux-app/la.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
+**Linux** (`linux-app/la_stream.c`, for `ai64 la` in `la.c` and the web viewer's stream in `la_ws.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
 
 `zephyr/include/ai64_la.h` has the record format and the addresses; `firmware/la_map.h` how each slice's data RAM and ICSSG1's shared RAM are split, and `firmware/la_ipc.h` the records the RTU and Tx_PRU share.
 
@@ -78,7 +78,7 @@ flowchart LR
 
 ### Marks and the fabric
 
-RTU0 and RTU1 are fabric nodes 10 and 11 ([The fabric](../../docs/fabric.md)): they answer every other core's pings, add to the tally, join R5F0_0's tour, and publish their stream's numbers in their fabric page, which the web page shows. A route that brings either of them the `mark` action puts a mark record in its stream, with the route's origin and a 16-bit value, at the time the RTU read it: `ai64 la mark 7`, or a route through other cores first, such as `ai64 fabric route c7x r5f0_1 g1rtu1 mark 42`. A capture shows the marks as a 16-bit signal, `mark`, which holds each value until the next. So whatever a core does can be lined up against the pins, on the same clock.
+RTU0 and RTU1 are fabric nodes 10 and 11 ([The fabric](../../docs/fabric.md)): they answer every other core's pings, add to the tally, join R5F0_0's tour, and publish their stream's numbers in their fabric page, which the web page shows. A route that brings either of them the `mark` action puts a mark record in its stream, with the route's origin and a 16-bit value, at the time the RTU read it: `ai64 la mark 7`, or a route through other cores first, such as `ai64 fabric route c7x r5f0_1 g1rtu1 mark 42`. A capture shows the marks as a 16-bit signal, `mark`, which holds each value until the next. So whatever a core does can be lined up against the pins, on the same clock. The RTU puts the edges first: it looks at its fabric inbox when its ring is nearly drained, or every 100 µs at the latest, so with the PRUs at millions of edges a second its round trips grow to a few ms, and drop back when they slow down.
 
 **Starting after another firmware set.** A core's task manager keeps its setup when the core stops, and the multicore scheduler leaves IEP0 starting a task on every core every 100 ns. A core stopped in the middle of a task stays in it, and its next yield would return to wherever the old firmware was interrupted. So before `ai64-demo` stops ICSSG1's cores it runs `ai64 la quiet`, which stops IEP0 and maps no event to any task, so each core stops outside one; each analyzer core then turns its own task manager off before anything else (`firmware/la_tm.h`).
 
@@ -152,6 +152,22 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 | `sudo ai64 la quiet` | stops IEP0 and every task, before ICSSG1's cores stop; `ai64-demo` runs it |
 
 `ai64-demo --icssg1 scheduler` runs TI's multicore scheduler on ICSSG1 instead ([extra-demos/](../../extra-demos/README.md)), and `--icssg1 off` leaves ICSSG1 stopped.
+
+## The web viewer
+
+While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser, with no software to install: the board streams the edges as they come, and the browser keeps them, as a Saleae's software does, so a capture runs until it is stopped or until it reaches the memory limit chosen at the top of the page (1 GB to start: about 130 million changes).
+
+![The web viewer, on the board's own signals: the PWM generators' A and B pairs, the eCAP's copy, P9.25, the square wave, and cursors one 15 kHz period apart](../../media/la-viewer.png)
+
+- **Follow** keeps the newest data at the right; the wheel zooms, a drag pans, and **Fit all** shows the whole capture. Where a pixel column holds more than one change, the viewer draws a block, so a zoomed-out view of millions of edges still says where the activity is.
+- **Cursors**: a click puts A, a shift-click B, and the line under the waveforms gives B − A and its frequency.
+- **The table** under them measures every channel over the time in view: changes, period and frequency from its rising edges, duty, and its level at the right edge.
+- **Marks** (purple), **trigger hits** (amber), and **gaps** (red) are drawn across all the rows.
+- **Export VCD** saves the time in view as a VCD file, as `ai64 la capture` does.
+
+The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`. Each channel's changes are kept as times in growing arrays, 8 bytes each, and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions.
+
+Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms, and the last 2 s at that rate in 7 ms. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s.
 
 ## Build
 

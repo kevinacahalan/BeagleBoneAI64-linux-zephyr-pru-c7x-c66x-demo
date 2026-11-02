@@ -1,0 +1,630 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  The logic analyzer's viewer, which ai64 web serves at /la (linux-app/web.c).
+  It opens the WebSocket /la/stream (linux-app/la_ws.c), which sends the
+  edges of ICSSG1's 19 channels as they come, and keeps them all here, in
+  the browser: a capture runs until it is stopped, or until it reaches the
+  memory limit chosen at the top. Each channel's changes are kept as their
+  times, in ns, in growing arrays; drawing does one binary search per pixel
+  column, so millions of edges draw as fast as a few. No external files:
+  the board may have no internet.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-64 Logic Analyzer</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f3f0;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #dddcd7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #7a7973;
+  --accent: #2a78d6;
+  --wave: #2a78d6;
+  --busy: rgba(42, 120, 214, 0.35);
+  --mark: #8a3ffc;
+  --trig: #c47f00;
+  --good: #0ca30c;
+  --critical: #d03b3b;
+  --cursor: #0b0b0b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-2: #232321;
+    --border: #383835;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #8d8c84;
+    --accent: #3987e5;
+    --wave: #5598e7;
+    --busy: rgba(85, 152, 231, 0.4);
+    --mark: #b388ff;
+    --trig: #fab219;
+    --cursor: #f0efec;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211;
+  --surface: #1a1a19;
+  --surface-2: #232321;
+  --border: #383835;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --ink-3: #8d8c84;
+  --accent: #3987e5;
+  --wave: #5598e7;
+  --busy: rgba(85, 152, 231, 0.4);
+  --mark: #b388ff;
+  --trig: #fab219;
+  --cursor: #f0efec;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1600px; margin: 0 auto; padding: 16px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 12px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+a { color: var(--accent); }
+.sub { color: var(--ink-2); }
+.num { font-variant-numeric: tabular-nums; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+button, select {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+label { font-size: 13px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.status { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); display: inline-block; }
+.dot.good { background: var(--good); }
+.dot.critical { background: var(--critical); }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 12px; }
+#wrap { position: relative; }
+canvas { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
+.facts b { color: var(--ink); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+td.r, th.r { text-align: right; }
+.scroll { overflow-x: auto; }
+.help { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+.banner { display: none; background: var(--surface-2); border-left: 3px solid var(--critical); padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Logic analyzer</h1>
+    <span class="sub">ICSSG1's 19 channels, streamed live from the board</span>
+    <a href="/">the demo's page</a>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <div class="bar">
+    <button id="run" class="on">Stop</button>
+    <button id="follow" class="on">Follow</button>
+    <button id="fit">Fit all</button>
+    <button id="clear">Clear</button>
+    <button id="vcd">Export VCD</button>
+    <label>Memory <select id="limit">
+      <option value="268435456">256 MB</option>
+      <option value="1073741824" selected>1 GB</option>
+      <option value="2147483648">2 GB</option>
+      <option value="4294967296">4 GB</option>
+    </select></label>
+    <span class="status"><span class="dot" id="dot"></span><span id="state">connecting</span></span>
+  </div>
+
+  <section>
+    <div id="wrap"><canvas id="cv"></canvas></div>
+    <div class="facts" id="facts"></div>
+    <div class="help">Wheel to zoom, drag to pan, click for cursor A, shift-click for B, Esc to clear them, F to follow, double-click to fit all.</div>
+  </section>
+
+  <section>
+    <div class="scroll"><table id="meas"></table></div>
+    <div class="help">Over the visible time. A channel's period is the mean from its first rising edge in view to its last, so it takes two; its duty is the time it spends high.</div>
+  </section>
+</main>
+<script>
+"use strict";
+
+// ---- the data: per channel, the times of its changes, ns from the first tick ----
+
+const CHUNK = 65536;
+
+class Track {
+  constructor() { this.init = null; this.chunks = []; this.firsts = []; this.n = 0; }
+  push(t) {
+    const k = this.n % CHUNK;
+    if (k === 0) { this.chunks.push(new Float64Array(CHUNK)); this.firsts.push(t); }
+    this.chunks[this.chunks.length - 1][k] = t;
+    this.n++;
+  }
+  at(i) { return this.chunks[(i / CHUNK) | 0][i % CHUNK]; }
+  // The first change later than t: its index, or n.
+  upper(t) {
+    const f = this.firsts;
+    let lo = 0, hi = f.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (f[m] <= t) lo = m + 1; else hi = m; }
+    if (lo === 0) return 0;
+    const c = lo - 1, a = this.chunks[c], len = c === f.length - 1 ? this.n - c * CHUNK : CHUNK;
+    let l = 0, h = len;
+    while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
+    return c * CHUNK + l;
+  }
+  // The level before change i.
+  levelAt(i) { return this.init ^ (i & 1); }
+}
+
+const S = {
+  meta: null, tracks: [], bitCh: [[], []], prev: [null, null],
+  t0: null, now: [0, 0], events: [], held: 0,
+  view: { a: 0, b: 1e6 }, follow: true, cursor: [null, null],
+  ws: null, running: true, limit: 1073741824,
+  stats: null, statsAt: 0, lastStats: null, rate: 0, rx: 0, rxRate: 0, rxAt: performance.now(),
+  dirty: true,
+};
+
+const $ = id => document.getElementById(id);
+
+function reset() {
+  S.tracks = S.meta ? S.meta.channels.map(() => new Track()) : [];
+  S.prev = [null, null]; S.t0 = null; S.now = [0, 0]; S.events = []; S.held = 0;
+  S.cursor = [null, null]; S.view = { a: 0, b: 1e6 }; S.dirty = true;
+}
+
+function setMeta(m) {
+  S.meta = m;
+  S.bitCh = [new Array(32).fill(-1), new Array(32).fill(-1)];
+  m.channels.forEach(c => { S.bitCh[c.pru][c.bit] = c.ch; });
+  reset();
+  resize();
+}
+
+function rel(abs) {
+  if (S.t0 === null) S.t0 = abs;
+  return abs - S.t0;
+}
+
+// A PRU's pins, first seen: each of its channels' starting level.
+function startState(s, state) {
+  S.prev[s] = state;
+  S.meta.channels.forEach(c => { if (c.pru === s) S.tracks[c.ch].init = (state >>> c.bit) & 1; });
+}
+
+function onBinary(buf) {
+  const dv = new DataView(buf);
+  const kind = dv.getUint8(0), s = dv.getUint8(1), count = dv.getUint32(4, true);
+  const base = dv.getFloat64(8, true);
+  if (!S.meta) return;
+  if (kind === 4) { const t = rel(base); startState(s, dv.getUint32(16, true)); S.now[s] = Math.max(S.now[s], t); return; }
+  if (kind === 5) { if (S.t0 !== null) S.now[s] = Math.max(S.now[s], base - S.t0); return; }
+  if (kind === 3) { S.events.push({ t: rel(base), kind: "gap", s, value: count }); S.dirty = true; return; }
+  if (kind === 2) {
+    for (let i = 0; i < count; i++) {
+      const o = 16 + 12 * i, t = rel(base + dv.getUint32(o, true));
+      const trig = dv.getUint8(o + 4), from = dv.getUint8(o + 5), value = dv.getUint32(o + 8, true);
+      S.events.push(trig ? { t, kind: "trig", s, value } : { t, kind: "mark", s, from, value });
+    }
+    S.dirty = true;
+    return;
+  }
+  if (kind !== 1) return;
+  const map = S.bitCh[s], tracks = S.tracks;
+  let prev = S.prev[s], t = 0;
+  for (let i = 0; i < count; i++) {
+    const o = 16 + 8 * i, state = dv.getUint32(o + 4, true);
+    t = rel(base + dv.getUint32(o, true));
+    if (prev === null) { startState(s, state); prev = state; continue; }
+    let x = (prev ^ state) >>> 0;
+    while (x) {
+      const b = 31 - Math.clz32(x);
+      x ^= 1 << b;
+      const c = map[b];
+      if (c >= 0) tracks[c].push(t);
+    }
+    prev = state;
+  }
+  S.prev[s] = prev;
+  S.held += 8 * count;
+  if (count) S.now[s] = Math.max(S.now[s], t);
+  S.dirty = true;
+  if (S.held > S.limit) { stop("the memory limit: " + fmtBytes(S.limit) + " held"); }
+}
+
+function onText(text) {
+  const m = JSON.parse(text);
+  if (m.type === "meta") setMeta(m);
+  else if (m.type === "stats") {
+    const now = performance.now();
+    if (S.lastStats) {
+      const dt = (now - S.statsAt) / 1000;
+      S.rate = (m.edges[0] + m.edges[1] - S.lastStats.edges[0] - S.lastStats.edges[1]) / dt;
+    }
+    S.lastStats = m; S.statsAt = now; S.stats = m;
+  }
+}
+
+// ---- the connection ----
+
+function start() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/la/stream");
+  ws.binaryType = "arraybuffer";
+  S.ws = ws; S.running = true; S.lastStats = null;
+  setState("connecting", "");
+  ws.onopen = () => { setState("streaming", "good"); $("banner").style.display = "none"; };
+  ws.onmessage = e => {
+    S.rx += typeof e.data === "string" ? e.data.length : e.data.byteLength;
+    if (typeof e.data === "string") onText(e.data); else onBinary(e.data);
+  };
+  ws.onclose = () => {
+    if (S.ws === ws && S.running) {
+      S.running = false;
+      setState("not connected", "critical");
+      banner("The stream closed. Is the demo running with the logic analyzer on ICSSG1 (ai64-demo, ai64 la once)? Start again with the button above.");
+    }
+    updateRun();
+  };
+  updateRun();
+}
+
+function stop(why) {
+  S.running = false;
+  if (S.ws) { const ws = S.ws; S.ws = null; ws.close(); }
+  setState(why ? "stopped at " + why : "stopped", "");
+  updateRun();
+}
+
+function setState(text, cls) { $("state").textContent = text; $("dot").className = "dot " + cls; }
+function banner(text) { const b = $("banner"); b.textContent = text; b.style.display = "block"; }
+function updateRun() { const r = $("run"); r.textContent = S.running ? "Stop" : "Start"; r.classList.toggle("on", S.running); }
+
+// ---- formats ----
+
+function fmtTime(ns, digits) {
+  const a = Math.abs(ns);
+  if (a >= 1e9) return (ns / 1e9).toFixed(digits ?? 6) + " s";
+  if (a >= 1e6) return (ns / 1e6).toFixed(digits ?? 3) + " ms";
+  if (a >= 1e3) return (ns / 1e3).toFixed(digits ?? 3) + " µs";
+  return ns.toFixed(0) + " ns";
+}
+function fmtHz(hz) {
+  if (!isFinite(hz) || hz <= 0) return "–";
+  if (hz >= 1e6) return (hz / 1e6).toFixed(3) + " MHz";
+  if (hz >= 1e3) return (hz / 1e3).toFixed(3) + " kHz";
+  return hz.toFixed(1) + " Hz";
+}
+function fmtBytes(b) {
+  if (b >= 1 << 30) return (b / (1 << 30)).toFixed(2) + " GB";
+  if (b >= 1 << 20) return (b / (1 << 20)).toFixed(1) + " MB";
+  return (b / 1024).toFixed(0) + " KB";
+}
+function fmtCount(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + " M" : n >= 1e3 ? (n / 1e3).toFixed(1) + " k" : String(Math.round(n)); }
+
+// ---- drawing ----
+
+const cv = $("cv"), ctx = cv.getContext("2d");
+const LABEL = 190, AXIS = 26, ROW = 26, PAD = 5;
+let W = 800, H = 400, dpr = 1, colors = {};
+
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  ["ink", "ink-2", "ink-3", "border", "surface-2", "wave", "busy", "mark", "trig", "critical", "cursor"]
+    .forEach(k => { colors[k] = cs.getPropertyValue("--" + k).trim(); });
+}
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = $("wrap").clientWidth;
+  H = AXIS + ROW * (S.meta ? S.meta.channels.length : 19) + 4;
+  cv.style.height = H + "px";
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  readColors();
+  S.dirty = true;
+}
+
+function dataEnd() { return Math.min(S.now[0], S.now[1]); }
+function plotW() { return Math.max(50, W - LABEL - 8); }
+function xOf(t) { return LABEL + (t - S.view.a) / (S.view.b - S.view.a) * plotW(); }
+function tOf(x) { return S.view.a + (x - LABEL) / plotW() * (S.view.b - S.view.a); }
+
+function niceStep(span, px) {
+  const raw = span / Math.max(2, px / 110), p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
+
+function drawAxis() {
+  const { a, b } = S.view, step = niceStep(b - a, plotW());
+  ctx.fillStyle = colors["ink-2"]; ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle";
+  ctx.strokeStyle = colors.border; ctx.lineWidth = 1;
+  for (let t = Math.ceil(a / step) * step; t <= b; t += step) {
+    const x = Math.round(xOf(t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, AXIS - 6); ctx.lineTo(x, H); ctx.stroke();
+    // In seconds from the capture's start, with as many decimals as the step needs.
+    const d = Math.max(0, Math.min(9, Math.ceil(-Math.log10(step / 1e9) - 1e-9)));
+    ctx.fillText((t / 1e9).toFixed(d) + " s", x + 3, AXIS / 2);
+  }
+}
+
+function drawTrack(tr, y, end) {
+  const { a, b } = S.view, pw = plotW(), hi = y + PAD, lo = y + ROW - PAD;
+  if (tr.init === null) return;
+  const right = Math.min(b, end);
+  if (right <= a) return;
+  let i = tr.upper(a), lvl = tr.levelAt(i);
+  const iEnd = tr.upper(right);
+  ctx.strokeStyle = colors.wave; ctx.fillStyle = colors.busy; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let x = LABEL, yy = lvl ? hi : lo;
+  ctx.moveTo(x, yy);
+  if (iEnd - i <= pw * 2) {
+    // Few enough to draw each change.
+    for (let k = i; k < iEnd; k++) {
+      const xt = xOf(tr.at(k));
+      ctx.lineTo(xt, yy);
+      lvl ^= 1; yy = lvl ? hi : lo;
+      ctx.lineTo(xt, yy);
+    }
+    ctx.lineTo(xOf(right), yy);
+    ctx.stroke();
+    return;
+  }
+  // Too many: one binary search per pixel column, and a block where a column holds more than one change.
+  const tpp = (b - a) / pw, xr = xOf(right);
+  const busy = [];
+  for (let col = 0; LABEL + col < xr; col++) {
+    const j = tr.upper(a + (col + 1) * tpp), xc = LABEL + col;
+    if (j - i > 1) {
+      busy.push(xc);
+      lvl = tr.levelAt(j); yy = lvl ? hi : lo;
+      ctx.moveTo(xc + 1, yy);
+    } else if (j - i === 1) {
+      ctx.lineTo(xc, yy); lvl ^= 1; yy = lvl ? hi : lo; ctx.lineTo(xc, yy);
+    }
+    i = j;
+    if (j >= iEnd && j === tr.n) { ctx.lineTo(xr, yy); break; }
+  }
+  ctx.lineTo(xr, yy);
+  ctx.stroke();
+  for (let k = 0; k < busy.length; k++) {
+    let e = k;
+    while (e + 1 < busy.length && busy[e + 1] === busy[e] + 1) e++;
+    ctx.fillRect(busy[k], hi, busy[e] - busy[k] + 1, lo - hi);
+    k = e;
+  }
+}
+
+function draw() {
+  if (S.follow && S.t0 !== null) {
+    const span = S.view.b - S.view.a, end = dataEnd();
+    S.view = { a: end - span, b: end };
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!S.meta) return;
+  drawAxis();
+  const end = dataEnd();
+  S.meta.channels.forEach((c, i) => {
+    const y = AXIS + i * ROW, tr = S.tracks[c.ch];
+    if (i % 2) { ctx.fillStyle = colors["surface-2"]; ctx.fillRect(0, y, W, ROW); }
+    ctx.fillStyle = colors.ink; ctx.font = "600 12px system-ui, sans-serif"; ctx.textBaseline = "middle";
+    ctx.fillText("ch" + c.ch, 6, y + ROW / 2);
+    ctx.fillStyle = colors["ink-2"]; ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText(c.pin + (c.name ? "  " + c.name : ""), 42, y + ROW / 2);
+    ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), ROW); ctx.clip();
+    drawTrack(tr, y, S.now[c.pru]);
+    ctx.restore();
+  });
+  // Marks, trigger hits, and gaps, across every row.
+  const top = AXIS, bot = H;
+  ctx.save(); ctx.beginPath(); ctx.rect(LABEL, 0, plotW(), H); ctx.clip();
+  ctx.font = "11px system-ui, sans-serif";
+  let shown = 0;
+  for (let k = lowerEvent(S.view.a); k < S.events.length && shown < 500; k++) {
+    const e = S.events[k];
+    if (e.t > S.view.b) break;
+    shown++;
+    const x = Math.round(xOf(e.t)) + 0.5;
+    ctx.strokeStyle = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
+    ctx.setLineDash(e.kind === "gap" ? [2, 3] : []);
+    ctx.lineWidth = e.kind === "gap" ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillText(e.kind === "mark" ? "mark " + e.value : e.kind === "trig" ? "trig" : "gap", x + 3, 9);
+  }
+  ctx.setLineDash([]);
+  // Cursors.
+  ["A", "B"].forEach((n, k) => {
+    const t = S.cursor[k];
+    if (t === null) return;
+    const x = Math.round(xOf(t)) + 0.5;
+    ctx.strokeStyle = colors.cursor; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = colors.cursor; ctx.fillText(n, x + 3, H - 8);
+  });
+  ctx.restore();
+}
+
+// Events are kept in arrival order, which is time order per stream: close enough to search.
+function lowerEvent(t) {
+  let lo = 0, hi = S.events.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (S.events[m].t < t) lo = m + 1; else hi = m; }
+  return Math.max(0, lo - 1);
+}
+
+// ---- the facts line and the measurements ----
+
+function updateFacts() {
+  const now = performance.now(), dt = (now - S.rxAt) / 1000;
+  if (dt >= 1) { S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now; }
+  let edges = 0;
+  S.tracks.forEach(t => { edges += t.n; });
+  const st = S.stats, parts = [
+    `<span>view <b class="num">${fmtTime(S.view.b - S.view.a)}</b></span>`,
+    `<span>held <b class="num">${fmtTime(Math.max(0, dataEnd()))}</b>, <b class="num">${fmtCount(edges)}</b> changes, <b class="num">${fmtBytes(S.held)}</b> of ${fmtBytes(S.limit)}</span>`,
+    `<span>stream <b class="num">${fmtCount(S.rate)}</b> edges/s, <b class="num">${fmtBytes(S.rxRate)}</b>/s</span>`,
+  ];
+  if (st) parts.push(`<span>lost: gaps <b class="num">${st.gaps[0] + st.gaps[1]}</b>, missed <b class="num">${st.missed[0] + st.missed[1]}</b></span>`);
+  parts.push(`<span>marks <b class="num">${S.events.filter(e => e.kind === "mark").length}</b>, trigger hits <b class="num">${S.events.filter(e => e.kind === "trig").length}</b></span>`);
+  if (S.cursor[0] !== null && S.cursor[1] !== null) {
+    const d = Math.abs(S.cursor[1] - S.cursor[0]);
+    parts.push(`<span>B − A <b class="num">${fmtTime(d)}</b>, 1/Δ <b class="num">${fmtHz(1e9 / d)}</b></span>`);
+  }
+  $("facts").innerHTML = parts.join("");
+}
+
+// A channel over [a, b]: changes, rising edges, and the time it is high.
+function measure(tr, a, b) {
+  if (tr.init === null || b <= a) return null;
+  const i = tr.upper(a), j = tr.upper(b), n = j - i;
+  // Rising changes: those after which the level is 1, every other index.
+  const firstUp = (tr.levelAt(i) === 0) ? i : i + 1;
+  const rises = firstUp < j ? Math.floor((j - 1 - firstUp) / 2) + 1 : 0;
+  let high = 0;
+  if (n <= 200000) {
+    let t = a, lvl = tr.levelAt(i);
+    for (let k = i; k < j; k++) { const tk = tr.at(k); if (lvl) high += tk - t; t = tk; lvl ^= 1; }
+    if (lvl) high += b - t;
+  } else {
+    // Many changes: sample the level at 4000 points.
+    const N = 4000;
+    for (let k = 0; k < N; k++) high += tr.levelAt(tr.upper(a + (k + 0.5) * (b - a) / N));
+    high = high / N * (b - a);
+  }
+  // The period, from the first rising edge in view to the last.
+  const period = rises >= 2 ? (tr.at(firstUp + 2 * (rises - 1)) - tr.at(firstUp)) / (rises - 1) : NaN;
+  return { n, rises, period, high, level: tr.levelAt(j) };
+}
+
+function updateMeas() {
+  if (!S.meta) return;
+  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd()), span = b - a;
+  let h = `<tr><th>ch</th><th>pin</th><th>wired to</th><th class="r">changes</th><th class="r">frequency</th><th class="r">period</th><th class="r">duty</th><th>level at the right</th></tr>`;
+  S.meta.channels.forEach(c => {
+    const m = measure(S.tracks[c.ch], a, b);
+    h += `<tr><td>${c.ch}</td><td>${c.pin}</td><td>${c.name ? c.name + " " + c.from : "–"}</td>`;
+    if (!m || span <= 0) { h += `<td class="r">–</td><td class="r">–</td><td class="r">–</td><td class="r">–</td><td>–</td></tr>`; return; }
+    h += `<td class="r num">${fmtCount(m.n)}</td><td class="r num">${isFinite(m.period) ? fmtHz(1e9 / m.period) : "–"}</td>` +
+         `<td class="r num">${isFinite(m.period) ? fmtTime(m.period) : "–"}</td><td class="r num">${(100 * m.high / span).toFixed(1)}%</td>` +
+         `<td>${m.level ? "high" : "low"}</td></tr>`;
+  });
+  $("meas").innerHTML = h;
+}
+
+// ---- VCD export of the visible time ----
+
+function exportVcd() {
+  if (!S.meta) return;
+  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
+  const chans = S.meta.channels, out = [];
+  out.push(`$date ${new Date().toISOString()} $end\n$version ai64 la, the web viewer $end\n$timescale 1 ns $end\n$scope module la $end\n`);
+  chans.forEach((c, i) => out.push(`$var wire 1 ${String.fromCharCode(33 + i)} ch${c.ch}_${c.pin.replace(".", "_")}${c.name ? "_" + c.name : ""} $end\n`));
+  out.push(`$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n`);
+  const idx = chans.map(c => S.tracks[c.ch].upper(a)), end = chans.map(c => S.tracks[c.ch].upper(b));
+  chans.forEach((c, i) => out.push(`${S.tracks[c.ch].init === null ? "x" : S.tracks[c.ch].levelAt(idx[i])}${String.fromCharCode(33 + i)}\n`));
+  out.push("$end\n");
+  // Merge the channels' changes by time.
+  let lines = [], last = -1, total = 0;
+  for (;;) {
+    let best = -1, bt = Infinity;
+    for (let i = 0; i < chans.length; i++) {
+      if (idx[i] < end[i]) { const t = S.tracks[chans[i].ch].at(idx[i]); if (t < bt) { bt = t; best = i; } }
+    }
+    if (best < 0) break;
+    const tr = S.tracks[chans[best].ch], t = Math.round(bt - a);
+    if (t !== last) { lines.push(`#${t}\n`); last = t; }
+    lines.push(`${tr.levelAt(idx[best] + 1)}${String.fromCharCode(33 + best)}\n`);
+    idx[best]++;
+    if (++total % 200000 === 0) { out.push(lines.join("")); lines = []; }
+  }
+  lines.push(`#${Math.round(b - a)}\n`);
+  out.push(lines.join(""));
+  const url = URL.createObjectURL(new Blob(out, { type: "text/plain" }));
+  const link = document.createElement("a");
+  link.href = url; link.download = "la.vcd"; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// ---- interaction ----
+
+let drag = null;
+
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const k = Math.pow(1.2, e.deltaY > 0 ? 1 : -1), x = e.offsetX;
+  const t = S.follow ? S.view.b : tOf(Math.max(LABEL, x));
+  const a = t - (t - S.view.a) * k, b = t + (S.view.b - t) * k;
+  if (b - a < 20) return;
+  S.view = { a, b }; S.dirty = true;
+}, { passive: false });
+
+cv.addEventListener("pointerdown", e => {
+  if (e.offsetX < LABEL) return;
+  drag = { x: e.offsetX, a: S.view.a, b: S.view.b, moved: false };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.offsetX - drag.x;
+  if (Math.abs(dx) > 3) drag.moved = true;
+  if (!drag.moved) return;
+  const dt = dx / plotW() * (drag.b - drag.a);
+  S.view = { a: drag.a - dt, b: drag.b - dt }; setFollow(false); S.dirty = true;
+});
+cv.addEventListener("pointerup", e => {
+  if (drag && !drag.moved) { S.cursor[e.shiftKey ? 1 : 0] = tOf(e.offsetX); S.dirty = true; }
+  drag = null;
+});
+cv.addEventListener("dblclick", () => fitAll());
+
+function fitAll() { setFollow(false); S.view = { a: 0, b: Math.max(1000, dataEnd()) }; S.dirty = true; }
+function setFollow(on) { S.follow = on; $("follow").classList.toggle("on", on); S.dirty = true; }
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { S.cursor = [null, null]; S.dirty = true; }
+  if (e.key === "f" || e.key === "F") setFollow(!S.follow);
+});
+$("run").onclick = () => { if (S.running) stop(); else start(); };
+$("follow").onclick = () => setFollow(!S.follow);
+$("fit").onclick = fitAll;
+$("clear").onclick = () => { reset(); };
+$("vcd").onclick = exportVcd;
+$("limit").onchange = e => { S.limit = Number(e.target.value); };
+window.addEventListener("resize", resize);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); S.dirty = true; });
+
+// ---- the loop ----
+
+let lastFacts = 0;
+function frame(now) {
+  if (S.dirty || (S.follow && S.running)) { draw(); S.dirty = false; }
+  if (now - lastFacts > 250) { updateFacts(); updateMeas(); lastFacts = now; }
+  requestAnimationFrame(frame);
+}
+
+// For the browser's console: the capture, as it stands.
+window.la = S;
+
+resize();
+start();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

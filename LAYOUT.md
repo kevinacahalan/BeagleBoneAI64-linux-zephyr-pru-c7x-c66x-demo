@@ -72,7 +72,7 @@
 
 `LICENSE` — MIT, plus the files that keep their own license.
 
-`linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. `web/index.html` is the live page `ai64 web` serves, built in by `web_page.S`. `linux-app/ai64` is a build product.
+`linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. `web/index.html` is the live page `ai64 web` serves, and `web/la.html` the logic analyzer's viewer, both built in by `web_page.S`. `linux-app/ai64` is a build product.
 
 `beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
 

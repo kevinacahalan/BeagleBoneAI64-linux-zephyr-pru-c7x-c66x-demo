@@ -95,6 +95,9 @@ int shutdown_main(int argc, char **argv);
 int trace_main(int argc, char **argv);
 int web_main(int argc, char **argv);
 
+/* The logic analyzer's WebSocket on ai64 web (la_ws.c): 1 if it took fd. */
+int la_ws_upgrade(int fd, const char *req);
+
 /* The linux window's command list (linux_window.c). */
 void print_help(void);
 

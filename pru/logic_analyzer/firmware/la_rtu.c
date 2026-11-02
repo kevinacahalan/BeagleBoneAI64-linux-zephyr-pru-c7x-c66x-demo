@@ -83,6 +83,7 @@ static uint32_t fab_action(struct ai64_fab_msg *m);
 #include "ai64_fabric.h"
 
 #define STATUS_TICKS AI64_FAB_US(10000)
+#define FAB_EVERY    AI64_FAB_US(100)
 
 /* A route's mark: when this RTU read it, who sent it, and its value. */
 static uint32_t fab_action(struct ai64_fab_msg *m)
@@ -173,7 +174,7 @@ static void tick(uint32_t state)
 void main(void)
 {
 	volatile struct ai64_la_stream *h = HDR;
-	uint32_t state = 0, last_tick, status_at;
+	uint32_t state = 0, last_tick, status_at, fab_at;
 
 	tm_clear(AI64_SLICE ? ICSSG_TM_RTU1 : ICSSG_TM_RTU0);
 	trace_init();
@@ -212,6 +213,7 @@ void main(void)
 	trace_putc('\n');
 	last_tick = GTC_LO();
 	status_at = last_tick;
+	fab_at = last_tick;
 
 	for (;;) {
 		uint32_t n = SWR - rd;
@@ -229,9 +231,9 @@ void main(void)
 			volatile uint32_t *s;
 			uint32_t i;
 
-			/* At most 32 records a pass, so the ticks keep up. */
-			if (n > 32u * AI64_LA_REC_SIZE) {
-				n = 32u * AI64_LA_REC_SIZE;
+			/* At most 512 records a pass, so the ticks keep up. */
+			if (n > 512u * AI64_LA_REC_SIZE) {
+				n = 512u * AI64_LA_REC_SIZE;
 			}
 			for (i = 0; i < n; i += AI64_LA_REC_SIZE) {
 				s = SRING + ((rd + i) & (LA_SRING_SIZE - 1u)) / 4u;
@@ -253,7 +255,16 @@ void main(void)
 			pass_trigger();
 		}
 		take_hits();
-		fab_poll();
+		/*
+		 * The fabric costs a few us of uncached reads a pass; the ring
+		 * holds 400 us of edges at 5 million a second. So the records
+		 * first: the fabric when the ring is nearly drained, or every
+		 * FAB_EVERY at the latest.
+		 */
+		if (SWR - rd < 64u * AI64_LA_REC_SIZE || FAB_AFTER(GTC_LO(), fab_at)) {
+			fab_poll();
+			fab_at = GTC_LO() + FAB_EVERY;
+		}
 		if (FAB_AFTER(GTC_LO(), status_at)) {
 			status_at = GTC_LO() + STATUS_TICKS;
 			publish(state);

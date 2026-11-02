@@ -9,6 +9,10 @@
  *   PWM generators' status records, and the pipeline's stages, score, and
  *   confusion matrix.
  *
+ *   /la is the logic analyzer's viewer (web/la.html), and /la/stream its
+ *   WebSocket: a thread for each viewer, which streams ICSSG1's edges as
+ *   they come (la_ws.c).
+ *
  *   It only reads: sysfs, and shared memory through /dev/mem, mapped read
  *   only. It joins no link and takes no lock, so it changes nothing the
  *   demo does, and the counters it sends are the cores' own running totals;
@@ -45,8 +49,9 @@
 
 #define WEB_PORT  8064
 
-/* web/index.html, from web_page.S. */
+/* web/index.html and web/la.html, from web_page.S. */
 extern const char ai64_web_page[], ai64_web_page_end[];
+extern const char ai64_la_page[], ai64_la_page_end[];
 
 static volatile uint32_t *g_gtc;
 static volatile uint8_t *g_fab;
@@ -304,34 +309,48 @@ static void reply(int fd, const char *status, const char *type, const char *body
 	}
 }
 
-static void serve(int fd)
+/* One request on fd; 1 if fd now belongs to a stream's thread. */
+static int serve(int fd)
 {
-	char req[1024];
+	char req[4096];
 	ssize_t n = read(fd, req, sizeof(req) - 1);
 	char *path, *end;
 
 	if (n <= 0) {
-		return;
+		return 0;
 	}
 	req[n] = '\0';
 	if (strncmp(req, "GET ", 4)) {
 		reply(fd, "405 Method Not Allowed", "text/plain", "GET only\n", 9);
-		return;
+		return 0;
 	}
 	path = req + 4;
 	end = strpbrk(path, " ?\r\n");
-	if (end) {
-		*end = '\0';
+	if (!end) {
+		return 0;
 	}
+	if (!strncmp(path, "/la/stream", 10) && (path[10] == ' ' || path[10] == '?')) {
+		if (la_ws_upgrade(fd, end)) {
+			return 1;
+		}
+		reply(fd, "503 Service Unavailable", "text/plain",
+		      "the logic analyzer is not running on ICSSG1\n", 44);
+		return 0;
+	}
+	*end = '\0';
 	if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
 		reply(fd, "200 OK", "text/html; charset=utf-8", ai64_web_page,
 		      (size_t)(ai64_web_page_end - ai64_web_page));
+	} else if (!strcmp(path, "/la") || !strcmp(path, "/la/")) {
+		reply(fd, "200 OK", "text/html; charset=utf-8", ai64_la_page,
+		      (size_t)(ai64_la_page_end - ai64_la_page));
 	} else if (!strcmp(path, "/status.json")) {
 		status_json();
 		reply(fd, "200 OK", "application/json", g_out, g_len);
 	} else {
 		reply(fd, "404 Not Found", "text/plain", "not found\n", 10);
 	}
+	return 0;
 }
 
 /* The addresses the page can be reached on. */
@@ -402,7 +421,8 @@ int web_main(int argc, char **argv)
 	print_urls(port);
 	fflush(stdout);
 
-	/* One request at a time: each is a page or a few KiB of JSON. */
+	/* One request at a time: each is a page or a few KiB of JSON. The
+	 * analyzer's stream, /la/stream, runs in a thread of its own (la_ws.c). */
 	for (;;) {
 		int c = accept(s, NULL, NULL);
 
@@ -415,7 +435,8 @@ int web_main(int argc, char **argv)
 		}
 		setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 		setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-		serve(c);
-		close(c);
+		if (!serve(c)) {
+			close(c);
+		}
 	}
 }
