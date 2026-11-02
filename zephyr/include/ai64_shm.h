@@ -80,6 +80,7 @@ struct ai64_bulk {
  */
 #define AI64_PWM_STEP_FREQS        3u
 #define AI64_PWM_STEP_HZ           { 10000u, 15000u, 20000u }
+#define AI64_PWM_STEP_PERIOD_MIN_NS 50000u /* the fastest step's period */
 #define AI64_PWM_STEPS             5u
 #define AI64_PWM_STEP_PCT          { 10u, 25u, 50u, 75u, 90u }
 #define AI64_PWM_DEFAULT_STEPS_MS  5u

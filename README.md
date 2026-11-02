@@ -501,7 +501,7 @@ All signals are 3.3 V; set a logic analyzer's threshold for 3.3 V logic.
 | Hardware PWM, the ICSSG PWM module, ICSSG0 slice 1 | P9.12 A, P9.15 B | the same as P8.11 and P8.12, from the PWM module instead of software |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
 
-The pictures here are logic analyzer captures of the board running the demo, started by `ai64-demo` and left at its defaults.
+The board watches these signals itself too: jumper wires bring them to ICSSG1's logic analyzer ([the channels](pru/logic_analyzer/README.md#the-channels)), and `ai64 la measure`, the viewer at `/la`, or the MCP server measure them. The pictures here are captures from a separate logic analyzer, a Saleae Logic Pro 8, of the board running the demo, started by `ai64-demo` and left at its defaults.
 
 ![Captured: each period's duty on P8.11, P8.15, P9.12, and P9.25 through one 75 ms pass of the steps, and a 300 µs zoom on one step change](media/pwm-steps.svg)
 

@@ -89,8 +89,17 @@ static uint16_t say_ns(uint16_t n, const char *what, uint32_t v)
 static void ask(uint32_t period, uint32_t duty, uint32_t dead, uint32_t sweep, uint32_t steps)
 {
 	volatile struct pwm_ctl *ctl = PWM_CTL;
+	uint32_t want_dead = dead;
 
 	pwm_clamp(&period, &duty, &dead);
+	if (steps) {
+		/* The steps bring their own periods: the dead band has to fit the
+		 * shortest of them, not the fixed period last asked for. */
+		uint32_t sp = AI64_PWM_STEP_PERIOD_MIN_NS, sd = AI64_PWM_EDGE_MIN_NS;
+
+		dead = want_dead;
+		pwm_clamp(&sp, &sd, &dead);
+	}
 	if (sweep > AI64_PWM_SWEEP_MAX_MS) {
 		sweep = AI64_PWM_SWEEP_MAX_MS;
 	}
