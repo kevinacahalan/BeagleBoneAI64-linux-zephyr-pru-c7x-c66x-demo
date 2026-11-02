@@ -30,7 +30,7 @@ ERPC_SRCS = \
 all: ai64
 
 # A file per subcommand (README.md), and what they share.
-SRCS = ai64.c util.c cores.c linux_window.c erpc_window.c rtu0_window.c pwm.c sched.c \
+SRCS = ai64.c util.c cores.c linux_window.c erpc_window.c rtu0_window.c pwm.c la.c sched.c \
 	pads.c trace.c bench.c shutdown.c dsp.c mma.c fabric.c pipe.c web.c
 OBJS = $(SRCS:.c=.o) web_page.o
 HDRS = ai64.h ai64_erpc_linux.h $(wildcard $(ROOT)/zephyr/include/*.h) $(ROOT)/dsp/include/ai64_dsp_job.h

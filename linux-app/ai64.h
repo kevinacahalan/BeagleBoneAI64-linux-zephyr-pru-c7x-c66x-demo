@@ -83,6 +83,7 @@ int cores_main(int argc, char **argv);
 int dsp_main(int argc, char **argv);
 int erpc_main(int argc, char **argv);
 int fabric_main(int argc, char **argv);
+int la_main(int argc, char **argv);
 int linux_main(int argc, char **argv);
 int mma_main(int argc, char **argv);
 int pads_main(int argc, char **argv);

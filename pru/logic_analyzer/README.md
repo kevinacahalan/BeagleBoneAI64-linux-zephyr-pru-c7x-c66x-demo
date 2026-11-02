@@ -1,0 +1,122 @@
+# ICSSG1: a 19-channel logic analyzer
+
+ICSSG1's six cores record every change on 19 header pins, each stamped with the count of IEP0, ICSSG1's nanosecond counter on its 250 MHz clock, and Linux reads the records out of DDR. Jumper wires bring it the demo's own signals: the four PWM generators, SPI7, and the square wave. `ai64 la` then shows what each pin is doing, and `ai64 la capture` writes a VCD file for PulseView or GTKWave.
+
+It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s.
+
+## The channels
+
+The channels are numbered in header pin order: P8 before P9, then by pin number. Each PRU can read only its own GPI pins, so PRU0 has ten of them and PRU1 nine; both stamp with the same IEP0, and Linux merges the two streams by time. `zephyr/include/ai64_la.h` holds the table, and the overlay, `ai64`, and the board tests all use it.
+
+| Ch | Pin | Core, input | The demo's jumper brings | Signal |
+| --- | --- | --- | --- | --- |
+| 0 | P8.03 | PRU0 GPI19 | | spare |
+| 1 | P8.05 | PRU1 GPI12 | | spare |
+| 2 | P8.06 | PRU1 GPI13 | | spare |
+| 3 | P8.07 | PRU0 GPI14 | P9.28 | SPI7 CS |
+| 4 | P8.08 | PRU0 GPI13 | P9.31 | SPI7 CLK |
+| 5 | P8.09 | PRU0 GPI16 | P9.30 | SPI7 MOSI |
+| 6 | P8.10 | PRU0 GPI15 | P8.18 | the 1 kHz square wave |
+| 7 | P8.21 | PRU1 GPI9 | P8.11 | ICSSG0 slice 0, A |
+| 8 | P8.23 | PRU1 GPI10 | P8.12 | ICSSG0 slice 0, B |
+| 9 | P8.25 | PRU1 GPI14 | P9.12 | ICSSG0 slice 1, A |
+| 10 | P8.32 | PRU1 GPI5 | P9.15 or P8.31 | ICSSG0 slice 1, B |
+| 11 | P8.33 | PRU1 GPI4 | P8.15 | the eCAP's copy of A |
+| 12 | P8.35 | PRU1 GPI3 | P9.25 | EHRPWM4, Zephyr on R5F0_1 |
+| 13 | P8.36 | PRU0 GPI7 | P8.21 | slice 0's A again, on the other PRU |
+| 14 | P8.38 | PRU0 GPI8 | | spare |
+| 15 | P9.11 | PRU0 GPI0 | | spare |
+| 16 | P9.13 | PRU0 GPI1 | | spare |
+| 17 | P9.21 | PRU1 GPI18 | | spare |
+| 18 | P9.23 | PRU0 GPI9 | | spare |
+
+Each pin is in mode 1, `PRG1_PRU<n>_GPI<bit>`, with its pull-down on, so a spare pin reads a steady low. P8.32, P8.33, P8.35, P8.38, and P9.21 each have a second SoC ball, which the overlay holds off. The signals that get compared with each other sit on one PRU, so one read of its pins takes them together: SPI7's three on PRU0, and the PWM generators on PRU1. Channel 13 is the same signal as channel 7 on the other PRU, to measure how far apart the two PRUs see one edge.
+
+**The inputs connect straight to SoC pads.** They take 3.3 V logic only; 5 V on a pin can damage the SoC. The other pins the 19 could have been are taken: P8.18, P8.22, and P8.34 by Zephyr, P8.31 by the pipeline, P8.17 by the multicore scheduler, P8.24 and P9.22 are boot-mode straps, and P9.17, P9.18, P9.24, and P9.26 are the board's I²C4 and I²C6 buses.
+
+## How it works
+
+```mermaid
+flowchart LR
+  pins["19 header pins"] -->|"R31, direct"| pru0["PRU0<br/>10 pins"]
+  pins -->|"R31, direct"| pru1["PRU1<br/>9 pins"]
+  iep["IEP0<br/>counts ns"] -->|"stamps each edge"| pru0
+  iep -->|"stamps each edge"| pru1
+  pru0 -->|"edge records,<br/>a ring in shared RAM"| rtu0["RTU0"]
+  pru1 -->|"edge records,<br/>a ring in shared RAM"| rtu1["RTU1"]
+  rtu0 -->|"starts"| iep
+  rtu0 -->|"records and ticks,<br/>a 32 MiB ring"| ddr[("DDR")]
+  rtu1 -->|"records and ticks,<br/>a 32 MiB ring"| ddr
+  ddr -->|"/dev/mem"| ai64["ai64 la"]
+```
+
+| Core | Job | Source |
+| --- | --- | --- |
+| PRU0, PRU1 | Read their pins, and at each change write an edge record: IEP0's count and the new state | `firmware/la_pru.c`, `firmware/la_sample.asm` |
+| RTU0, RTU1 | Copy their PRU's records to its ring in DDR, add a tick each millisecond, keep the stream's header up to date; RTU0 also starts IEP0 | `firmware/la_rtu.c` |
+| Tx_PRU0, Tx_PRU1 | Report that they are up; the triggers on their PRU's channels come next | `firmware/la_txpru.c` |
+
+**The PRU's loop** (`la_sample.asm`) takes two cycles, 8 ns, a pass: read R31 through the PRU's mask, and loop while it matches the last state. On a change it reads IEP0's count and stores the record, time then state, into its ring in ICSSG1's shared RAM, then the ring's write count. It touches nothing outside ICSSG1, and never waits for its RTU, so nothing else on the chip can slow it.
+
+**The RTU** takes the slow, unpredictable work: DDR, and the GTC, the SoC's shared clock. Each millisecond it adds a tick, which pairs IEP0's count with the GTC and says every pin's state. An edge record holds only IEP0's low 32 bits; Linux finds the rest from the stream's last tick, which is never more than a millisecond away. If the RTU ever fell a whole ring behind its PRU, it would skip to where the PRU is and write a gap record, so a hole in the data is always marked.
+
+**Linux** (`linux-app/la.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
+
+`zephyr/include/ai64_la.h` has the record format and the addresses; `firmware/la_map.h` how each slice's data RAM and ICSSG1's shared RAM are split.
+
+**Starting after another firmware set.** A core's task manager keeps its setup when the core stops, and the multicore scheduler leaves IEP0 starting a task on every core every 100 ns. A core stopped in the middle of a task stays in it, and its next yield would return to wherever the old firmware was interrupted. So before `ai64-demo` stops ICSSG1's cores it runs `ai64 la quiet`, which stops IEP0 and maps no event to any task, so each core stops outside one; each analyzer core then turns its own task manager off before anything else (`firmware/la_tm.h`).
+
+## What it measures
+
+Checked against the bench's Saleae Logic Pro 8 at 250 MS/s on P8.11, P9.12, and P9.25 at once, over 2 s: every one of the 184,000 edges the Saleae saw, the analyzer saw too, and 99.9% of them within 14 ns of the Saleae's time, after the two clocks' 34 ppm difference is taken out. The worst was 51 ns, on P9.25: the PRU stamps an edge up to about 50 ns late when it comes while the PRU is still writing the record for another change on its pins. The analyzer reads every period of the demo's generators at exactly its nominal length, 100,000.000, 66,664.000, and 50,000.000 ns averaged over thousands, since IEP0 counts from the same clock they do.
+
+| | The analyzer | The Saleae, earlier ([Probe the pins](../../README.md#probe-the-pins)) |
+| --- | --- | --- |
+| Slice 1's dead band (hardware PWM) | 996 to 1004 ns | 1000 to 1004 ns |
+| Slice 0's dead band (software PWM) | 968 to 1024 ns | 988 to 1020 ns |
+| Slice 0's A at 20 kHz, 25% | high 12,472 to 12,532 ns | 12,476 to 12,524 ns |
+| The same edge on PRU0 and on PRU1 (ch13 against ch7) | −4 ns apart, half of them; 98% within ±8 ns | |
+
+The limits, then:
+
+- **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; one that comes while the PRU is busy with another edge on its pins can be up to about 50 ns late.
+- **Short pulses**: a pulse shorter than that busy time, right after another edge on the same PRU, can be missed. The PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record.
+- **Rate**: each PRU writes a record in about a dozen cycles, and its RTU copies them on; the demo's 180,000 edges a second on PRU1 leave both far from their limits, which are still to be measured.
+
+## Using it
+
+`ai64-demo` starts it on ICSSG1, and opens the `la` window:
+
+```
+ICSSG1 logic analyzer, the last 1.001 s; IEP0 at 75.096 s
+  PRU0     31926 edges/s, 31971 in all; RTU0 gaps 0 (0 records), reader missed 0
+  PRU1    179192 edges/s, 179487 in all; RTU1 gaps 0 (0 records), reader missed 0
+
+  ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty
+   0  P8.03  0/19     -                 low            0      0.0 Hz     0.0%
+   3  P8.07  0/14     SPI7_CS P9.28     high           0      0.0 Hz   100.0%
+   4  P8.08  0/13     SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
+   6  P8.10  0/15     SQUARE P8.18      high        2002    1.001 kHz   50.0%
+   7  P8.21  1/9      S0_A P8.11        high       29925   14.963 kHz   50.0%
+   8  P8.23  1/10     S0_B P8.12        low        29925   14.962 kHz   47.0%
+   9  P8.25  1/14     S1_A P9.12        high       29924   14.962 kHz   50.1%
+  10  P8.32  1/5      S1_B P9.15        low        29924   14.962 kHz   46.9%
+  11  P8.33  1/4      ECAP P8.15        high       29926   14.963 kHz   50.1%
+  12  P8.35  1/3      EHRPWM4 P9.25     high       29904   14.952 kHz   50.1%
+  13  P8.36  0/7      S0_A P8.21        high       29924   14.962 kHz   50.1%
+  ...
+```
+
+The frequency and duty are over the whole second, so the PWM channels show the average of their steps: 15 kHz, and 50% on A. B's duty is A's complement less the dead band. SPI7 only moves at startup and for each `spi`, so its channels sit still.
+
+| Command | What it does |
+| --- | --- |
+| `sudo ai64 la [seconds\|once\|lines]` | the `la` window, every second; once; or a line every 10 s for the merged console |
+| `sudo ai64 la capture <seconds> <file.vcd\|->` | records all 19 channels for that long and writes a VCD file, in ns from the start |
+| `sudo ai64 la quiet` | stops IEP0 and every task, before ICSSG1's cores stop; `ai64-demo` runs it |
+
+`ai64-demo --icssg1 scheduler` runs TI's multicore scheduler on ICSSG1 instead ([extra-demos/](../../extra-demos/README.md)), and `--icssg1 off` leaves ICSSG1 stopped.
+
+## Build
+
+From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project with the others into `pru/build/ai64-la-<core><slice>.elf`.

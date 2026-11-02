@@ -44,4 +44,14 @@ From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project an
 
 ## Run
 
-`ai64-demo` starts the six cores, PRU0 last. Then `sudo ai64 sched`, the `sched` window, reads ICSSG1's registers (only reads them: ICSSG1 has no core left to talk for it) and prints the schedule, each task manager's state, and how often it finds P8.17 high. On a logic analyzer, the default schedule makes P8.17 low from 8 to 12 ns and from 16 to 24 ns of every 100 ns period, and high the rest of the time; PRU0's step at 4 ns sets it high when it already is.
+`ai64-demo --icssg1 scheduler` starts the six cores, PRU0 last. Then `sudo ai64 sched`, the `sched` window, reads ICSSG1's registers (only reads them: ICSSG1 has no core left to talk for it) and prints the schedule, each task manager's state, and how often it finds P8.17 high. On a logic analyzer, the default schedule makes P8.17 low from 8 to 12 ns and from 16 to 24 ns of every 100 ns period, and high the rest of the time; PRU0's step at 4 ns sets it high when it already is.
+
+## On the board
+
+`ai64 sched` reads PWM2_0's state over the bus, much slower than the tasks change it, and finds P8.17 high about 79% of the time, against 88% for the schedule. A logic analyzer at 500 MS/s or more shows the schedule itself. P8.17 changes every 4 ns, the ICSSG core clock; built with `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000` it is slow enough for any analyzer.
+
+![Captured at 500 MS/s: P8.17 over two 100 ns periods, low from 8 to 12 ns and from 16 to 24 ns of each, with the core whose task each compare starts](media/p817.svg)
+
+At 500 MS/s the capture resolves the schedule to the analyzer's 2 ns sample: 10.000 million periods a second, each low for 4 and then 8 ns. The board's own logic analyzer cannot show it: it is the firmware this demo gives way to, and P8.17 is not one of its inputs.
+
+**Swapping firmware.** The task managers and IEP0 keep their setup when the cores stop, and this demo leaves a task starting on every core every 100 ns. Before it stops ICSSG1's cores, `ai64-demo` runs `ai64 la quiet`, which stops IEP0 and maps no event to any task, so no core stops in the middle of a task ([why that matters](../../pru/logic_analyzer/README.md#how-it-works)).

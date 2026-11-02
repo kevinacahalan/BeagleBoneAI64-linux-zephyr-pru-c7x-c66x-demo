@@ -6,13 +6,14 @@ Every piece of memory more than one core touches, with who writes it and how eac
 - [`zephyr/include/ai64_fabric.h`](zephyr/include/ai64_fabric.h): the fabric;
 - [`zephyr/include/ai64_pipe.h`](zephyr/include/ai64_pipe.h): the pipeline;
 - [`dsp/include/ai64_dsp_job.h`](dsp/include/ai64_dsp_job.h): the DSP job blocks;
-- [`pru/pwm/firmware/pwm_map.h`](pru/pwm/firmware/pwm_map.h): ICSSG0's data RAM.
+- [`pru/pwm/firmware/pwm_map.h`](pru/pwm/firmware/pwm_map.h): ICSSG0's data RAM;
+- [`zephyr/include/ai64_la.h`](zephyr/include/ai64_la.h) and [`pru/logic_analyzer/firmware/la_map.h`](pru/logic_analyzer/firmware/la_map.h): the logic analyzer, and ICSSG1's RAM.
 
 Most of it has build-time checks: the R5F's `mpu.c` checks the regions it maps against these headers, and the structures check their own sizes.
 
 ## DDR
 
-The board's device tree reserves each core's carveout, and the demo's overlay reserves 1 MiB at `0xa9000000` for what the cores share, so Linux keeps out of both.
+The board's device tree reserves each core's carveout, and the demo's overlay reserves 1 MiB at `0xa9000000` for what the cores share, and 64 MiB at `0xac000000` for the logic analyzer, so Linux keeps out of all of them.
 
 | Address | Size | What | Written by | Read by |
 | --- | --- | --- | --- | --- |
@@ -31,7 +32,10 @@ The board's device tree reserves each core's carveout, and the demo's overlay re
 | `0xa9080000` | 4 KiB | R5F0_0's UDMA rings and descriptor (the `ipc_service` slot for core 0 to itself) | R5F0_0, the UDMA | R5F0_0, the UDMA |
 | `0xa9081000` | 60 KiB | the R5F cores' `ipc_service` buffers: 4 KiB each way per pair (`common/ai64_ipc.dtsi`) | the sending core | the receiving core |
 | `0xa9090000` | 64 KiB | the pipeline's block (`struct ai64_pipe`): Linux's control record, each stage's numbers, the score, the result ring, the weights, the feature log | Linux (control, weights), each stage (its own numbers), R5F0_1 (score), the C7x (results, log) | everyone; Linux shows it |
-| `0xa90a0000` | 384 KiB | free, inside the reservation | | |
+| `0xa90a0000` | 128 B | the logic analyzer's two stream headers (`struct ai64_la`): each ring's write count, edges, gaps, and newest state | ICSSG1 RTU0, RTU1, each its own | Linux |
+| `0xa90a0080` | | free, inside the reservation, to `0xa9100000` | | |
+| `0xac000000` | 32 MiB | the logic analyzer's ring for PRU0: edge records, a tick each ms, gap records | ICSSG1 RTU0 | Linux (`ai64 la`) |
+| `0xae000000` | 32 MiB | its ring for PRU1 | ICSSG1 RTU1 | Linux |
 
 ## On-chip RAM
 
@@ -47,7 +51,9 @@ The board's device tree reserves each core's carveout, and the demo's overlay re
 | `0x0b000000` | `0x0000` on slice 0's cores | 8 KiB | ICSSG0 slice 0's data RAM: PRU0, Tx_PRU0, RTU0, and their four IPC records (`pwm_map.h`) | each core its own part and records | the slice's three cores; Linux (trace) |
 | `0x0b002000` | `0x0000` on slice 1's cores | 8 KiB | ICSSG0 slice 1's data RAM, the same way | | |
 | `0x0b010000` | `0x10000` on ICSSG0's cores | 8 KiB used | the pipeline's window ring: 16 slots of 512 bytes, then PRU1's counts | PRU1 (samples), RTU1 (stamps) | R5F0_0's UDMA |
-| `0x0b100000` | | | ICSSG1's RAMs: only the six scheduler cores use them | | |
+| `0x0b100000` | `0x0000` on slice 0's cores | 8 KiB | ICSSG1 slice 0's data RAM: PRU0, Tx_PRU0, RTU0 (`la_map.h`) | each core its own part | Linux (trace) |
+| `0x0b102000` | `0x0000` on slice 1's cores | 8 KiB | ICSSG1 slice 1's data RAM, the same way | | |
+| `0x0b110000` | `0x10000` on ICSSG1's cores | 32 KiB | the logic analyzer's two edge rings, 16 KiB each, then each PRU's write count at `0x18000` and `0x18040` | PRU0, PRU1, each its own | RTU0, RTU1 |
 
 ## Registers every core shares
 

@@ -32,6 +32,7 @@
 │   └── build/             generated
 ├── pru/
 │   ├── pwm/
+│   ├── logic_analyzer/
 │   ├── common/
 │   └── build/             generated
 ├── extra-demos/
@@ -102,6 +103,8 @@
 `extra-demos/` — demos kept for reference, built with the rest but not started unless asked ([`extra-demos/README.md`](extra-demos/README.md)).
 
 `extra-demos/icssg1-multicore-scheduler/` — ICSSG1: the port of open-pru's `examples/multicore_scheduler`, a `main.c` and a `pwm_toggle.asm` per core. BSD-3-Clause, as TI's original. `README.md` says what changed for J721E. `ai64-demo --icssg1 scheduler` runs it.
+
+`pru/logic_analyzer/` — ICSSG1: the 19-channel logic analyzer. `firmware/` holds its memory map (`la_map.h`), the PRUs' sampling loop (`la_pru.c`, `la_sample.asm`), the RTUs' mover (`la_rtu.c`), and the Tx_PRUs' (`la_txpru.c`); the records and channels are in `zephyr/include/ai64_la.h`. `README.md` explains it.
 
 `pru/common/` — what both projects share: the trace-buffer log, the two resource tables (trace only, and RPMsg with trace), RTU0's RPMsg channel, text helpers, and the ICSSG register map (`icssg.h`).
 

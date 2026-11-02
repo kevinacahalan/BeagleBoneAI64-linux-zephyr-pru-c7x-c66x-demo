@@ -21,7 +21,7 @@
 const struct ai64_group ai64_groups[] = {
 	{ "r5", "Zephyr on the main-domain R5F cores" },
 	{ "g0", "ICSSG0: the PWM slices, and the pipeline's sampler" },
-	{ "g1", "ICSSG1: TI's multicore scheduler, a task each on IEP0's time (an extra demo)" },
+	{ "g1", "ICSSG1: a 19-channel logic analyzer (ai64 la)" },
 	{ "dsp", "The DSPs" },
 };
 const size_t ai64_ngroups = sizeof(ai64_groups) / sizeof(ai64_groups[0]);
@@ -33,7 +33,9 @@ const size_t ai64_ngroups = sizeof(ai64_groups) / sizeof(ai64_groups[0]);
  * the order ai64-demo starts them in. In split mode an R5F cluster's core 1
  * cannot power up before its core 0, so each cluster's core 0 comes first.
  * An ICSSG0 slice's Tx_PRU waits for its RTU's record and its PRU for the
- * Tx_PRU's, so the RTU starts first. ICSSG1's PRU0 sets up IEP0 for the
+ * Tx_PRU's, so the RTU starts first. On ICSSG1, RTU0 starts IEP0, the
+ * analyzer's clock, before either PRU samples; with the multicore scheduler
+ * loaded instead (ai64-demo --icssg1 scheduler), PRU0 sets up IEP0 for the
  * other five, so it starts last.
  */
 const struct ai64_core ai64_cores[] = {
@@ -70,23 +72,23 @@ const struct ai64_core ai64_cores[] = {
 	  .name = "RTU1", .role = "slice 1 talks; stamps the pipeline's windows",
 	  .start = 4, .node = AI64_FAB_G0RTU1, .icssg = 0x0b000000ull, .slice = 1 },
 
-	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-mcs-pru0.elf", .group = "g1",
-	  .name = "PRU0", .role = "sets the scheduler up; its task sets P8.17 high",
+	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-la-pru0.elf", .group = "g1",
+	  .name = "PRU0", .role = "samples 10 analyzer pins: ch0, ch3-6, ch13-16, ch18",
 	  .start = 6, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "ai64-mcs-pru1.elf", .group = "g1",
-	  .name = "PRU1", .role = "its task sets P8.17 low",
+	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "ai64-la-pru1.elf", .group = "g1",
+	  .name = "PRU1", .role = "samples 9 analyzer pins: ch1-2, ch7-12, ch17",
 	  .start = 5, NONE, .icssg = 0x0b100000ull, .slice = 1 },
-	{ .label = "g1rtu0", .rproc = "b104000.rtu", .fw = "ai64-mcs-rtu0.elf", .group = "g1",
-	  .name = "RTU0", .role = "its task sets P8.17 low",
+	{ .label = "g1rtu0", .rproc = "b104000.rtu", .fw = "ai64-la-rtu0.elf", .group = "g1",
+	  .name = "RTU0", .role = "starts IEP0; moves PRU0's edges to DDR",
 	  .start = 1, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1rtu1", .rproc = "b106000.rtu", .fw = "ai64-mcs-rtu1.elf", .group = "g1",
-	  .name = "RTU1", .role = "its task sets P8.17 high",
+	{ .label = "g1rtu1", .rproc = "b106000.rtu", .fw = "ai64-la-rtu1.elf", .group = "g1",
+	  .name = "RTU1", .role = "moves PRU1's edges to DDR",
 	  .start = 2, NONE, .icssg = 0x0b100000ull, .slice = 1 },
-	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "ai64-mcs-txpru0.elf",
-	  .group = "g1", .name = "Tx_PRU0", .role = "its task sets P8.17 high",
+	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "ai64-la-txpru0.elf",
+	  .group = "g1", .name = "Tx_PRU0", .role = "slice 0's watcher",
 	  .start = 3, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "ai64-mcs-txpru1.elf",
-	  .group = "g1", .name = "Tx_PRU1", .role = "its task sets P8.17 low",
+	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "ai64-la-txpru1.elf",
+	  .group = "g1", .name = "Tx_PRU1", .role = "slice 1's watcher",
 	  .start = 4, NONE, .icssg = 0x0b100000ull, .slice = 1 },
 
 	{ .label = "c66x0", .rproc = "4d80800000.dsp", .fw = "ai64-c66x.elf", .group = "dsp",

@@ -5,13 +5,13 @@ A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its 
 - **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo.
 - **Zephyr** runs on all four main-domain Cortex-R5F cores, R5F0_0, R5F0_1, R5F1_0, and R5F1_1 (R5F, then the cluster, then the core): an app for each, in `zephyr/r5/<core>/`, on code they share, and one `west build --sysbuild` makes all four ([Four Zephyr apps, one build](zephyr/r5/README.md)). R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA; R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4, which the pipeline below takes over once it runs; R5F1_0 makes a square wave on P8.18 from a kernel timer; R5F1_1 watches the other three. They call each other through Zephyr's `ipc_service`, so any core takes a request for SPI or the PWM and passes it on to the one whose job it is. Each answers function calls from Linux too (eRPC over RPMsg). Their drivers get clocks, power, and interrupt routes from the board's device manager over TI-SCI, which a small polled mailbox driver carries on these cores ([Zephyr and the device manager](zephyr/r5/README.md#zephyr-and-the-device-manager-ti-sci)).
 - **ICSSG0 makes PWM three ways** ([PWM, three ways](pru/README.md#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which copies slice 0's A onto P8.15, given only a period and duty by slice 0's Tx_PRU. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
-- **ICSSG1 runs a port of TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler)** on all six of its cores: IEP0 compares start a task on each core in turn, 4 ns apart, and each task sets a header pin high or low ([The multicore scheduler](pru/README.md#icssg1-the-multicore-scheduler)).
+- **ICSSG1 is a 19-channel logic analyzer** ([ICSSG1: a logic analyzer](pru/logic_analyzer/README.md)): each PRU stamps every change on its header pins with IEP0's count of nanoseconds, and its slice's RTU carries the records into DDR, where `ai64 la` shows each pin's frequency and duty and writes VCD files for PulseView or GTKWave. Jumper wires bring it the demo's own signals, the PWM generators, SPI7, and the square wave, so the board measures itself: against a Saleae Logic Pro 8, it saw every edge, 99.9% of them within 14 ns. TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler), which ICSSG1 ran before, is kept as an extra demo ([extra-demos/](extra-demos/README.md)).
 - **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, about 250 times as fast as one A72 core ([The C7x's MMA](dsp/README.md#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](zephyr/r5/README.md#r5f0_0s-dma-the-udma)).
 - **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into the L2 SRAM of one C66x or the other, in turn; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
 - **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 90 paths ([The fabric](docs/fabric.md)).
 - **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies, read from shared memory twice a second ([The web page](#the-web-page)).
 
-The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `extra-demos/icssg1-multicore-scheduler/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1 keeps TI's design, where every core runs a task.
+The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/logic_analyzer/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1's analyzer works the same way: its PRUs only watch their pins, and its RTUs carry the records to DDR.
 
 ```mermaid
 flowchart LR
@@ -54,11 +54,10 @@ flowchart LR
     iep1["IEP1<br/>CMP0, CMP1, CMP2"]
     pwm2["PWM module, set 2<br/>A, B on P9.12, P9.15"]
   end
-  subgraph g1["ICSSG1, scheduler"]
-    mcs["six cores<br/>PRU, RTU, Tx_PRU x2"]
-    g1iep["IEP0<br/>a compare every 4 ns"]
-    g1tm["six task managers"]
-    g1pwm["PWM2_0 initial state<br/>P8.17"]
+  subgraph g1["ICSSG1, logic analyzer"]
+    lapru["PRU0, PRU1<br/>19 pins, jumpered"]
+    g1iep["IEP0<br/>counts ns"]
+    lartu["RTU0, RTU1"]
   end
   c660 <-->|"FIR jobs, trace, shutdown"| ai64
   c661 <-->|"FIR jobs, trace, shutdown"| ai64
@@ -100,12 +99,10 @@ flowchart LR
   pru1 -->|"sets up, rearms compares"| iep1
   pru1 -->|"sets up"| pwm2
   iep1 -->|"compare events toggle"| pwm2
-  mcs -->|"set up"| g1iep
-  mcs -->|"arm"| g1tm
-  g1iep -->|"compare events"| g1tm
-  g1tm -->|"start a task"| mcs
-  mcs -->|"each task writes"| g1pwm
-  ai64 -.->|"reads the registers"| g1
+  lartu -->|"starts"| g1iep
+  g1iep -->|"stamps each edge"| lapru
+  lapru -->|"edge records"| lartu
+  lartu -->|"rings in DDR"| ai64
   ai64 <-->|"RPMsg text"| rtu0
   fab <--> ai64
   fab <--> r500
@@ -143,7 +140,7 @@ The demo runs on the BeagleBoard Debian image, plus a one-time install script. A
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
 - Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
 - A jumper wire from P9.15 to P8.31, for the pipeline. Without it the rest of the demo runs the same, the pipeline says it found nothing to train on, and P9.25 keeps its own steps.
-- Optional: a logic analyzer, to watch SPI7, the four PWM generators, the pipeline, and the multicore scheduler on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
+- Optional: eleven jumper wires for the board's own logic analyzer on ICSSG1 ([the channels](pru/logic_analyzer/README.md#the-channels)); a logic analyzer, to watch SPI7, the four PWM generators, and the pipeline on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
 
 Get the code:
 
@@ -226,7 +223,7 @@ ai64-demo --tmux
 ```
 
 - It asks for your `sudo` password once.
-- It restarts the four R5F cores, the twelve ICSSG cores, and the DSPs with the installed firmware, then opens a tmux session with fourteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `sched`, `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, and `web`, which serves [the web page](#the-web-page) on port 8064. Before it stops each R5F and DSP, it asks the core to go idle ([why](dsp/README.md#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
+- It restarts the four R5F cores, the twelve ICSSG cores, and the DSPs with the installed firmware, then opens a tmux session with fourteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `la` (ICSSG1's logic analyzer), `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, and `web`, which serves [the web page](#the-web-page) on port 8064. Before it stops each R5F and DSP, it asks the core to go idle ([why](dsp/README.md#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: Ctrl+b then w lists the windows to pick from; Ctrl+b then n and p go to the next and previous; Ctrl+b then 0–9 goes straight to one of the first ten. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
@@ -348,16 +345,23 @@ pipeline (running, P9.25 follows): stage                        windows/s   late
   newest window 299187: 20 kHz 75%, score 54 against 44; P9.25 holds 20 kHz 75%, set 28433 times (29477 classes waited for a second window)
   score: 15063 right, 0 wrong (100.00%), 4468 across a step, in 10.0 s; since training 214122 right, 0 wrong
 
-== sched (ICSSG1's schedule every 10 s)
-sched window ready, ICSSG1's schedule every 10 s
-ICSSG1 multicore scheduler: IEP0 period 100 ns, +4 ns a tick (the 250 MHz core clock)
-  PRU0     IEP0 CMP7  at     4 ns  sets P8.17 high  task manager on
-  PRU1     IEP0 CMP2  at     8 ns  sets P8.17 low   task manager on
-  RTU1     IEP0 CMP3  at    12 ns  sets P8.17 high  task manager on
-  RTU0     IEP0 CMP4  at    16 ns  sets P8.17 low   task manager on
-  Tx_PRU1  IEP0 CMP5  at    20 ns  sets P8.17 low   task manager on
-  Tx_PRU0  IEP0 CMP6  at    24 ns  sets P8.17 high  task manager on
-  P8.17 (PWM2_0's initial state) read high 79% of 100000 samples, 41664 changes seen
+== la (every second, ICSSG1's 19 channels; the spare ones left out here)
+ICSSG1 logic analyzer, the last 1.001 s; IEP0 at 75.096 s
+  PRU0     31926 edges/s, 31971 in all; RTU0 gaps 0 (0 records), reader missed 0
+  PRU1    179192 edges/s, 179487 in all; RTU1 gaps 0 (0 records), reader missed 0
+
+  ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty
+   3  P8.07  0/14     SPI7_CS P9.28     high           0      0.0 Hz   100.0%
+   4  P8.08  0/13     SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
+   5  P8.09  0/16     SPI7_MOSI P9.30   low            0      0.0 Hz     0.0%
+   6  P8.10  0/15     SQUARE P8.18      high        2002    1.001 kHz   50.0%
+   7  P8.21  1/9      S0_A P8.11        high       29925   14.963 kHz   50.0%
+   8  P8.23  1/10     S0_B P8.12        low        29925   14.962 kHz   47.0%
+   9  P8.25  1/14     S1_A P9.12        high       29924   14.962 kHz   50.1%
+  10  P8.32  1/5      S1_B P9.15        low        29924   14.962 kHz   46.9%
+  11  P8.33  1/4      ECAP P8.15        high       29926   14.963 kHz   50.1%
+  12  P8.35  1/3      EHRPWM4 P9.25     high       29904   14.952 kHz   50.1%
+  13  P8.36  0/7      S0_A P8.21        high       29924   14.962 kHz   50.1%
 
 == c66x0 (c66x1 is the same, with DNUM 1 and the odd windows)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d80815480
@@ -379,7 +383,7 @@ c7x up 20 s
 - **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about 1.5 ms behind the input; [The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
-The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `sched` reads P8.17's state over the bus, far slower than the tasks change it, so its share is a rough one; [The multicore scheduler](pru/README.md#icssg1-the-multicore-scheduler) has what the schedule does.
+The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps; [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#using-it) has more.
 
 The other three R5F cores have no console UART. Each logs into its remoteproc trace buffer instead:
 
@@ -414,8 +418,8 @@ $ ai64 trace b038000.pru
 ICSSG0 PRU1 up: ICSSG PWM2_0 on IEP1, A on P9.12, B on P9.15
 sampling P8.31 at 2 MHz, 2048 a window
 first period: 100000 ns, duty 10000 ns
-$ ai64 trace b104000.rtu
-ICSSG1 RTU0 up: its task, on IEP0 CMP4, sets P8.17 low
+$ ai64 trace g1rtu0
+ICSSG1 RTU0 up: IEP0 counting ns; PRU0's edges to DDR
 ```
 
 `ai64 trace` takes a core's label from `ai64 cores`, such as `r5f0_1`, `g0rtu1`, or `c7x`, or its remoteproc name, such as `5d00000.r5f`. R5F0_0 has a console UART instead of a trace.
@@ -446,7 +450,7 @@ Type these in the linux window. The R5F commands start with the core's name, `r5
 
 Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple of 4 ns, one IEP count, and every edge stays at least 400 ns from the next on the same pin, so A's high time runs from 400 ns to the period less 440 ns and twice the dead band; the RTU clamps what it is asked for. All four generators start stepping, 5 ms a step; a fixed `pwm` request stops the steps, and `steps <ms>` starts them again. On P9.25, either one also takes the pin back from the pipeline, until the next `pipe start`. The eCAP on P8.15 has no requests of its own: it follows slice 0. Slice 1, the hardware PWM on P9.12 and P9.15, has no RPMsg: `sudo ai64 fabric route g0rtu1 pwm <period_ns> <duty_ns>` (or `steps`, `sweep`, or `dead`) reaches it through the fabric instead, and so can any core on the route.
 
-`ai64-demo` without `--tmux` prints all fourteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[Sched]`, `[C66x0]`, `[C66x1]`, `[C7x]`, `[Fabric]`, `[Pipe]`, or `[Web]`; the pipe window there is one line every 10 s. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
+`ai64-demo` without `--tmux` prints all fourteen windows on one console instead, with each line prefixed `[Linux]`, `[R5F0_0]`, `[R5F0_1]`, `[R5F1_0]`, `[R5F1_1]`, `[RTU0]`, `[PWM]`, `[LA]`, `[C66x0]`, `[C66x1]`, `[C7x]`, `[Fabric]`, `[Pipe]`, or `[Web]`; the pipe window there is one line every 10 s. Either way it restarts the cores with their firmware first. `--attach` connects to the running cores without restarting them.
 
 `ai64` has more subcommands, which you run in a shell on the board. A `<core>` is a label from `ai64 cores` or a remoteproc name; [`linux-app/README.md`](linux-app/README.md) lists the file each lives in.
 
@@ -455,7 +459,8 @@ Periods run from 2000 ns to 1 s. On the ICSSG0 slices every time is a multiple o
 | `sudo ai64 pads` | checks the pin mux of every demo pin |
 | `ai64 cores` | lists every demo core: its label, remoteproc name, firmware, and fabric node |
 | `ai64 trace <core>` | follows a core's trace log, for example `ai64 trace r5f0_1` or `ai64 trace g0pru0` |
-| `sudo ai64 pwm once`, `sudo ai64 sched once` | prints one sample of the `pwm` or `sched` window |
+| `sudo ai64 pwm once`, `sudo ai64 la once` | prints one sample of the `pwm` or `la` window |
+| `sudo ai64 la capture <seconds> <file.vcd>` | records the logic analyzer's 19 channels to a VCD file, for PulseView or GTKWave ([how](pru/logic_analyzer/README.md#using-it)) |
 | `ai64 bench <rpmsg-dev>` | times eRPC calls to one R5F core ([R5F caches](zephyr/r5/README.md#r5f-caches)) |
 | `sudo ai64 dsp <core>` | runs FIR jobs on a DSP and checks them against the A72 ([how](dsp/README.md#linux-to-the-dsps-fir-jobs)) |
 | `sudo ai64 mma [rows] [runs]` | runs the int8 layer on the C7x's MMA and in plain C ([how](dsp/README.md#the-c7xs-matrix-multiply-accelerator)) |
@@ -490,7 +495,6 @@ All signals are 3.3 V; set a logic analyzer's threshold for 3.3 V logic.
 | Software PWM, ICSSG0 slice 0 | P8.11 A, P8.12 B | the steps below on A; B the complement of A with dead band |
 | Hardware PWM, ICSSG0's eCAP0, set by Tx_PRU0 | P8.15 | the same period and high time as P8.11, one output, from the eCAP's own counter (its periods are not in phase with P8.11's) |
 | Hardware PWM, the ICSSG PWM module, ICSSG0 slice 1 | P9.12 A, P9.15 B | the same as P8.11 and P8.12, from the PWM module instead of software |
-| Multicore scheduler, ICSSG1 | P8.17 | low from 8 to 12 ns and from 16 to 24 ns of every 100 ns, high the rest |
 | Zephyr console | P8.34 TX, P8.22 RX | 115200 8N1 |
 
 The pictures here are logic analyzer captures of the board running the demo, started by `ai64-demo` and left at its defaults.
@@ -519,12 +523,6 @@ In an earlier capture P9.25's period was 8 ns too long at every step, 50,008 ns 
 ![Captured: each period's duty on P9.12, P8.31, and P9.25 through one pass of the steps, P9.25 1.18 to 1.75 ms behind; and a 4 ms zoom on one step change](media/pipe.svg)
 
 Most of the delay is the windows: a 1.024 ms window has to be mostly the new step before it names it, and P9.25 waits for the next window, 512 µs on, to agree. With windows end to end, the next was a whole window on, and P9.25 was 1.7 to 2.8 ms behind. The cores take about 127 µs of it, from a window's last sample to R5F0_1 having its class; the EHRPWM then starts the new period and duty at the end of its current period. P8.31 is B, so its duty runs the other way from P9.12's.
-
-**P8.17** changes every 4 ns, the ICSSG core clock, so it needs an analyzer at 500 MS/s or more to resolve; built with `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000` ([The multicore scheduler](pru/README.md#icssg1-the-multicore-scheduler)) it is slow enough for any.
-
-![Captured at 500 MS/s: P8.17 over two 100 ns periods, low from 8 to 12 ns and from 16 to 24 ns of each, with the core whose task each compare starts](extra-demos/icssg1-multicore-scheduler/media/p817.svg)
-
-At 500 MS/s the capture resolves the schedule to the analyzer's 2 ns sample: 10.000 million periods a second, each low for 4 and then 8 ns.
 
 **SPI7** sends `hello` once at startup, and whatever `spi` asks for after that. Chip select stays low for the whole transfer, 175 µs for `hello`; the clock starts 3.9 µs after it falls.
 
@@ -566,7 +564,8 @@ Each part of the demo is written up next to its code, and the cross-cutting part
 | Read | For |
 | --- | --- |
 | [`zephyr/r5/README.md`](zephyr/r5/README.md) | Zephyr on the four R5F cores: an app per core on shared code; eRPC from Linux; `ipc_service` between the cores; TI-SCI over a polled secure proxy; the mailbox interrupt routes; EHRPWM4, GPIO2, and the UDMA; the caches; and restarting a core |
-| [`pru/README.md`](pru/README.md) | The twelve ICSSG cores: how the firmware is laid out, ICSSG0's three ways to make PWM, ICSSG1's port of TI's multicore scheduler, and RTU0's RPMsg |
+| [`pru/README.md`](pru/README.md) | The twelve ICSSG cores: how the firmware is laid out, ICSSG0's three ways to make PWM, and RTU0's RPMsg |
+| [`pru/logic_analyzer/README.md`](pru/logic_analyzer/README.md) | ICSSG1's logic analyzer: its 19 channels and jumpers, how the PRUs stamp edges and the RTUs move them, what it measures against a Saleae, and `ai64 la` |
 | [`dsp/README.md`](dsp/README.md) | The C66x and C7x images: their trace logs, Linux's FIR jobs, the C7x's MMU and caches, its Matrix Multiply Accelerator, and stopping a C7x |
 | [`docs/fabric.md`](docs/fabric.md) | The fabric: every core, Linux included, talking straight to every other, with one-way latencies on the SoC's shared clock |
 | [`docs/pipeline.md`](docs/pipeline.md) | The pipeline from P8.31 to P9.25: each stage, why the windows overlap, and how Linux trains the layer |

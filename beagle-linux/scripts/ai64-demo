@@ -8,12 +8,13 @@
 #   ai64-demo --tmux          same start, in tmux session ai64 (fourteen windows)
 #   ai64-demo --attach        do not stop or start any core
 #   ai64-demo --attach --tmux attach to session ai64, or open it without a restart
-#   ai64-demo --icssg1 SET    what ICSSG1 runs: scheduler (the default; TI's
-#                             multicore scheduler, extra-demos/) or off
+#   ai64-demo --icssg1 SET    what ICSSG1 runs: la (the default; the logic
+#                             analyzer), scheduler (TI's multicore scheduler,
+#                             extra-demos/), or off
 #
 # Every merged line is prefixed [Linux], [R5F0_0] (and the other R5F cores),
-# [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], [Fabric], [Pipe], or [Web].
-# Either way, ai64 web serves a live page of every core on port 8064.
+# [RTU0], [PWM], [LA] (or [Sched]), [C66x0], [C66x1], [C7x], [Fabric], [Pipe],
+# or [Web]. Either way, ai64 web serves a live page of every core on port 8064.
 
 set -euo pipefail
 
@@ -77,29 +78,30 @@ MCU_R5_NAMES="41000000.r5f 41400000.r5f"
 
 usage() {
 	cat <<'EOF'
-usage: ai64-demo [--tmux] [--attach] [--icssg1 scheduler|off]
+usage: ai64-demo [--tmux] [--attach] [--icssg1 la|scheduler|off]
 
   (default)  Restart the four R5F cores, the twelve ICSSG cores, and the
              DSPs with their firmware. Then print one console. Each line is
              prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
-             [RTU0], [PWM], [Sched], [C66x0], [C66x1], [C7x], [Fabric],
+             [RTU0], [PWM], [LA], [C66x0], [C66x1], [C7x], [Fabric],
              [Pipe], or [Web]. The web page, on port 8064, shows every
              core live (ai64 web).
   --tmux     Same start, in tmux session ai64. Windows: linux, r5f0_0,
-             r5f0_1, r5f1_0, r5f1_1, rtu0, pwm, sched, c66x0, c66x1, c7x,
+             r5f0_1, r5f1_0, r5f1_1, rtu0, pwm, la, c66x0, c66x1, c7x,
              fabric, pipe, web.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
   --icssg1 SET
-             What ICSSG1's six cores run: scheduler (the default), TI's
-             multicore scheduler from extra-demos/, or off, leaving them
-             stopped.
+             What ICSSG1's six cores run: la (the default), the logic
+             analyzer; scheduler, TI's multicore scheduler from
+             extra-demos/, with a sched window in place of la; or off,
+             leaving them stopped.
 EOF
 }
 
 ATTACH=0
 USE_TMUX=0
-ICSSG1=scheduler
+ICSSG1=la
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--attach) ATTACH=1 ;;
@@ -107,9 +109,9 @@ while [[ $# -gt 0 ]]; do
 	--icssg1)
 		ICSSG1=${2:-}
 		case $ICSSG1 in
-		scheduler|off) ;;
+		la|scheduler|off) ;;
 		*)
-			echo "--icssg1 takes scheduler or off" >&2
+			echo "--icssg1 takes la, scheduler, or off" >&2
 			exit 2
 			;;
 		esac
@@ -231,6 +233,7 @@ load_fw() {
 	case $fwname in
 	ai64_r5f[01]_[01].elf|ai64-c66x.elf|ai64-c7x.elf) ;;
 	ai64-icssg0-pru[01].elf|ai64-icssg0-rtu[01].elf|ai64-icssg0-txpru[01].elf) ;;
+	ai64-la-pru[01].elf|ai64-la-rtu[01].elf|ai64-la-txpru[01].elf) ;;
 	ai64-mcs-pru[01].elf|ai64-mcs-rtu[01].elf|ai64-mcs-txpru[01].elf) ;;
 	*)
 		echo "refusing to install $fwname" >&2
@@ -350,9 +353,11 @@ restart_pwm() {
 	done
 }
 
-# ICSSG1 runs the set --icssg1 names. The scheduler's cores each arm their
-# own task manager and clear their own compare, so the six can start in any
-# order; PRU0, which sets up IEP0, goes last. With off, they stay stopped.
+# ICSSG1 runs the set --icssg1 names, in ai64 cores' order: the analyzer's
+# RTU0 starts IEP0 before either PRU samples. The scheduler's images have
+# the same names with ai64-mcs- for ai64-la-; its cores each arm their own
+# task manager and clear their own compare, and PRU0, which sets up IEP0,
+# goes last. With off, they stay stopped.
 restart_icssg1() {
 	local entry name fw src
 	for entry in "${G1_CORES[@]}"; do
@@ -362,6 +367,9 @@ restart_icssg1() {
 			return 0
 		fi
 	done
+	# No task may be running when a core stops: a task manager outlives its
+	# core (pru/logic_analyzer/firmware/la_tm.h).
+	as_root "$BIN" la quiet
 	for entry in "${G1_CORES[@]}"; do
 		stop_core "${entry%%:*}"
 	done
@@ -369,6 +377,7 @@ restart_icssg1() {
 	for entry in "${G1_CORES[@]}"; do
 		name=${entry%%:*}
 		fw=${entry#*:}
+		[[ $ICSSG1 == scheduler ]] && fw=${fw/ai64-la-/ai64-mcs-}
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
 		load_fw "$name" "$fw" "$src"
 	done
@@ -461,7 +470,7 @@ viewer_pids() {
 		mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || continue
 		[[ ${#argv[@]} -ge 2 && ${argv[0]##*/} == ai64 ]] || continue
 		case ${argv[1]} in
-		peer|erpc|pwm|sched|trace|fabric|pipe|web|linux)
+		peer|erpc|pwm|sched|la|trace|fabric|pipe|web|linux)
 			echo "$pid"
 			;;
 		esac
@@ -562,6 +571,9 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	if [[ $ICSSG1 == scheduler ]]; then
 		tmux new-window -d -t "$SESSION" -n sched
 		tmux send-keys -t "$SESSION:sched" "$BIN sched" C-m
+	elif [[ $ICSSG1 == la ]]; then
+		tmux new-window -d -t "$SESSION" -n la
+		tmux send-keys -t "$SESSION:la" "$BIN la" C-m
 	fi
 	for entry in "${DSP_CORES[@]}"; do
 		IFS=: read -r name fw label <<<"$entry"
@@ -584,6 +596,7 @@ if [[ $USE_TMUX -eq 1 ]]; then
 	echo "  rtu0   $RTU0_DEV"
 	echo "  pwm    the PWM generators' fabric pages"
 	[[ $ICSSG1 == scheduler ]] && echo "  sched  ICSSG1's registers, read only"
+	[[ $ICSSG1 == la ]] && echo "  la     the logic analyzer's 19 channels"
 	echo "  fabric ddr"
 	echo "  pipe   the pipeline's numbers, P8.31 to P9.25"
 	echo "  web    a live page of every core: http://<board>:8064/"
@@ -630,6 +643,8 @@ spawn_prefixed '[RTU0]' "$RUN/rtu0.out" "$BIN" peer rtu0 "$RTU0_DEV" "$RUN/rtu0.
 spawn_prefixed '[PWM]' "$RUN/pwm.out" "$BIN" pwm
 if [[ $ICSSG1 == scheduler ]]; then
 	spawn_prefixed '[Sched]' "$RUN/sched.out" "$BIN" sched
+elif [[ $ICSSG1 == la ]]; then
+	spawn_prefixed '[LA]' "$RUN/la.out" "$BIN" la lines
 fi
 for entry in "${DSP_CORES[@]}"; do
 	IFS=: read -r name fw label <<<"$entry"

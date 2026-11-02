@@ -1,5 +1,5 @@
-SUMMARY = "BeagleBone AI-64 ICSSG firmware: the PWM project on ICSSG0, and the multicore scheduler extra demo for ICSSG1"
-DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package, from two open-pru style projects: pru/pwm (ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1) and extra-demos/icssg1-multicore-scheduler (ICSSG1: a port of open-pru's examples/multicore_scheduler on all six cores)."
+SUMMARY = "BeagleBone AI-64 ICSSG firmware: the PWM project on ICSSG0, the logic analyzer on ICSSG1, and the multicore scheduler extra demo"
+DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package, from three open-pru style projects: pru/pwm (ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1), pru/logic_analyzer (ICSSG1: a 19-channel logic analyzer), and extra-demos/icssg1-multicore-scheduler (a port of open-pru's examples/multicore_scheduler, which ICSSG1 can run instead)."
 # The demo is MIT. The PRU Software Support Package it links, and the
 # multicore scheduler ported from open-pru, are BSD-3-Clause.
 LICENSE = "MIT & BSD-3-Clause"
@@ -15,10 +15,12 @@ SRC_URI = " \
     file://pru/pru_rules.mak;subdir=src \
     file://pru/common;subdir=src \
     file://pru/pwm;subdir=src \
+    file://pru/logic_analyzer;subdir=src \
     file://extra-demos/icssg1-multicore-scheduler;subdir=src \
     file://zephyr/include/ai64_shm.h;subdir=src \
     file://zephyr/include/ai64_fabric.h;subdir=src \
     file://zephyr/include/ai64_pipe.h;subdir=src \
+    file://zephyr/include/ai64_la.h;subdir=src \
     git://git.ti.com/git/pru-software-support-package/pru-software-support-package.git;protocol=https;nobranch=1;destsuffix=pssp;name=pssp \
 "
 SRCREV_pssp = "28107daa1d184059f67676ba49d0fcaebb0f6a96"
@@ -33,6 +35,8 @@ INSANE_SKIP:${PN} += "arch buildpaths"
 
 FW = "ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf \
     ai64-icssg0-pru1.elf ai64-icssg0-rtu1.elf ai64-icssg0-txpru1.elf \
+    ai64-la-pru0.elf ai64-la-rtu0.elf ai64-la-txpru0.elf \
+    ai64-la-pru1.elf ai64-la-rtu1.elf ai64-la-txpru1.elf \
     ai64-mcs-pru0.elf ai64-mcs-rtu0.elf ai64-mcs-txpru0.elf \
     ai64-mcs-pru1.elf ai64-mcs-rtu1.elf ai64-mcs-txpru1.elf"
 
@@ -55,4 +59,4 @@ do_install () {
     done
 }
 
-FILES:${PN} = "${nonarch_base_libdir}/firmware/ai64-icssg*.elf ${nonarch_base_libdir}/firmware/ai64-mcs-*.elf"
+FILES:${PN} = "${nonarch_base_libdir}/firmware/ai64-icssg*.elf ${nonarch_base_libdir}/firmware/ai64-la-*.elf ${nonarch_base_libdir}/firmware/ai64-mcs-*.elf"

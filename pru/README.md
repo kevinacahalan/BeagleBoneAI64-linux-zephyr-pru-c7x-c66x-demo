@@ -1,6 +1,6 @@
 # The ICSSG cores
 
-How the twelve ICSSG cores' firmware is laid out, and what each slice does. [`pwm/README.md`](pwm/README.md) and [`extra-demos/icssg1-multicore-scheduler/README.md`](../extra-demos/icssg1-multicore-scheduler/README.md) go further into each project.
+How the twelve ICSSG cores' firmware is laid out, and what each slice does. [`pwm/README.md`](pwm/README.md) and [`logic_analyzer/README.md`](logic_analyzer/README.md) go further into each project.
 
 ## The ICSSG firmware
 
@@ -8,7 +8,7 @@ The J721E has two ICSSGs with two slices each, and every slice has a PRU, an RTU
 
 ```
 pru/
-  Makefile             builds both projects
+  Makefile             builds both projects, and the extra demos'
   pru_rules.mak        the rules every core's makefile includes
   common/              headers both projects use: trace, RPMsg, text, ICSSG registers
   pwm/                 ICSSG0
@@ -17,8 +17,9 @@ pru/
       beaglebone-ai64/icss_g0_<core>_fw/
         main.c         a PRU's own source
         ti-pru-cgt/    makefile, linker.cmd
+  logic_analyzer/      ICSSG1, the same way
 extra-demos/
-  icssg1-multicore-scheduler/  ICSSG1, the same way, built by pru/Makefile
+  icssg1-multicore-scheduler/  TI's scheduler, which ICSSG1 can run instead
 ```
 
 Each core's makefile names its image, its sources, and its defines, and includes `pru_rules.mak`, as open-pru's do. Each core's `linker.cmd` includes its project's memory map, so the C code and the linker share one set of addresses. After each link the build prints how full each image's RAM is, and fails a region past 95%. Every core builds as PRU silicon version 4, the ICSSG.
@@ -31,7 +32,7 @@ Each core's makefile names its image, its sources, and its defines, and includes
 | ICSSG0 RTU1 | `b006000.rtu` | `ai64-icssg0-rtu1.elf` | pwm, slice 1: talks, over the fabric (node 9, `g0rtu1`) |
 | ICSSG0 Tx_PRU1 | `b00c000.txpru` | `ai64-icssg0-txpru1.elf` | pwm, slice 1: the modulator |
 | ICSSG0 PRU1 | `b038000.pru` | `ai64-icssg0-pru1.elf` | pwm, slice 1: the ICSSG PWM module |
-| ICSSG1, all six | `b134000.pru`, `b138000.pru`, `b104000.rtu`, `b106000.rtu`, `b10a000.txpru`, `b10c000.txpru` | `ai64-mcs-<core><slice>.elf` | the multicore scheduler |
+| ICSSG1, all six | `b134000.pru`, `b138000.pru`, `b104000.rtu`, `b106000.rtu`, `b10a000.txpru`, `b10c000.txpru` | `ai64-la-<core><slice>.elf` | logic_analyzer: the PRUs sample, the RTUs move the records to DDR ([its README](logic_analyzer/README.md)) |
 
 In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 
@@ -40,7 +41,7 @@ In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 - **The trace log is the exception.** Every core keeps a remoteproc trace buffer in its own data RAM, which Linux reads (`ai64 trace <core>`); writing a line is a few local stores. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace calls out of the PRUs and Tx_PRUs. The RTUs always keep theirs.
 - **One RTU talks over RPMsg and one over shared memory only**, so the template has a working example of each. RPMsg needs a vring interrupt in the overlay and a few KiB of data RAM. Both RTUs are fabric nodes, and both publish what they know in their fabric page.
 
-ICSSG1 keeps TI's design instead: every core runs a task, and nothing on it talks. `ai64 sched` reads its registers, and only reads them.
+ICSSG1's logic analyzer splits its work the same way: each PRU only watches its pins and stamps their changes into ICSSG1's shared RAM, and its RTU carries the records to DDR. Its RTUs are not fabric nodes yet.
 
 ## ICSSG0: PWM, three ways
 
@@ -63,13 +64,11 @@ Slice 1's PRU1 also samples P8.31 for [the pipeline](../docs/pipeline.md#the-pip
 
 `ai64 pwm` shows both slices running about 15,000 periods a second while they step (10, 15, and 20 kHz, a third of the time each), 20,000 at their fixed default of 20 kHz after `steps 0`, and 50,000 after `fabric route ... g0rtu1 pwm 20000 5000`. With both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late, and neither slice counted a late edge in 25 restarts of the demo.
 
-## ICSSG1: the multicore scheduler
+## ICSSG1: the logic analyzer
 
-[`extra-demos/icssg1-multicore-scheduler/`](../extra-demos/icssg1-multicore-scheduler/README.md) is TI's open-pru example `multicore_scheduler`, ported from ICSSG0 of the AM243x LaunchPad to ICSSG1 here. IEP0's CMP0 resets the counter every 100 ns, and on each 4 ns step after it one more compare fires and starts one core's task through that core's task manager: PRU0, PRU1, RTU1, RTU0, Tx_PRU1, Tx_PRU0. Each task sets PWM set 2's initial state high or low; PWM2 runs on IEP1, which nothing starts, so P8.17 (`PRG1_PWM2_A0`) follows it.
+[`logic_analyzer/`](logic_analyzer/README.md) records every change on 19 header pins, which jumper wires bring the demo's PWM generators, SPI7, and square wave, and `ai64 la` shows and captures them. Its README has the channels, how the cores share the work, and what it measures against the bench's Saleae.
 
-The port keeps TI's files, names, and timing. What J721E needed: no clock or pin setup in PRU0, since Linux has done both; and, with no `PWM_EFC_EN`, the compare flags cleared in software. Each task clears its own, each core clears its own once its task manager is on, and PRU0 maps every task's event before it starts IEP0, and clears all six flags once more two periods later. Without those, a compare that fires before its core's task manager sees it leaves a flag nothing clears, and that core's task never runs again. `MCS_STEP_NS` and `MCS_PERIOD_NS`, on the make command line, change the schedule.
-
-`ai64 sched` reads PWM2_0's state over the bus, much slower than the tasks change it, and finds P8.17 high about 79% of the time, against 88% for the schedule. A logic analyzer at 500 MS/s or more shows the schedule itself: a 100 ns period, low from 8 to 12 ns and from 16 to 24 ns, high the rest of the time ([Probe the pins](../README.md#probe-the-pins)). With `MCS_STEP_NS=1000 MCS_PERIOD_NS=10000`, any analyzer does.
+ICSSG1 ran a port of TI's open-pru `multicore_scheduler` before; it is now an extra demo, which `ai64-demo --icssg1 scheduler` runs instead ([extra-demos/icssg1-multicore-scheduler/](../extra-demos/icssg1-multicore-scheduler/README.md)).
 
 ## Linux to RTU0: RPMsg text
 

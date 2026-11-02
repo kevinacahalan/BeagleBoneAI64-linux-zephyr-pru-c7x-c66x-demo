@@ -11,7 +11,7 @@ The demo's other links go through Linux, or join two cores that sit next to each
 | 8 | `g0rtu0` | ICSSG0 RTU0 (`pru/pwm/firmware/pwm_rtu.c`) | every pass of its main loop, next to its RPMsg check |
 | 9 | `g0rtu1` | ICSSG0 RTU1 (the same source) | every pass of its main loop |
 
-The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). Nor is ICSSG1, whose six cores all run scheduler tasks. The layout has room for twelve nodes (`AI64_FAB_SLOTS`), so two more can join without moving anything.
+The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). Nor, yet, are ICSSG1's RTUs, which move the logic analyzer's records ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md)). The layout has room for twelve nodes (`AI64_FAB_SLOTS`), so two more can join without moving anything.
 
 **What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
 

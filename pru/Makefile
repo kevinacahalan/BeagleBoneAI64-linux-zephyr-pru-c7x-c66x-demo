@@ -19,7 +19,7 @@
 # PSSP are set by beagle-linux/scripts/build.sh. TRACE=0 builds the trace
 # out of the real-time cores.
 
-PROJECTS := pwm ../extra-demos/icssg1-multicore-scheduler
+PROJECTS := pwm logic_analyzer ../extra-demos/icssg1-multicore-scheduler
 
 .PHONY: all clean $(PROJECTS)
 all: $(PROJECTS)

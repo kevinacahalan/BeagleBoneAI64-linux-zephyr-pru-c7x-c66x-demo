@@ -53,7 +53,7 @@ rproc_attr() {
 # The demo, as ai64-demo started it: each check looks at what one window
 # or one ai64 subcommand shows.
 check_demo() {
-	local linux pipe fabric core n want right total state fw
+	local linux pipe fabric la core n want right total state fw c hz lo hi
 
 	linux=$(tmux capture-pane -p -J -S -300 -t ai64:linux 2>/dev/null)
 	if [ -z "$linux" ]; then
@@ -120,6 +120,23 @@ check_demo() {
 	done
 	"$AI64" mma 256 5 2>&1 | grep -q 'all match the A72' &&
 		ok "the C7x's MMA layer matches the A72" || bad "the C7x's MMA layer"
+
+	# The logic analyzer on ICSSG1: both streams flowing with nothing lost,
+	# and what it measures on the jumpered signals (pru/logic_analyzer/).
+	la=$("$AI64" la once 2>&1)
+	n=$(echo "$la" | grep -c -E 'PRU[01] +[0-9]+ edges/s, .* gaps 0 \(0 records\), reader missed 0')
+	[ "$n" -eq 2 ] && ok "the logic analyzer's two streams lost nothing" ||
+		bad "the logic analyzer's streams: $(echo "$la" | grep -E '^ +PRU' | tr -s ' ')"
+	# ch7, 9, 11, 12, 13: the PWM generators, 15 kHz on average over the steps;
+	# ch6: the 1 kHz square wave.
+	for c in 6 7 9 11 12 13; do
+		hz=$(echo "$la" | awk -v c=$c '$1 == c && $2 ~ /^P[89]\./ {
+			f = $(NF - 2); if ($(NF - 1) == "kHz") f *= 1000; print int(f) }')
+		lo=14000 hi=16000
+		[ "$c" -eq 6 ] && lo=990 hi=1010
+		[ -n "$hz" ] && [ "$hz" -ge $lo ] && [ "$hz" -le $hi ] &&
+			ok "the analyzer's ch$c reads $hz Hz" || bad "the analyzer's ch$c reads ${hz:-nothing} Hz, not $lo-$hi"
+	done
 
 	# The pads, and the web page's server.
 	check "every demo pad is muxed as the overlay and Zephyr ask" "$AI64" pads
