@@ -164,10 +164,18 @@ While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser
 - **The table** under them measures every channel over the time in view: changes, period and frequency from its rising edges, duty, and its level at the right edge.
 - **Marks** (purple), **trigger hits** (amber), and **gaps** (red) are drawn across all the rows.
 - **Export VCD** saves the time in view as a VCD file, as `ai64 la capture` does.
+- **Decoders**: SPI (chip select active low, any of the four modes, MOSI and MISO), UART (8N1, any baud, inverted or not), and I²C (starts, stops, addresses, data, acknowledges) each add a row under the channels, decoded over the time in view, and a list under the page's measurements. Click an entry in the list to put it in the middle of the view.
+- **Marks, trigger hits, and gaps** are listed under them too, newest first, each a click away.
+- **Save** writes the whole capture to a `.lacap` file, and **Open** reads one back, to look at later or on another computer.
+- **Spill to disk**: with it on, a capture that fills the memory limit moves its oldest blocks of changes into the browser's own disk storage, IndexedDB, and reads them back when they come into view, so a capture can run on past the memory limit, up to the disk space the browser allows. (The origin private file system would be quicker, but browsers keep it for secure contexts, and this page comes over plain HTTP.)
+
+![The SPI decoder on SPI7's hello: CS falling at the trigger hit, then the five bytes, 0x68 0x65 0x6c 0x6c 0x6f](../../media/la-decode.png)
 
 The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`. Each channel's changes are kept as times in growing arrays, 8 bytes each, and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions.
 
-Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms, and the last 2 s at that rate in 7 ms. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s.
+Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms, and the last 2 s at that rate in 7 ms. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s and the MCP server's.
+
+Checked in Firefox on the board's live stream: the SPI decoder reads `hello` from a `spi hello` transfer, found by its trigger hit in the list; with the memory limit at 16 MB and Spill to disk on, 36 s of the demo's signals ran with 15.5 MB in RAM and 46.5 MB on disk, Fit all read the blocks back, and the 68 MB saved file opened again with every one of its 8.56 million changes. The UART and I²C decoders, which no signal of the demo's exercises, decode synthetic captures: "Hi!" at 115200 baud, and an I²C write of 0x50 W, 0xa5.
 
 ## MCP: the analyzer for a model
 

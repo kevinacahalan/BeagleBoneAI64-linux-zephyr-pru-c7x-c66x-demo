@@ -5,10 +5,12 @@
   It opens the WebSocket /la/stream (linux-app/la_ws.c), which sends the
   edges of ICSSG1's 19 channels as they come, and keeps them all here, in
   the browser: a capture runs until it is stopped, or until it reaches the
-  memory limit chosen at the top. Each channel's changes are kept as their
-  times, in ns, in growing arrays; drawing does one binary search per pixel
-  column, so millions of edges draw as fast as a few. No external files:
-  the board may have no internet.
+  memory limit chosen at the top, or, with Spill to disk, until the disk
+  space the browser allows. Each channel's changes are kept as their
+  times, in ns, in blocks of growing arrays; drawing does one binary search
+  per pixel column, so millions of edges draw as fast as a few. Decoders
+  (SPI, UART, I2C) read the time in view; a capture saves to a file and
+  opens again. No external files: the board may have no internet.
 -->
 <html lang="en">
 <head>
@@ -103,6 +105,11 @@ th { font-size: 12px; font-weight: 600; color: var(--ink-2); }
 td.r, th.r { text-align: right; }
 .scroll { overflow-x: auto; }
 .help { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+tr.go { cursor: pointer; }
+tr.go:hover td { background: var(--surface-2); }
+.dec { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; padding: 4px 0; }
+.dec select, .dec input { font-size: 12.5px; padding: 2px 6px; }
+.dec input[type=number] { width: 90px; }
 .banner { display: none; background: var(--surface-2); border-left: 3px solid var(--critical); padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
 </style>
 </head>
@@ -121,12 +128,16 @@ td.r, th.r { text-align: right; }
     <button id="fit">Fit all</button>
     <button id="clear">Clear</button>
     <button id="vcd">Export VCD</button>
+    <button id="save">Save</button>
+    <button id="open">Open</button>
+    <input type="file" id="file" accept=".lacap" hidden>
     <label>Memory <select id="limit">
       <option value="268435456">256 MB</option>
       <option value="1073741824" selected>1 GB</option>
       <option value="2147483648">2 GB</option>
       <option value="4294967296">4 GB</option>
     </select></label>
+    <label title="When the capture fills the memory limit, write its oldest blocks to the browser's own disk storage (IndexedDB) and read them back when they are viewed"><input type="checkbox" id="spill"> Spill to disk</label>
     <span class="status"><span class="dot" id="dot"></span><span id="state">connecting</span></span>
   </div>
 
@@ -140,37 +151,140 @@ td.r, th.r { text-align: right; }
     <div class="scroll"><table id="meas"></table></div>
     <div class="help">Over the visible time. A channel's period is the mean from its first rising edge in view to its last, so it takes two; its duty is the time it spends high.</div>
   </section>
+
+  <section>
+    <div class="bar">
+      <b>Decoders</b>
+      <select id="adddec">
+        <option value="">add a decoder…</option>
+        <option value="spi">SPI</option>
+        <option value="uart">UART</option>
+        <option value="i2c">I²C</option>
+      </select>
+    </div>
+    <div id="decs"></div>
+    <div class="scroll"><table id="dectab"></table></div>
+    <div class="help">A decoder reads the time in view, and draws a row under the channels. SPI takes chip select active low; UART is 8N1; I²C shows starts (S), stops (P), addresses, and acknowledges (A, or N for none). The demo's SPI7 is CS ch3, CLK ch4, MOSI ch5, mode 0.</div>
+  </section>
+
+  <section>
+    <b>Marks, trigger hits, and gaps</b>
+    <div class="scroll"><table id="evtab"></table></div>
+    <div class="help">The newest 200. Click one to put it in the middle of the view.</div>
+  </section>
 </main>
 <script>
 "use strict";
-
 // ---- the data: per channel, the times of its changes, ns from the first tick ----
 
 const CHUNK = 65536;
 
+// A channel's changes, in blocks of CHUNK times. A full block can move to
+// disk (Spill below): its slot in chunks goes null, and chunk() reads it
+// back, so drawing and measuring go on while it loads.
 class Track {
-  constructor() { this.init = null; this.chunks = []; this.firsts = []; this.n = 0; }
+  constructor(ch) { this.ch = ch; this.init = null; this.chunks = []; this.firsts = []; this.onDisk = []; this.n = 0; }
   push(t) {
     const k = this.n % CHUNK;
-    if (k === 0) { this.chunks.push(new Float64Array(CHUNK)); this.firsts.push(t); }
+    if (k === 0) { this.chunks.push(new Float64Array(CHUNK)); this.firsts.push(t); this.onDisk.push(false); Spill.ram += CHUNK * 8; }
     this.chunks[this.chunks.length - 1][k] = t;
     this.n++;
   }
-  at(i) { return this.chunks[(i / CHUNK) | 0][i % CHUNK]; }
-  // The first change later than t: its index, or n.
+  chunk(c) { return this.chunks[c] || Spill.get(this, c); }
+  at(i) { const a = this.chunk((i / CHUNK) | 0); return a ? a[i % CHUNK] : NaN; }
+  // The first change later than t: its index, or n. A block still loading
+  // from disk answers its start, and sets Spill.missing.
   upper(t) {
     const f = this.firsts;
     let lo = 0, hi = f.length;
     while (lo < hi) { const m = (lo + hi) >> 1; if (f[m] <= t) lo = m + 1; else hi = m; }
     if (lo === 0) return 0;
-    const c = lo - 1, a = this.chunks[c], len = c === f.length - 1 ? this.n - c * CHUNK : CHUNK;
+    const c = lo - 1, a = this.chunk(c), len = c === f.length - 1 ? this.n - c * CHUNK : CHUNK;
+    if (!a) return c * CHUNK;
     let l = 0, h = len;
     while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
     return c * CHUNK + l;
   }
   // The level before change i.
   levelAt(i) { return this.init ^ (i & 1); }
+  // The level at time t.
+  levelAtTime(t) { return this.levelAt(this.upper(t)); }
 }
+
+// Blocks on disk: the browser's IndexedDB, a record a block. (The origin
+// private file system would do too, but a browser offers it only to a
+// secure context, and this page comes over plain HTTP from the board.)
+const Spill = {
+  on: false, db: null, cache: new Map(), loading: new Set(),
+  ram: 0, disk: 0, busy: false, missing: false, CACHE: 256, DB: "ai64-la", STORE: "blocks",
+  supported() { return typeof indexedDB !== "undefined"; },
+  req(r) { return new Promise((ok, fail) => { r.onsuccess = () => ok(r.result); r.onerror = () => fail(r.error); }); },
+  async enable() {
+    if (!this.db) {
+      const r = indexedDB.open(this.DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(this.STORE);
+      this.db = await this.req(r);
+      await this.req(this.db.transaction(this.STORE, "readwrite").objectStore(this.STORE).clear());
+    }
+    this.on = true;
+  },
+  store(mode) { return this.db.transaction(this.STORE, mode).objectStore(this.STORE); },
+  // The oldest full block still in RAM, over every channel.
+  oldest() {
+    let best = null;
+    for (const tr of S.tracks) {
+      for (let c = 0; c < tr.chunks.length - 1; c++) {
+        if (!tr.chunks[c]) continue;
+        if (!best || tr.firsts[c] < best.tr.firsts[best.c]) best = { tr, c };
+        break;
+      }
+    }
+    return best;
+  },
+  // Down to three quarters of the memory limit, oldest blocks first.
+  async spill() {
+    if (this.busy || !this.on) return;
+    this.busy = true;
+    try {
+      while (this.ram > S.limit * 0.75) {
+        const o = this.oldest();
+        if (!o) break;
+        await this.req(this.store("readwrite").put(o.tr.chunks[o.c], o.tr.ch + ":" + o.c));
+        o.tr.chunks[o.c] = null; o.tr.onDisk[o.c] = true;
+        this.ram -= CHUNK * 8; this.disk += CHUNK * 8;
+      }
+    } catch (e) {
+      stop("the disk space the browser allows (" + e.name + ")");
+    }
+    this.busy = false; S.dirty = true;
+  },
+  get(tr, c) {
+    if (!tr.onDisk[c]) return null;
+    const key = tr.ch + ":" + c, a = this.cache.get(key);
+    if (a) { this.cache.delete(key); this.cache.set(key, a); return a; }
+    this.missing = true;
+    if (!this.loading.has(key)) { this.loading.add(key); this.load(tr, c, key); }
+    return null;
+  },
+  async load(tr, c, key) {
+    try {
+      this.cache.set(key, await this.read(tr, c));
+      while (this.cache.size > this.CACHE) this.cache.delete(this.cache.keys().next().value);
+    } finally {
+      this.loading.delete(key); S.dirty = true;
+    }
+  },
+  // A block's times, wherever they are: for reading straight through.
+  async read(tr, c) {
+    if (tr.chunks[c]) return tr.chunks[c];
+    const key = tr.ch + ":" + c, k = this.cache.get(key);
+    return k || await this.req(this.store("readonly").get(key));
+  },
+  async clear() {
+    this.cache.clear(); this.loading.clear(); this.ram = 0; this.disk = 0;
+    if (this.db) await this.req(this.store("readwrite").clear());
+  },
+};
 
 const S = {
   meta: null, tracks: [], bitCh: [[], []], prev: [null, null],
@@ -178,15 +292,23 @@ const S = {
   view: { a: 0, b: 1e6 }, follow: true, cursor: [null, null],
   ws: null, running: true, limit: 1073741824,
   stats: null, statsAt: 0, lastStats: null, rate: 0, rx: 0, rxRate: 0, rxAt: performance.now(),
+  decoders: [], decoded: [],
   dirty: true,
 };
 
 const $ = id => document.getElementById(id);
 
 function reset() {
-  S.tracks = S.meta ? S.meta.channels.map(() => new Track()) : [];
+  Spill.ram = 0;
+  S.tracks = S.meta ? S.meta.channels.map(c => new Track(c.ch)) : [];
   S.prev = [null, null]; S.t0 = null; S.now = [0, 0]; S.events = []; S.held = 0;
   S.cursor = [null, null]; S.view = { a: 0, b: 1e6 }; S.dirty = true;
+}
+
+async function clearAll() {
+  reset();
+  await Spill.clear();
+  reset();
 }
 
 function setMeta(m) {
@@ -195,6 +317,7 @@ function setMeta(m) {
   m.channels.forEach(c => { S.bitCh[c.pru][c.bit] = c.ch; });
   reset();
   resize();
+  drawDecoderForms();
 }
 
 function rel(abs) {
@@ -245,7 +368,11 @@ function onBinary(buf) {
   S.held += 8 * count;
   if (count) S.now[s] = Math.max(S.now[s], t);
   S.dirty = true;
-  if (S.held > S.limit) { stop("the memory limit: " + fmtBytes(S.limit) + " held"); }
+  if (Spill.on) {
+    if (Spill.ram > S.limit) Spill.spill();
+  } else if (Spill.ram > S.limit) {
+    stop("the memory limit: " + fmtBytes(S.limit) + " held");
+  }
 }
 
 function onText(text) {
@@ -316,6 +443,150 @@ function fmtBytes(b) {
   return (b / 1024).toFixed(0) + " KB";
 }
 function fmtCount(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + " M" : n >= 1e3 ? (n / 1e3).toFixed(1) + " k" : String(Math.round(n)); }
+function hex(v) { return "0x" + v.toString(16).padStart(2, "0"); }
+function charOf(v) { return v >= 0x20 && v < 0x7f ? String.fromCharCode(v) : "."; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+// ---- decoders: each reads the time in view, and gives boxes for its row ----
+
+const DEC = {
+  spi: { name: "SPI", fields: [["cs", "CS", "ch", 3], ["clk", "CLK", "ch", 4], ["mosi", "MOSI", "ch", 5], ["miso", "MISO", "ch", -1], ["mode", "mode", "num", 0]] },
+  uart: { name: "UART", fields: [["ch", "RX", "ch", 6], ["baud", "baud", "num", 115200], ["invert", "inverted", "bool", false]] },
+  i2c: { name: "I²C", fields: [["scl", "SCL", "ch", 0], ["sda", "SDA", "ch", 1]] },
+};
+const MAX_DECODE = 400000; // changes in view a decoder takes on
+
+function decodeSpi(d, a, b) {
+  const clk = S.tracks[d.clk], mosi = S.tracks[d.mosi], cs = d.cs >= 0 ? S.tracks[d.cs] : null;
+  const miso = d.miso >= 0 ? S.tracks[d.miso] : null, cpol = d.mode >> 1 & 1, cpha = d.mode & 1;
+  if (!clk || !mosi || clk.init === null || mosi.init === null) return [];
+  const i = clk.upper(a), j = clk.upper(b);
+  if (j - i > MAX_DECODE) return null;
+  const out = [], sampleUp = cpol === cpha;
+  let nb = 0, vo = 0, vi = 0, t0 = 0, frame = -1;
+  for (let k = i; k < j && out.length < 5000; k++) {
+    const t = clk.at(k);
+    if ((clk.levelAt(k + 1) === 1) !== sampleUp) continue;
+    if (cs) {
+      const ci = cs.upper(t);
+      if (cs.levelAt(ci) !== 0) { nb = 0; vo = vi = 0; continue; }
+      if (ci !== frame) { frame = ci; nb = 0; vo = vi = 0; }
+    }
+    if (nb === 0) t0 = t;
+    vo = vo << 1 | mosi.levelAtTime(t);
+    if (miso) vi = vi << 1 | miso.levelAtTime(t);
+    if (++nb === 8) {
+      out.push({ t0, t1: t, text: hex(vo) + (miso ? " / " + hex(vi) : ""), ch: charOf(vo) });
+      nb = 0; vo = vi = 0;
+    }
+  }
+  return out;
+}
+
+function decodeUart(d, a, b) {
+  const tr = S.tracks[d.ch];
+  if (!tr || tr.init === null || !(d.baud > 0)) return [];
+  const bit = 1e9 / d.baud, inv = d.invert ? 1 : 0, out = [];
+  const i = tr.upper(a - 11 * bit), j = tr.upper(b);
+  if (j - i > MAX_DECODE) return null;
+  let busy = -Infinity;
+  for (let k = i; k < j && out.length < 5000; k++) {
+    const t = tr.at(k);
+    // A start bit: the line leaving its idle level.
+    if (t < busy || (tr.levelAt(k + 1) ^ inv) !== 0) continue;
+    let v = 0;
+    for (let n = 0; n < 8; n++) v |= (tr.levelAtTime(t + (1.5 + n) * bit) ^ inv) << n;
+    out.push({ t0: t, t1: t + 10 * bit, text: hex(v), ch: charOf(v) });
+    busy = t + 9.5 * bit;
+  }
+  return out;
+}
+
+function decodeI2c(d, a, b) {
+  const scl = S.tracks[d.scl], sda = S.tracks[d.sda];
+  if (!scl || !sda || scl.init === null || sda.init === null) return [];
+  let i = scl.upper(a), j = sda.upper(a);
+  const ie = scl.upper(b), je = sda.upper(b);
+  if (ie - i + je - j > MAX_DECODE) return null;
+  let sclL = scl.levelAt(i), sdaL = sda.levelAt(j), bits = 0, v = 0, t0 = 0, first = false;
+  const out = [];
+  while ((i < ie || j < je) && out.length < 5000) {
+    const ts = i < ie ? scl.at(i) : Infinity, td = j < je ? sda.at(j) : Infinity;
+    if (td < ts) {
+      const nl = sda.levelAt(j + 1);
+      j++;
+      if (sclL === 1) {
+        if (nl === 0) { out.push({ t0: td, t1: td, text: "S" }); bits = 0; v = 0; first = true; }
+        else { out.push({ t0: td, t1: td, text: "P" }); bits = -1; }
+      }
+      sdaL = nl;
+    } else {
+      const nl = scl.levelAt(i + 1);
+      i++;
+      if (nl === 1 && bits >= 0) {
+        if (bits === 0) t0 = ts;
+        if (bits < 8) { v = v << 1 | sdaL; bits++; }
+        else {
+          const ack = sdaL === 0 ? "A" : "N";
+          out.push(first ? { t0, t1: ts, text: `${hex(v >> 1)} ${v & 1 ? "R" : "W"} ${ack}` } :
+                           { t0, t1: ts, text: `${hex(v)} ${ack}`, ch: charOf(v) });
+          first = false; bits = 0; v = 0;
+        }
+      }
+      sclL = nl;
+    }
+  }
+  return out;
+}
+
+function decode(d, a, b) {
+  return d.type === "spi" ? decodeSpi(d, a, b) : d.type === "uart" ? decodeUart(d, a, b) : decodeI2c(d, a, b);
+}
+
+function addDecoder(type) {
+  const d = { type };
+  DEC[type].fields.forEach(([k, , , dflt]) => { d[k] = dflt; });
+  S.decoders.push(d);
+  drawDecoderForms(); resize();
+}
+
+function drawDecoderForms() {
+  const chs = S.meta ? S.meta.channels : [];
+  const box = $("decs");
+  box.innerHTML = "";
+  S.decoders.forEach((d, k) => {
+    const row = document.createElement("div");
+    row.className = "dec";
+    row.innerHTML = `<b>${DEC[d.type].name}</b>`;
+    DEC[d.type].fields.forEach(([key, label, kind]) => {
+      const l = document.createElement("label");
+      l.textContent = label + " ";
+      let el;
+      if (kind === "ch") {
+        el = document.createElement("select");
+        el.innerHTML = (key === "miso" || key === "cs" ? `<option value="-1">none</option>` : "") +
+          chs.map(c => `<option value="${c.ch}">ch${c.ch} ${esc(c.pin)}${c.name ? " " + esc(c.name) : ""}</option>`).join("");
+        el.value = String(d[key]);
+        el.onchange = () => { d[key] = Number(el.value); S.dirty = true; };
+      } else if (kind === "num") {
+        el = document.createElement("input");
+        el.type = "number"; el.value = d[key];
+        el.onchange = () => { d[key] = Number(el.value); S.dirty = true; };
+      } else {
+        el = document.createElement("input");
+        el.type = "checkbox"; el.checked = d[key];
+        el.onchange = () => { d[key] = el.checked; S.dirty = true; };
+      }
+      l.appendChild(el);
+      row.appendChild(l);
+    });
+    const rm = document.createElement("button");
+    rm.textContent = "Remove";
+    rm.onclick = () => { S.decoders.splice(k, 1); drawDecoderForms(); resize(); };
+    row.appendChild(rm);
+    box.appendChild(row);
+  });
+}
 
 // ---- drawing ----
 
@@ -325,14 +596,16 @@ let W = 800, H = 400, dpr = 1, colors = {};
 
 function readColors() {
   const cs = getComputedStyle(document.documentElement);
-  ["ink", "ink-2", "ink-3", "border", "surface-2", "wave", "busy", "mark", "trig", "critical", "cursor"]
+  ["ink", "ink-2", "ink-3", "border", "surface", "surface-2", "wave", "busy", "mark", "trig", "critical", "cursor"]
     .forEach(k => { colors[k] = cs.getPropertyValue("--" + k).trim(); });
 }
+
+function nrows() { return (S.meta ? S.meta.channels.length : 19) + S.decoders.length; }
 
 function resize() {
   dpr = window.devicePixelRatio || 1;
   W = $("wrap").clientWidth;
-  H = AXIS + ROW * (S.meta ? S.meta.channels.length : 19) + 4;
+  H = AXIS + ROW * nrows() + 4;
   cv.style.height = H + "px";
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
   readColors();
@@ -411,32 +684,75 @@ function drawTrack(tr, y, end) {
   }
 }
 
+function drawDecoded(res, y) {
+  const hi = y + 4, lo = y + ROW - 4;
+  ctx.font = "11px system-ui, sans-serif"; ctx.textBaseline = "middle";
+  if (res === null) {
+    ctx.fillStyle = colors["ink-3"];
+    ctx.fillText("too many changes in view to decode: zoom in", LABEL + 6, y + ROW / 2);
+    return;
+  }
+  let lastX = -1;
+  for (const r of res) {
+    const x0 = xOf(r.t0), x1 = Math.max(xOf(r.t1), x0 + 2);
+    if (x1 < LABEL || x0 > W) continue;
+    if (x1 - x0 < 3 && x0 - lastX < 2) continue;
+    lastX = x0;
+    ctx.fillStyle = colors["surface-2"]; ctx.strokeStyle = colors.wave; ctx.lineWidth = 1;
+    if (r.t0 === r.t1) {
+      ctx.fillStyle = colors.trig; ctx.fillText(r.text, x0 + 2, y + ROW / 2);
+      ctx.beginPath(); ctx.moveTo(x0 + 0.5, hi); ctx.lineTo(x0 + 0.5, lo); ctx.strokeStyle = colors.trig; ctx.stroke();
+      continue;
+    }
+    ctx.fillRect(x0, hi, x1 - x0, lo - hi); ctx.strokeRect(x0 + 0.5, hi + 0.5, x1 - x0 - 1, lo - hi - 1);
+    const label = r.ch && r.ch !== "." ? `${r.text} '${r.ch}'` : r.text;
+    // The widest of the value and its character, the value, or the character, that fits.
+    const fits = [label, r.text, r.ch && r.ch !== "." ? r.ch : ""].find(l => l && ctx.measureText(l).width < x1 - x0 - 4);
+    if (fits) { ctx.fillStyle = colors.ink; ctx.fillText(fits, x0 + 3, y + ROW / 2); }
+  }
+}
+
 function draw() {
   if (S.follow && S.t0 !== null) {
     const span = S.view.b - S.view.a, end = dataEnd();
     S.view = { a: end - span, b: end };
   }
+  Spill.missing = false;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   if (!S.meta) return;
   drawAxis();
-  const end = dataEnd();
+  const label = (y, bold, rest) => {
+    ctx.fillStyle = colors.ink; ctx.font = "600 12px system-ui, sans-serif"; ctx.textBaseline = "middle";
+    ctx.fillText(bold, 6, y + ROW / 2);
+    ctx.fillStyle = colors["ink-2"]; ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText(rest, 42, y + ROW / 2);
+  };
   S.meta.channels.forEach((c, i) => {
     const y = AXIS + i * ROW, tr = S.tracks[c.ch];
     if (i % 2) { ctx.fillStyle = colors["surface-2"]; ctx.fillRect(0, y, W, ROW); }
-    ctx.fillStyle = colors.ink; ctx.font = "600 12px system-ui, sans-serif"; ctx.textBaseline = "middle";
-    ctx.fillText("ch" + c.ch, 6, y + ROW / 2);
-    ctx.fillStyle = colors["ink-2"]; ctx.font = "12px system-ui, sans-serif";
-    ctx.fillText(c.pin + (c.name ? "  " + c.name : ""), 42, y + ROW / 2);
+    label(y, "ch" + c.ch, c.pin + (c.name ? "  " + c.name : ""));
     ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), ROW); ctx.clip();
     drawTrack(tr, y, S.now[c.pru]);
+    ctx.restore();
+  });
+  // The decoders' rows.
+  const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
+  S.decoded = S.decoders.map(d => decode(d, a, b));
+  S.decoders.forEach((d, k) => {
+    const y = AXIS + (S.meta.channels.length + k) * ROW;
+    ctx.fillStyle = colors.surface; ctx.fillRect(0, y, W, ROW);
+    ctx.strokeStyle = colors.border; ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
+    label(y, DEC[d.type].name, "decoder " + (k + 1));
+    ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), ROW); ctx.clip();
+    drawDecoded(S.decoded[k], y);
     ctx.restore();
   });
   // Marks, trigger hits, and gaps, across every row.
   const top = AXIS, bot = H;
   ctx.save(); ctx.beginPath(); ctx.rect(LABEL, 0, plotW(), H); ctx.clip();
   ctx.font = "11px system-ui, sans-serif";
-  let shown = 0;
+  let shown = 0, lastLabel = -1e9;
   for (let k = lowerEvent(S.view.a); k < S.events.length && shown < 500; k++) {
     const e = S.events[k];
     if (e.t > S.view.b) break;
@@ -446,8 +762,12 @@ function draw() {
     ctx.setLineDash(e.kind === "gap" ? [2, 3] : []);
     ctx.lineWidth = e.kind === "gap" ? 2 : 1;
     ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke();
-    ctx.fillStyle = ctx.strokeStyle;
-    ctx.fillText(e.kind === "mark" ? "mark " + e.value : e.kind === "trig" ? "trig" : "gap", x + 3, 9);
+    // A label only where it does not run into the last one.
+    if (x - lastLabel > 46) {
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillText(e.kind === "mark" ? "mark " + e.value : e.kind === "trig" ? "trig" : "gap", x + 3, 9);
+      lastLabel = x;
+    }
   }
   ctx.setLineDash([]);
   // Cursors.
@@ -460,6 +780,10 @@ function draw() {
     ctx.setLineDash([]); ctx.fillStyle = colors.cursor; ctx.fillText(n, x + 3, H - 8);
   });
   ctx.restore();
+  if (Spill.missing) {
+    ctx.fillStyle = colors["ink-3"]; ctx.font = "11px system-ui, sans-serif";
+    ctx.fillText("reading from disk…", W - 130, AXIS / 2);
+  }
 }
 
 // Events are kept in arrival order, which is time order per stream: close enough to search.
@@ -469,16 +793,26 @@ function lowerEvent(t) {
   return Math.max(0, lo - 1);
 }
 
-// ---- the facts line and the measurements ----
+function centerOn(t) {
+  const span = S.view.b - S.view.a;
+  setFollow(false);
+  S.view = { a: t - span / 2, b: t + span / 2 };
+  S.dirty = true;
+}
+
+// ---- the facts line, the measurements, the decoded list, the events ----
 
 function updateFacts() {
   const now = performance.now(), dt = (now - S.rxAt) / 1000;
-  if (dt >= 1) { S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now; }
+  if (dt >= 1) {
+    S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now;
+  }
   let edges = 0;
   S.tracks.forEach(t => { edges += t.n; });
   const st = S.stats, parts = [
     `<span>view <b class="num">${fmtTime(S.view.b - S.view.a)}</b></span>`,
-    `<span>held <b class="num">${fmtTime(Math.max(0, dataEnd()))}</b>, <b class="num">${fmtCount(edges)}</b> changes, <b class="num">${fmtBytes(S.held)}</b> of ${fmtBytes(S.limit)}</span>`,
+    `<span>held <b class="num">${fmtTime(Math.max(0, dataEnd()))}</b>, <b class="num">${fmtCount(edges)}</b> changes: <b class="num">${fmtBytes(Spill.ram)}</b> in RAM of ${fmtBytes(S.limit)}` +
+      (Spill.disk ? `, <b class="num">${fmtBytes(Spill.disk)}</b> on disk` : "") + `</span>`,
     `<span>stream <b class="num">${fmtCount(S.rate)}</b> edges/s, <b class="num">${fmtBytes(S.rxRate)}</b>/s</span>`,
   ];
   if (st) parts.push(`<span>lost: gaps <b class="num">${st.gaps[0] + st.gaps[1]}</b>, missed <b class="num">${st.missed[0] + st.missed[1]}</b></span>`);
@@ -505,7 +839,7 @@ function measure(tr, a, b) {
   } else {
     // Many changes: sample the level at 4000 points.
     const N = 4000;
-    for (let k = 0; k < N; k++) high += tr.levelAt(tr.upper(a + (k + 0.5) * (b - a) / N));
+    for (let k = 0; k < N; k++) high += tr.levelAtTime(a + (k + 0.5) * (b - a) / N);
     high = high / N * (b - a);
   }
   // The period, from the first rising edge in view to the last.
@@ -528,38 +862,149 @@ function updateMeas() {
   $("meas").innerHTML = h;
 }
 
-// ---- VCD export of the visible time ----
+function updateDecoded() {
+  let h = "";
+  S.decoders.forEach((d, k) => {
+    const res = S.decoded[k];
+    if (!res || !res.length) return;
+    const text = res.filter(r => r.ch).map(r => r.ch).join("");
+    h += `<tr><th colspan="3">${DEC[d.type].name}, decoder ${k + 1}: ${res.length} in view${text ? ": “" + esc(text.slice(0, 120)) + "”" : ""}</th></tr>`;
+    res.slice(0, 100).forEach(r => {
+      h += `<tr class="go" data-t="${r.t0}"><td class="num">${fmtTime(r.t0)}</td><td class="num">${esc(r.text)}</td><td>${r.ch ? esc(r.ch) : ""}</td></tr>`;
+    });
+  });
+  $("dectab").innerHTML = h;
+}
 
-function exportVcd() {
+function updateEvents() {
+  const ev = S.events.slice(-200).reverse();
+  let h = `<tr><th>at</th><th>what</th><th>from</th><th class="r">value</th></tr>`;
+  ev.forEach(e => {
+    const what = e.kind === "mark" ? "mark" : e.kind === "trig" ? "trigger hit" : "gap: records lost";
+    const from = e.kind === "mark" ? "fabric node " + e.from : "PRU" + e.s;
+    const value = e.kind === "trig" ? "0x" + e.value.toString(16) : e.value;
+    h += `<tr class="go" data-t="${e.t}"><td class="num">${fmtTime(e.t)}</td><td>${what}</td><td>${from}</td><td class="r num">${value}</td></tr>`;
+  });
+  $("evtab").innerHTML = ev.length ? h : "<tr><td>none yet: ai64 la mark, ai64 la trigger, or the MCP server make them</td></tr>";
+}
+
+// ---- reading a capture straight through: VCD export and saving ----
+
+// Channel tr's change i, a block at a time, wherever the blocks are.
+async function cursorAt(tr, i, cur) {
+  const c = (i / CHUNK) | 0;
+  if (cur.c !== c) { cur.arr = await Spill.read(tr, c); cur.c = c; }
+  return cur.arr[i % CHUNK];
+}
+
+async function upperAsync(tr, t) {
+  const f = tr.firsts;
+  let lo = 0, hi = f.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (f[m] <= t) lo = m + 1; else hi = m; }
+  if (lo === 0) return 0;
+  const c = lo - 1, a = await Spill.read(tr, c), len = c === f.length - 1 ? tr.n - c * CHUNK : CHUNK;
+  let l = 0, h = len;
+  while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
+  return c * CHUNK + l;
+}
+
+async function exportVcd() {
   if (!S.meta) return;
   const a = Math.max(0, S.view.a), b = Math.min(S.view.b, dataEnd());
   const chans = S.meta.channels, out = [];
   out.push(`$date ${new Date().toISOString()} $end\n$version ai64 la, the web viewer $end\n$timescale 1 ns $end\n$scope module la $end\n`);
   chans.forEach((c, i) => out.push(`$var wire 1 ${String.fromCharCode(33 + i)} ch${c.ch}_${c.pin.replace(".", "_")}${c.name ? "_" + c.name : ""} $end\n`));
   out.push(`$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n`);
-  const idx = chans.map(c => S.tracks[c.ch].upper(a)), end = chans.map(c => S.tracks[c.ch].upper(b));
-  chans.forEach((c, i) => out.push(`${S.tracks[c.ch].init === null ? "x" : S.tracks[c.ch].levelAt(idx[i])}${String.fromCharCode(33 + i)}\n`));
+  const tr = chans.map(c => S.tracks[c.ch]), idx = [], end = [], cur = [], head = [];
+  for (let i = 0; i < chans.length; i++) {
+    idx.push(await upperAsync(tr[i], a)); end.push(await upperAsync(tr[i], b)); cur.push({ c: -1 });
+    head.push(idx[i] < end[i] ? await cursorAt(tr[i], idx[i], cur[i]) : Infinity);
+    out.push(`${tr[i].init === null ? "x" : tr[i].levelAt(idx[i])}${String.fromCharCode(33 + i)}\n`);
+  }
   out.push("$end\n");
   // Merge the channels' changes by time.
   let lines = [], last = -1, total = 0;
   for (;;) {
     let best = -1, bt = Infinity;
-    for (let i = 0; i < chans.length; i++) {
-      if (idx[i] < end[i]) { const t = S.tracks[chans[i].ch].at(idx[i]); if (t < bt) { bt = t; best = i; } }
-    }
+    for (let i = 0; i < chans.length; i++) if (head[i] < bt) { bt = head[i]; best = i; }
     if (best < 0) break;
-    const tr = S.tracks[chans[best].ch], t = Math.round(bt - a);
+    const t = Math.round(bt - a);
     if (t !== last) { lines.push(`#${t}\n`); last = t; }
-    lines.push(`${tr.levelAt(idx[best] + 1)}${String.fromCharCode(33 + best)}\n`);
+    lines.push(`${tr[best].levelAt(idx[best] + 1)}${String.fromCharCode(33 + best)}\n`);
     idx[best]++;
+    head[best] = idx[best] < end[best] ? await cursorAt(tr[best], idx[best], cur[best]) : Infinity;
     if (++total % 200000 === 0) { out.push(lines.join("")); lines = []; }
   }
   lines.push(`#${Math.round(b - a)}\n`);
   out.push(lines.join(""));
-  const url = URL.createObjectURL(new Blob(out, { type: "text/plain" }));
+  download(new Blob(out, { type: "text/plain" }), "la.vcd");
+}
+
+function download(blob, name) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = url; link.download = "la.vcd"; link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  link.href = url; link.download = name; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+/*
+ * A capture file, .lacap: "AI64LA1\n", a little-endian u32 header length
+ * and a u32 0, the header as JSON (meta, now, events, each channel's start
+ * level and change count), padded to 8 bytes, then each channel's change
+ * times in ns as float64, channel by channel.
+ */
+async function saveCapture() {
+  if (!S.meta) return;
+  const header = {
+    format: "ai64-la capture 1", saved: new Date().toISOString(), meta: S.meta, now: S.now,
+    events: S.events, tracks: S.tracks.map(t => ({ ch: t.ch, init: t.init, n: t.n })),
+  };
+  let hj = new TextEncoder().encode(JSON.stringify(header));
+  const pad = (8 - hj.length % 8) % 8;
+  const head = new Uint8Array(16 + hj.length + pad).fill(32);
+  head.set(new TextEncoder().encode("AI64LA1\n"));
+  new DataView(head.buffer).setUint32(8, hj.length, true);
+  new DataView(head.buffer).setUint32(12, 0, true);
+  head.set(hj, 16);
+  const parts = [head];
+  for (const tr of S.tracks) {
+    for (let c = 0; c < tr.chunks.length; c++) {
+      const a = await Spill.read(tr, c), len = c === tr.chunks.length - 1 ? tr.n - c * CHUNK : CHUNK;
+      parts.push(a.slice(0, len));
+    }
+  }
+  download(new Blob(parts, { type: "application/octet-stream" }), "la-" + header.saved.replace(/[:.]/g, "-") + ".lacap");
+}
+
+async function openCapture(file) {
+  stop("an opened file");
+  const head = new DataView(await file.slice(0, 16).arrayBuffer());
+  const magic = new TextDecoder().decode(new Uint8Array(head.buffer, 0, 8));
+  if (magic !== "AI64LA1\n") { banner(file.name + " is not a capture saved by this page."); return; }
+  const len = head.getUint32(8, true), pad = (8 - len % 8) % 8;
+  const header = JSON.parse(new TextDecoder().decode(await file.slice(16, 16 + len).arrayBuffer()));
+  setMeta(header.meta);
+  await Spill.clear();
+  reset();
+  let off = 16 + len + pad;
+  for (const h of header.tracks) {
+    const tr = S.tracks[h.ch];
+    tr.init = h.init;
+    for (let i = 0; i < h.n; i += CHUNK) {
+      const k = Math.min(CHUNK, h.n - i);
+      const part = new Float64Array(await file.slice(off + i * 8, off + (i + k) * 8).arrayBuffer());
+      const arr = new Float64Array(CHUNK);
+      arr.set(part);
+      tr.chunks.push(arr); tr.firsts.push(arr[0]); tr.onDisk.push(false); Spill.ram += CHUNK * 8;
+      tr.n += k;
+      if (Spill.on && Spill.ram > S.limit) await Spill.spill();
+    }
+    off += h.n * 8;
+    S.held += h.n * 8;
+  }
+  S.now = header.now; S.events = header.events; S.t0 = 0;
+  setState("opened " + file.name, "");
+  fitAll();
 }
 
 // ---- interaction ----
@@ -598,15 +1043,31 @@ function fitAll() { setFollow(false); S.view = { a: 0, b: Math.max(1000, dataEnd
 function setFollow(on) { S.follow = on; $("follow").classList.toggle("on", on); S.dirty = true; }
 
 document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (e.key === "Escape") { S.cursor = [null, null]; S.dirty = true; }
   if (e.key === "f" || e.key === "F") setFollow(!S.follow);
 });
-$("run").onclick = () => { if (S.running) stop(); else start(); };
+for (const id of ["dectab", "evtab"]) {
+  $(id).addEventListener("click", e => {
+    const row = e.target.closest("tr.go");
+    if (row) centerOn(Number(row.dataset.t));
+  });
+}
+$("run").onclick = () => { if (S.running) stop(); else { clearAll().then(start); } };
 $("follow").onclick = () => setFollow(!S.follow);
 $("fit").onclick = fitAll;
-$("clear").onclick = () => { reset(); };
-$("vcd").onclick = exportVcd;
+$("clear").onclick = () => { clearAll(); };
+$("vcd").onclick = () => { exportVcd().catch(e => banner("Export: " + e.message)); };
+$("save").onclick = () => { saveCapture().catch(e => banner("Save: " + e.message)); };
+$("open").onclick = () => $("file").click();
+$("file").onchange = e => { if (e.target.files[0]) openCapture(e.target.files[0]).catch(err => banner("Open: " + err.message)); };
 $("limit").onchange = e => { S.limit = Number(e.target.value); };
+$("adddec").onchange = e => { if (e.target.value) addDecoder(e.target.value); e.target.value = ""; };
+$("spill").onchange = e => {
+  if (!e.target.checked) { Spill.on = false; return; }
+  if (!Spill.supported()) { e.target.checked = false; banner("This browser has no IndexedDB, so the capture cannot spill to disk."); return; }
+  Spill.enable().catch(err => { e.target.checked = false; banner("Spill to disk: " + err.message); });
+};
 window.addEventListener("resize", resize);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); S.dirty = true; });
 
@@ -615,12 +1076,13 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 let lastFacts = 0;
 function frame(now) {
   if (S.dirty || (S.follow && S.running)) { draw(); S.dirty = false; }
-  if (now - lastFacts > 250) { updateFacts(); updateMeas(); lastFacts = now; }
+  if (now - lastFacts > 250) { updateFacts(); updateMeas(); updateDecoded(); updateEvents(); lastFacts = now; }
   requestAnimationFrame(frame);
 }
 
-// For the browser's console: the capture, as it stands.
+// For the browser's console and tests: the capture, as it stands.
 window.la = S;
+window.laSpill = Spill;
 
 resize();
 start();

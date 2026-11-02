@@ -482,7 +482,7 @@ While the demo runs, open `http://<board>:8064/` in a browser on the same networ
 
 ![The web page, served by the board while the demo runs](media/web.png)
 
-**The logic analyzer's viewer** is at `http://<board>:8064/la`: ICSSG1's 19 channels, streamed live into the browser, with zoom, cursors, measurements, and VCD export ([The web viewer](pru/logic_analyzer/README.md#the-web-viewer)).
+**The logic analyzer's viewer** is at `http://<board>:8064/la`: ICSSG1's 19 channels, streamed live into the browser, with zoom, cursors, measurements, SPI, UART, and I²C decoders, saved captures, and VCD export ([The web viewer](pru/logic_analyzer/README.md#the-web-viewer)).
 
 `sudo ai64 web [port]` serves them on its own. It only reads: sysfs, and the shared memory the cores publish to, mapped read only. It joins no link and takes no lock, so it changes nothing the demo does. The numbers it sends are the cores' own running totals, and the page works out the rates, over about 3 s. It needs no internet, and it has no password: anyone on the board's network can see it, and no one can change anything through it.
 
