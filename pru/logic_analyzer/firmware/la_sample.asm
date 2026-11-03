@@ -1,6 +1,7 @@
 ; SPDX-License-Identifier: MIT
 ;
-; la_sample(ring, mask): a PRU's sampling loop, never returns.
+; la_sample(ring, mask, seq): a PRU's sampling loop in edge mode, never
+; returns; its first record's seq is seq (la_map.h).
 ;
 ; Two cycles a pass, 8 ns: read the GPI pins (R31) through the mask, and
 ; loop while they match the last state. On a change it reads IEP0's count
@@ -18,7 +19,8 @@
 ; (la_map.h).
 ;
 ;   r14  ring      the ring's local address, LA_SRING_SIZE bytes
-;   r15  mask      the PRU's GPI pins
+;   r15  mask      the PRU's GPI pins to record
+;   r16  seq       the first record's seq
 ;   r4 - r6   record A: time, state, seq      r7 - r9   record B
 ;   r19  the ring's offset mask      r20  the record's offset
 ;   r21  IEP0's count register
@@ -28,9 +30,9 @@
 la_sample:
 	LDI32	r21, 0x0002e010
 	LDI32	r19, 0x00007ff0
-	; No state yet, so the first pass writes a record; its seq is 0.
+	; No state yet, so the first pass writes a record, with seq r16.
 	LDI32	r5, 0xffffffff
-	LDI32	r6, 0xfffffff0
+	SUB	r6, r16, 16
 la_loop_a:
 	AND	r8, r31, r15
 	QBEQ	la_loop_a, r8, r5

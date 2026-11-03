@@ -323,6 +323,80 @@ void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t fi
 	spread_of(v, n, &out->high);
 }
 
+uint32_t la_lane(uint32_t mask)
+{
+	if (!(mask & ~0xffffu)) {
+		return AI64_LA_LANE_LO16;
+	}
+	if (!(mask & ~0xffff00u)) {
+		return AI64_LA_LANE_MID16;
+	}
+	return AI64_LA_LANE_ALL;
+}
+
+int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen)
+{
+	static const char *const pru[2] = { "g1pru0", "g1pru1" };
+	volatile struct ai64_la *hdr = la_map_trigger();
+	const struct ai64_core *c[2];
+	double give_up;
+	int s, order[2];
+
+	if (!hdr) {
+		snprintf(err, errlen, "the logic analyzer does not run");
+		return -1;
+	}
+	if (raw > 1 || (raw >= 0 && !(mask[raw] & AI64_LA_MASK(raw)))) {
+		snprintf(err, errlen, "no such PRU, or none of its channels");
+		return -1;
+	}
+	for (s = 0; s < 2; s++) {
+		volatile struct ai64_la_stream *h = &hdr->s[s];
+
+		c[s] = core_find(pru[s]);
+		if (!c[s]) {
+			snprintf(err, errlen, "no core %s", pru[s]);
+			return -1;
+		}
+		h->cfg_mode = raw < 0 ? AI64_LA_MODE_EDGE : s != raw ? AI64_LA_MODE_CONV :
+			      AI64_LA_MODE_RAW | la_lane(mask[s] & AI64_LA_MASK(s)) << 8;
+		h->cfg_mask = raw >= 0 && s != raw ? 0 : mask[s] & AI64_LA_MASK(s);
+		__sync_synchronize();
+		h->cfg_seq++;
+	}
+	/* Each RTU passes its mode on within a tick, 1 ms. */
+	give_up = now_us() + 200000;
+	while (hdr->s[0].cfg_ack != hdr->s[0].cfg_seq || hdr->s[1].cfg_ack != hdr->s[1].cfg_seq) {
+		if (now_us() > give_up) {
+			snprintf(err, errlen, "ICSSG1's RTUs did not take the mode");
+			return -1;
+		}
+		usleep(1000);
+	}
+	/*
+	 * Stop both PRUs, let the RTUs take what is left in the rings, and
+	 * start them again: in raw mode the converter first, so it is waiting
+	 * when the raw PRU's first block comes. The Tx_PRUs run on.
+	 */
+	for (s = 0; s < 2; s++) {
+		if (rproc_running(c[s]->rproc, NULL, 0) && rproc_write(c[s]->rproc, "state", "stop")) {
+			snprintf(err, errlen, "could not stop %s (root?)", pru[s]);
+			return -1;
+		}
+	}
+	usleep(20000);
+	order[0] = raw == 0 ? 1 : 0;
+	order[1] = 1 - order[0];
+	for (s = 0; s < 2; s++) {
+		if (rproc_write(c[order[s]]->rproc, "state", "start")) {
+			snprintf(err, errlen, "could not start %s", pru[order[s]]);
+			return -1;
+		}
+		usleep(10000);
+	}
+	return 0;
+}
+
 int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value)
 {
 	volatile struct ai64_la *hdr = la_map_trigger();

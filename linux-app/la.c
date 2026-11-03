@@ -26,10 +26,19 @@
  * ai64 la rate [seconds]
  *   How fast the analyzer goes, end to end: each PRU's records a second as
  *   its RTU copies them to DDR, and as a reader here takes them out and
- *   does nothing else with them, with any it missed; and the closest two
- *   records came, which is the PRU's time to write one when its pins keep
+ *   does nothing else with them, with any it missed, and the gaps it met
+ *   (the RTU's, or raw mode's converter's); and the closest two records came, which is the PRU's time to write one when its pins keep
  *   changing. Run against a fast test signal, it says which stage keeps up
  *   (pru/logic_analyzer/README.md, tests/board/stress.sh).
+ *
+ * ai64 la mode [edge [ch ...] | raw <ch> ...]
+ *   Each PRU's mode and the channels it records; or sets them. Edge mode
+ *   (all 19 channels, or those given) writes a record at each change, and
+ *   can be up to 48 ns late after one. Raw mode takes channels of one PRU:
+ *   it samples them every 8 ns with no gap, and the other PRU finds the
+ *   changes, so its own channels are not recorded
+ *   (pru/logic_analyzer/firmware/la_map.h). Channels not recorded read
+ *   low. Restarts both PRUs, a gap of some 50 ms.
  *
  * ai64 la mark <value>
  *   Puts a mark with that 16-bit value in the analyzer's stream, through a
@@ -620,7 +629,7 @@ static int rate_main(int argc, char **argv)
 	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
 	struct stream st[2];
 	uint32_t copied0[2];
-	uint64_t read0[2], missed0[2];
+	uint64_t read0[2], missed0[2], gaps0[2];
 	int s;
 
 	if (argc > 4 || secs <= 0) {
@@ -643,6 +652,7 @@ static int rate_main(int argc, char **argv)
 		copied0[s] = st[s].h->edges;
 		read0[s] = st[s].edges;
 		missed0[s] = st[s].missed;
+		gaps0[s] = st[s].gaps;
 	}
 	do {
 		for (s = 0; s < 2; s++) {
@@ -652,13 +662,88 @@ static int rate_main(int argc, char **argv)
 	t1 = now_us();
 	for (s = 0; s < 2; s++) {
 		printf("PRU%d: RTU%d copied %.0f records/s, the reader read %.0f/s and missed %.0f/s; "
-		       "RTU gaps %u (%u records) since it started; closest records %lld ns apart\n",
+		       "RTU gaps %u (%u records) since it started; gaps in the stream %llu; "
+		       "closest records %lld ns apart\n",
 		       s, s, (uint32_t)(st[s].h->edges - copied0[s]) * 1e6 / (t1 - t0),
 		       (st[s].edges - read0[s]) * 1e6 / (t1 - t0),
 		       (st[s].missed - missed0[s]) * 1e6 / (t1 - t0), st[s].h->gaps, st[s].h->lost,
+		       (unsigned long long)(st[s].gaps - gaps0[s]),
 		       c.min[s] == UINT64_MAX ? -1LL : (long long)c.min[s]);
 		stream_free(&st[s]);
 	}
+	return 0;
+}
+
+static void print_modes(void)
+{
+	int s, c;
+
+	for (s = 0; s < 2; s++) {
+		const volatile struct ai64_la_stream *h = &la_hdr->s[s];
+
+		printf("PRU%d: %s", s,
+		       AI64_LA_MODE_OF(h->cfg_mode) == AI64_LA_MODE_CONV ?
+		       "converting the other's samples, no channels" :
+		       AI64_LA_MODE_OF(h->cfg_mode) != AI64_LA_MODE_RAW ?
+		       "edge, a record at each change, channels" :
+		       AI64_LA_LANE_OF(h->cfg_mode) == AI64_LA_LANE_ALL ?
+		       "raw, every 8 ns with no gap, a sample a word, channels" :
+		       "raw, every 8 ns with no gap, two samples a word, channels");
+		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+			if (la_chans[c].pru == s && (h->cfg_mask >> la_chans[c].bit & 1u)) {
+				printf(" %d", c);
+			}
+		}
+		printf("\n");
+	}
+}
+
+static int mode_main(int argc, char **argv)
+{
+	uint32_t mask[2] = { 0, 0 };
+	char err[128];
+	int raw, i, c;
+
+	if (la_map(1)) {
+		return 1;
+	}
+	if (argc == 3) {
+		print_modes();
+		return 0;
+	}
+	if (strcmp(argv[3], "edge") && strcmp(argv[3], "raw")) {
+		fprintf(stderr, "usage: %s la mode [edge [ch ...] | raw <ch> ...]\n", argv[0]);
+		return 2;
+	}
+	for (i = 4; i < argc; i++) {
+		c = atoi(argv[i]);
+		if (c < 0 || c >= (int)AI64_LA_NCHAN || strspn(argv[i], "0123456789") != strlen(argv[i])) {
+			fprintf(stderr, "no channel %s\n", argv[i]);
+			return 2;
+		}
+		mask[la_chans[c].pru] |= 1u << la_chans[c].bit;
+	}
+	if (!strcmp(argv[3], "edge")) {
+		raw = -1;
+		if (!mask[0] && !mask[1]) {
+			mask[0] = AI64_LA_MASK(0);
+			mask[1] = AI64_LA_MASK(1);
+		}
+	} else if (mask[0] && mask[1]) {
+		fprintf(stderr, "raw mode takes channels of one PRU: PRU0 has 0 3 4 5 6 13 14 15 16 18, "
+			"PRU1 1 2 7 8 9 10 11 12 17\n");
+		return 2;
+	} else if (!mask[0] && !mask[1]) {
+		fprintf(stderr, "raw mode needs its channels\n");
+		return 2;
+	} else {
+		raw = mask[0] ? 0 : 1;
+	}
+	if (la_set_mode(raw, mask, err, sizeof(err))) {
+		fprintf(stderr, "%s\n", err);
+		return 1;
+	}
+	print_modes();
 	return 0;
 }
 
@@ -686,6 +771,9 @@ int la_main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "mark")) {
 		return mark_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "mode")) {
+		return mode_main(argc, argv);
 	}
 	if (argc > 2 && !strcmp(argv[2], "rate")) {
 		return rate_main(argc, argv);

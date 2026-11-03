@@ -30,7 +30,18 @@
  *             a channel with no edges has got; every 20 ms
  * and once a second a text message,
  *   {"type":"stats","edges":[n0,n1],"gaps":[g0,g1],"missed":[m0,m1],"sent":bytes}
- * with totals since the viewer connected.
+ * with totals since the viewer connected; and at the start, and whenever
+ * it changes, from here or anywhere (ai64 la mode), the analyzer's mode:
+ *   {"type":"mode","prus":[{"mode":"edge","lane":0,"mask":m0},
+ *    {"mode":"raw","lane":1,"mask":m1}],"channels":[c,...]}
+ * each PRU's mode (edge, raw, or conv), raw mode's lane, and the pins it
+ * records, and the channels recorded.
+ *
+ * The viewer sends one kind of message, a text message that sets the mode
+ * (la_set_mode()), with the channels to record:
+ *   {"type":"mode","mode":"edge"|"raw","channels":[c,...]}
+ * and gets back {"type":"mode_error","error":"..."} if it cannot be set.
+ * That restarts both PRUs, a gap of some 50 ms in every viewer's stream.
  *
  * A viewer too slow for the stream falls behind in the 32 MiB ring, and
  * then a ring behind: it gets a gap message, and carries on from the
@@ -201,6 +212,9 @@ struct viewer {
 		uint8_t b[BATCH];
 	} out[2];
 	size_t len[2];      /* bytes in out[s].b */
+	uint8_t in[4096];   /* what the viewer sent, not yet a whole frame */
+	size_t nin;
+	uint32_t mode_told[2], mask_told[2];
 	uint64_t last_t[2]; /* the last edge's time and pins, each stream */
 	uint32_t last_state[2];
 	int have[2];
@@ -318,6 +332,150 @@ static void send_meta(struct viewer *v)
 	send_text(v, buf);
 }
 
+/* Each PRU's mode, as its RTU has it, if it differs from what v was last told. */
+static void send_modes(struct viewer *v, int force)
+{
+	static const char *const names[] = { "edge", "raw", "conv" };
+	char buf[512];
+	size_t n = 0;
+	int s, c, changed = force;
+
+	for (s = 0; s < 2; s++) {
+		changed |= la_hdr->s[s].cfg_mode != v->mode_told[s] ||
+			   la_hdr->s[s].cfg_mask != v->mask_told[s];
+	}
+	if (!changed) {
+		return;
+	}
+	n += (size_t)snprintf(buf + n, sizeof(buf) - n, "{\"type\":\"mode\",\"prus\":[");
+	for (s = 0; s < 2; s++) {
+		uint32_t m = la_hdr->s[s].cfg_mode;
+
+		v->mode_told[s] = m;
+		v->mask_told[s] = la_hdr->s[s].cfg_mask;
+		n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s{\"mode\":\"%s\",\"lane\":%u,\"mask\":%u}",
+				      s ? "," : "", names[AI64_LA_MODE_OF(m) < 3 ? AI64_LA_MODE_OF(m) : 0],
+				      AI64_LA_LANE_OF(m), v->mask_told[s]);
+	}
+	n += (size_t)snprintf(buf + n, sizeof(buf) - n, "],\"channels\":[");
+	for (c = 0, s = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (v->mask_told[la_chans[c].pru] >> la_chans[c].bit & 1u) {
+			n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s%d", s++ ? "," : "", c);
+		}
+	}
+	snprintf(buf + n, sizeof(buf) - n, "]}");
+	send_text(v, buf);
+}
+
+/* {"type":"mode","mode":"edge"|"raw","channels":[...]}: set it, one viewer at a time. */
+static void set_mode(struct viewer *v, const char *msg)
+{
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	uint32_t mask[2] = { 0, 0 };
+	const char *p = strstr(msg, "\"channels\""), *m = strstr(msg, "\"mode\":\"");
+	char err[160], reply[256];
+	int raw = -1;
+
+	if (!p || !m || !(p = strchr(p, '['))) {
+		snprintf(err, sizeof(err), "a mode message needs mode and channels");
+		goto fail;
+	}
+	for (p++; *p && *p != ']'; p++) {
+		if (*p >= '0' && *p <= '9') {
+			long c = strtol(p, (char **)&p, 10);
+
+			if (c < 0 || c >= (long)AI64_LA_NCHAN) {
+				snprintf(err, sizeof(err), "no channel %ld", c);
+				goto fail;
+			}
+			mask[la_chans[c].pru] |= 1u << la_chans[c].bit;
+			p--;
+		}
+	}
+	if (!strncmp(m + 8, "raw\"", 4)) {
+		if (!mask[0] == !mask[1]) {
+			snprintf(err, sizeof(err), mask[0] ? "raw mode takes the channels of one PRU" :
+				 "raw mode needs at least one channel");
+			goto fail;
+		}
+		raw = mask[0] ? 0 : 1;
+	} else if (!mask[0] && !mask[1]) {
+		snprintf(err, sizeof(err), "edge mode needs at least one channel");
+		goto fail;
+	}
+	pthread_mutex_lock(&lock);
+	if (la_set_mode(raw, mask, err, sizeof(err))) {
+		pthread_mutex_unlock(&lock);
+		goto fail;
+	}
+	pthread_mutex_unlock(&lock);
+	return;
+fail:
+	snprintf(reply, sizeof(reply), "{\"type\":\"mode_error\",\"error\":\"%s\"}", err);
+	send_text(v, reply);
+}
+
+/*
+ * What the viewer sent, if anything, without waiting: whole frames, masked
+ * as a browser sends them. A close, or a frame too big for in, ends it.
+ */
+static void read_viewer(struct viewer *v)
+{
+	ssize_t got = recv(v->fd, v->in + v->nin, sizeof(v->in) - 1 - v->nin, MSG_DONTWAIT);
+
+	if (got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+		v->failed = 1;
+		return;
+	}
+	if (got > 0) {
+		v->nin += (size_t)got;
+	}
+	while (v->nin >= 6) {
+		uint8_t op = v->in[0] & 0x0fu;
+		size_t len = v->in[1] & 0x7fu, head = 6, i;
+		uint8_t *key, *data;
+
+		if (len == 127 || !(v->in[1] & 0x80u)) {
+			v->failed = 1;
+			return;
+		}
+		if (len == 126) {
+			if (v->nin < 8) {
+				return;
+			}
+			len = (size_t)v->in[2] << 8 | v->in[3];
+			head = 8;
+		}
+		if (head + len > sizeof(v->in) - 1) {
+			v->failed = 1;
+			return;
+		}
+		if (v->nin < head + len) {
+			return;
+		}
+		key = v->in + head - 4;
+		data = v->in + head;
+		for (i = 0; i < len; i++) {
+			data[i] ^= key[i & 3u];
+		}
+		if (op == 8) {
+			v->failed = 1;
+			return;
+		}
+		if (op == 1) {
+			char save = (char)data[len];
+
+			data[len] = '\0';
+			if (strstr((char *)data, "\"type\":\"mode\"")) {
+				set_mode(v, (char *)data);
+			}
+			data[len] = (uint8_t)save;
+		}
+		memmove(v->in, v->in + head + len, v->nin - head - len);
+		v->nin -= head + len;
+	}
+}
+
 static void *viewer_main(void *arg)
 {
 	struct viewer *v = arg;
@@ -332,6 +490,7 @@ static void *viewer_main(void *arg)
 	}
 	st[0].keep_marks = st[1].keep_marks = 1;
 	send_meta(v);
+	send_modes(v, 1);
 	if (wait_ticks(st, ws_edge, v)) {
 		goto out;
 	}
@@ -370,6 +529,8 @@ static void *viewer_main(void *arg)
 				send_events(v, &st[s]);
 			}
 		}
+		read_viewer(v);
+		send_modes(v, 0);
 		now = now_us();
 		if (now >= flush_at) {
 			for (s = 0; s < 2; s++) {

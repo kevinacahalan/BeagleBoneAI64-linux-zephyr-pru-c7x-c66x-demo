@@ -411,10 +411,11 @@ static const char *t_channels(const struct jv *args, struct sb *o)
 		sb_add(o, ",\"ball\":\"%s\",\"pru\":%d,\"gpi\":%d}", la_chans[c].ball, la_chans[c].pru,
 		       la_chans[c].bit);
 	}
-	sb_add(o, "],\"note\":\"Each channel is an ICSSG1 PRU GPI pin, 3.3 V only. Each PRU stamps "
-		  "every change on its pins with IEP0, to within 8 ns; two changes on one PRU less "
-		  "than 56 ns apart are stamped 56 ns apart. wired_to is what the demo's jumpers bring; "
-		  "the others are spare.\"}");
+	sb_add(o, "],\"note\":\"Each channel is an ICSSG1 PRU GPI pin, 3.3 V only. In edge mode "
+		  "each PRU stamps every change on its pins with IEP0, to within 8 ns, and a change "
+		  "less than 48 ns after another on the same PRU waits for it; in raw mode (la_mode) "
+		  "one PRU's channels are sampled every 8 ns with no gap. wired_to is what the demo's "
+		  "jumpers bring; the others are spare.\"}");
 	return NULL;
 }
 
@@ -866,6 +867,83 @@ static const char *t_decode(const struct jv *args, struct sb *o)
 	return "protocol: spi or uart";
 }
 
+/* The analyzer's mode, as the RTUs have it. */
+static void mode_json(struct sb *o)
+{
+	static const char *const names[] = { "edge", "raw", "conv" };
+	int s, c, n = 0;
+
+	sb_add(o, "{\"prus\":[");
+	for (s = 0; s < 2; s++) {
+		uint32_t m = la_hdr->s[s].cfg_mode;
+
+		sb_add(o, "%s{\"pru\":%d,\"mode\":\"%s\",\"two_samples_a_word\":%s}", s ? "," : "", s,
+		       names[AI64_LA_MODE_OF(m) < 3 ? AI64_LA_MODE_OF(m) : 0],
+		       AI64_LA_LANE_OF(m) ? "true" : "false");
+	}
+	sb_add(o, "],\"channels_recorded\":[");
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (la_hdr->s[la_chans[c].pru].cfg_mask >> la_chans[c].bit & 1u) {
+			sb_add(o, "%s%d", n++ ? "," : "", c);
+		}
+	}
+	sb_add(o, "],\"note\":\"edge: both PRUs record each change of their channels, up to about "
+		  "15 million edges a second streamed; a change less than 48 ns after another on the "
+		  "same PRU waits. raw: one PRU's channels sampled every 8 ns with no gap, and the "
+		  "other PRU (conv) finds the changes and records none of its own; up to 10 million "
+		  "edges a second with none lost when the channels fit 16 pins (two samples a word), "
+		  "6.7 million otherwise. Channels not recorded read low.\"}");
+}
+
+static const char *t_mode(const struct jv *args, struct sb *o)
+{
+	const char *mode = jstr(args, "mode");
+	const struct jv *chs = jget(args, "channels");
+	uint32_t mask[2] = { 0, 0 };
+	char err[160];
+	int raw = -1;
+	size_t i;
+
+	if (la_map(0)) {
+		return "the logic analyzer is not running on ICSSG1";
+	}
+	if (!mode) {
+		mode_json(o);
+		return NULL;
+	}
+	if (chs && chs->t != J_ARR) {
+		return "channels: an array of channel numbers, 0 to 18";
+	}
+	for (i = 0; chs && i < chs->n; i++) {
+		const struct jv *c = &chs->kid[i];
+
+		if (c->t != J_NUM || c->num < 0 || c->num >= AI64_LA_NCHAN || c->num != (int)c->num) {
+			return "channels: an array of channel numbers, 0 to 18";
+		}
+		mask[la_chans[(int)c->num].pru] |= 1u << la_chans[(int)c->num].bit;
+	}
+	if (!strcmp(mode, "edge")) {
+		if (!mask[0] && !mask[1]) {
+			mask[0] = AI64_LA_MASK(0);
+			mask[1] = AI64_LA_MASK(1);
+		}
+	} else if (!strcmp(mode, "raw")) {
+		if (!mask[0] == !mask[1]) {
+			return mask[0] ? "raw mode takes the channels of one PRU (la_channels has which)" :
+			       "raw mode needs its channels";
+		}
+		raw = mask[0] ? 0 : 1;
+	} else {
+		return "mode: edge or raw";
+	}
+	if (la_set_mode(raw, mask, err, sizeof(err))) {
+		sb_add(o, "{\"error\":\"%s\"}", err);
+		return NULL;
+	}
+	mode_json(o);
+	return NULL;
+}
+
 static const char *t_trigger(const struct jv *args, struct sb *o)
 {
 	const char *mode = jstr(args, "mode");
@@ -985,6 +1063,14 @@ static const struct {
 	  "\"type\":\"integer\"},\"bits\":{\"type\":\"integer\"},\"lsb_first\":{\"type\":\"boolean\"},"
 	  "\"channel\":{\"type\":\"integer\"},\"baud\":{\"type\":\"number\"},\"invert\":{\"type\":"
 	  "\"boolean\"}},\"required\":[\"protocol\"]}" },
+	{ "la_mode", t_mode,
+	  "The capture mode, or sets it. edge: every channel (or those given), each change "
+	  "stamped to within 8 ns, a change within 48 ns of another on the same PRU late. raw: "
+	  "the given channels, all of one PRU, sampled every 8 ns with no gap, so pulses and "
+	  "gaps down to 8 ns are exact; the other PRU's channels are not recorded. Setting it "
+	  "restarts both PRUs, a gap of about 50 ms. Without mode, says which runs.",
+	  "{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"edge\","
+	  "\"raw\"]},\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}" },
 	{ "la_trigger", t_trigger,
 	  "Sets the trigger the ICSSG1 Tx_PRUs match on the edges as they come: off, a channel's "
 	  "rise, fall, or any change, or a pattern of channel levels (one PRU's channels only).",

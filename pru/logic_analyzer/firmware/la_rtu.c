@@ -49,8 +49,8 @@ extern void la_pack(uint32_t dst, uint32_t src, uint32_t n);
 
 /* Bytes, free-running: rd in the shared ring, wr in the DDR ring. */
 static uint32_t rd, wr;
-/* The trigger seq last passed on, and the Tx_PRU's hits taken. */
-static uint32_t trig_seq, hits_rd;
+/* The trigger seq last passed on, the Tx_PRU's hits taken, the mode's seq. */
+static uint32_t trig_seq, hits_rd, cfg_seq;
 
 static void iep_start(void)
 {
@@ -131,6 +131,24 @@ static void pass_trigger(void)
 	cfg->mask = h->trig_mask;
 	cfg->value = h->trig_value;
 	cfg->seq = seq;
+}
+
+/*
+ * A new mode from Linux, for the PRU and Tx_PRU when Linux next starts
+ * them (la_map.h); cfg_ack says it is passed on.
+ */
+static void pass_mode(void)
+{
+	volatile struct ai64_la_stream *h = HDR;
+	uint32_t seq = h->cfg_seq;
+
+	if (seq == cfg_seq) {
+		return;
+	}
+	cfg_seq = seq;
+	LA_CFG_REC->mode = h->cfg_mode;
+	LA_CFG_REC->mask = h->cfg_mask;
+	h->cfg_ack = seq;
 }
 
 /* The Tx_PRU's hits since the last call, into the stream. */
@@ -236,6 +254,14 @@ void main(void)
 	hits_rd = 0;
 	LA_HITS_REC->wr = 0;
 	pass_trigger();
+	/* Edge mode and every pin, whatever the header held. */
+	h->cfg_mode = AI64_LA_MODE_EDGE;
+	h->cfg_mask = AI64_LA_MASK(AI64_SLICE);
+	cfg_seq = h->cfg_seq;
+	h->cfg_ack = cfg_seq;
+	LA_CFG_REC->mode = AI64_LA_MODE_EDGE;
+	LA_CFG_REC->mask = AI64_LA_MASK(AI64_SLICE);
+	LA_CFG_REC->resume = 0;
 	h->magic = AI64_LA_MAGIC;
 	LA_READY_WORD = LA_READY_MAGIC;
 	trace_puts(AI64_SLICE ? "ICSSG1 RTU1 up: PRU1's edges to DDR\n" :
@@ -278,7 +304,11 @@ void main(void)
 			la_pack(AI64_LA_RING_ADDR(AI64_SLICE) + dof, LA_SRING(AI64_SLICE) + so, n);
 			rd += n * LA_SREC_SIZE;
 			wr += n * AI64_LA_REC_SIZE;
-			state = SREC(rd - LA_SREC_SIZE)->state;
+			/* The newest pins: a raw-mode gap record holds none. */
+			if (!AI64_LA_TYPE(SREC(rd - LA_SREC_SIZE)->state)) {
+				state = SREC(rd - LA_SREC_SIZE)->state;
+			}
+			LA_CFG_REC->resume = rd;
 			h->edges += n;
 			h->state = state;
 			h->wr = wr;
@@ -291,6 +321,7 @@ void main(void)
 			tick(state);
 			h->wr = wr;
 			pass_trigger();
+			pass_mode();
 		}
 		take_hits();
 		/*

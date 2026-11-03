@@ -141,6 +141,17 @@ void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t fi
 		struct chan_stats *out);
 /* The recording as a VCD file (la.c); each PRU's edges in nedge, and the marks and hits. */
 size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2]);
+/*
+ * The analyzer's mode: raw -1 for edge mode on both PRUs, each recording
+ * the pins in its mask; or raw 0 or 1, that PRU sampling the pins in its
+ * mask every 8 ns, and the other converting them, recording none of its
+ * own (pru/logic_analyzer/firmware/la_map.h). Passes the modes to the RTUs
+ * and restarts both PRUs, a gap of some 50 ms in the streams. 0, or -1
+ * with why in err. Needs root.
+ */
+int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen);
+/* Raw mode's lane for a PRU's pins (AI64_LA_LANE_*): 16 of them, if they fit. */
+uint32_t la_lane(uint32_t mask);
 /* The trigger, on PRU pru (the other's goes off); -1 if the analyzer does not run. */
 int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value);
 

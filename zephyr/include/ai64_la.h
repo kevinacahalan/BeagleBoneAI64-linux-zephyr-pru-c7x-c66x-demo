@@ -61,6 +61,26 @@
 #define AI64_LA_MARK       0x82u
 #define AI64_LA_TRIG       0x83u
 
+/*
+ * A PRU's mode (pru/logic_analyzer/firmware/la_map.h): edge, a record at
+ * each change, with up to 48 ns lost after one; raw, every 8 ns sampled
+ * without a gap; or conv, finding the changes in the other PRU's raw
+ * samples, for that PRU's stream, and recording none of its own.
+ */
+#define AI64_LA_MODE_EDGE  0u
+#define AI64_LA_MODE_RAW   1u
+#define AI64_LA_MODE_CONV  2u
+/*
+ * Raw mode's lane, in a mode's bits 15:8: 0, every pin, a sample a word;
+ * or two samples a word, of pins 0 - 15 (1) or 8 - 23 (2), when the
+ * channels fit in one, so the other PRU keeps up with twice the changes.
+ */
+#define AI64_LA_MODE_OF(m) ((m) & 0xffu)
+#define AI64_LA_LANE_OF(m) ((m) >> 8 & 0xffu)
+#define AI64_LA_LANE_ALL   0u
+#define AI64_LA_LANE_LO16  1u
+#define AI64_LA_LANE_MID16 2u
+
 #define AI64_LA_TRIG_OFF   0u
 #define AI64_LA_TRIG_ENTER 1u /* (state & mask) becomes value */
 #define AI64_LA_TRIG_ANY   2u /* any pin in mask changes */
@@ -86,6 +106,16 @@ struct ai64_la_stream {
 	uint32_t trig_value;
 	uint32_t trig_seq;
 	uint32_t trigs;     /* trig records, written by the RTU */
+	/*
+	 * The mode, and the pins to record: Linux writes mode and mask, then
+	 * bumps cfg_seq; the RTU passes them on and sets cfg_ack to cfg_seq;
+	 * then Linux restarts the PRUs, which start in it (ai64 la mode). The
+	 * RTU sets edge mode and every pin when it starts.
+	 */
+	uint32_t cfg_mode;
+	uint32_t cfg_mask;
+	uint32_t cfg_seq;
+	uint32_t cfg_ack;
 };
 
 /*

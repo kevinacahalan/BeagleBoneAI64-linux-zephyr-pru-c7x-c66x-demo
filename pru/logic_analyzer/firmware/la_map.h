@@ -12,7 +12,10 @@
  *   0x1c00           the slice's RTU, Tx_PRU, and PRU share: the trigger
  *                    as the RTU passes it on, then at 0x1c40 the Tx_PRU's
  *                    trigger hits, a write count and a ring of 64; at
- *                    0x1ff0 the RTU's word that the ring is ready
+ *                    0x1f00 the mode the PRU starts in; at 0x1ff0 the
+ *                    RTU's word that the ring is ready
+ *
+ * A PRU sees the other slice's data RAM at local 0x2000.
  *
  * Shared RAM, local 0x10000, 64 KiB: each PRU's ring of edge records,
  * 32 KiB, 2048 records, PRU0's at 0x10000 and PRU1's at 0x18000.
@@ -31,6 +34,25 @@
  * ring behind skips to where the PRU is and writes a gap record
  * (ai64_la.h); the Tx_PRU matches the trigger, and writes each hit, time
  * and state, into its hit ring for the RTU.
+ *
+ * The modes, which a PRU takes when it starts (struct la_cfg; Linux
+ * restarts the PRUs to change them, ai64 la mode):
+ *
+ *   edge  the PRU writes a record at each change of its pins
+ *         (la_sample.asm). Both PRUs, all 19 channels.
+ *   raw   the PRU samples its pins every 8 ns without a gap, and passes
+ *         them in blocks to the other PRU, through the scratchpad
+ *         banks the two PRUs share (la_raw.asm); a Tx_PRU has banks of
+ *         its own, which no other core reaches.
+ *   conv  the other PRU, which records none of its own pins: it writes
+ *         a record into the raw PRU's ring at each change it finds in
+ *         its samples (la_conv.asm).
+ *
+ * Either way the ring's records are the same, and the RTU and Tx_PRU take
+ * them as they come, whoever writes them: the trigger works in raw mode
+ * too. A new writer's seqs go on from the RTU's rd (la_cfg.resume), which
+ * it keeps up to date, so the RTU and Tx_PRU read straight on across a
+ * change of mode.
  *
  * ICSSG1's task managers and IEP0 keep their setup when its cores stop: the
  * multicore scheduler (extra-demos/) leaves IEP0 firing a compare every
@@ -58,6 +80,8 @@
 #define LA_TRIG            0x00001c00
 #define LA_HITS            0x00001c40
 #define LA_HIT_RING        64
+#define LA_CFG             0x00001f00
+#define LA_OTHER_DRAM      0x00002000
 #define LA_READY           0x00001ff0
 #define LA_READY_MAGIC     0x52454459
 

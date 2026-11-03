@@ -90,6 +90,29 @@ int rproc_attr(const char *rproc, const char *attr, char *val, size_t len)
 	return -1;
 }
 
+int rproc_write(const char *rproc, const char *attr, const char *val)
+{
+	char path[128], got[64];
+	FILE *f;
+	int i, ret;
+
+	for (i = 0; i < 64; i++) {
+		snprintf(path, sizeof(path), "/sys/class/remoteproc/remoteproc%d/name", i);
+		if (read_sysfs(path, got, sizeof(got)) || strcmp(got, rproc)) {
+			continue;
+		}
+		snprintf(path, sizeof(path), "/sys/class/remoteproc/remoteproc%d/%s", i, attr);
+		f = fopen(path, "w");
+		if (!f) {
+			return -1;
+		}
+		ret = fputs(val, f) < 0;
+		ret |= fclose(f) != 0;
+		return ret ? -1 : 0;
+	}
+	return -1;
+}
+
 int rproc_running(const char *rproc, char *state, size_t len)
 {
 	char buf[32];

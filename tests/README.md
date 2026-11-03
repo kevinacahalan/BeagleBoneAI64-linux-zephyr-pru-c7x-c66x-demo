@@ -18,7 +18,7 @@ Each check prints a line, `ok` or `FAIL`, and the test ends with `PASS` or how m
 | `check` | checks the demo as it runs now; start it first with `ai64-demo --tmux` |
 | `soak [runs]` | restarts the demo `runs` times (5 unless you say), every core each time, and checks each run; then checks the kernel log for stops that timed out, oopses, and BUGs |
 | `routes` | sends fabric routes with actions through cores of every kind, and checks that `ai64 pwm` shows each PWM generator running what was asked; then puts the steps back and starts the pipeline again |
-| `stress` | the logic analyzer against a fast test signal: R5F0_1's EHRPWM4 on P9.25, jumpered to ch12, at periods from 2 µs down to 40 ns; at each, `ai64 la rate` checks that RTU1 copied every record PRU1 wrote (at least 10 million a second at 200 ns) and a reader took every one, and at the fastest that no two records came closer than the PRU's loop allows; then puts the steps back and starts the pipeline again |
+| `stress` | the logic analyzer against a fast test signal: R5F0_1's EHRPWM4 on P9.25, jumpered to ch12, at periods from 2 µs down to 40 ns; at each, `ai64 la rate` checks that RTU1 copied every record PRU1 wrote (at least 10 million a second at 200 ns) and a reader took every one, and at the fastest that no two records came closer than the PRU's loop allows; then raw mode, PRU1 sampling ch12 every 8 ns, at 10 million edges a second with no gap in the stream, and slice 1's dead band at 24 ns read as exactly 24 every time; then edge mode again, and puts the steps back and starts the pipeline again |
 
 What `check`, and each run of `soak`, looks at:
 

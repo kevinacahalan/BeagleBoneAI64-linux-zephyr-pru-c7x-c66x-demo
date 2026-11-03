@@ -2,7 +2,7 @@
 /*
  * ICSSG1 Tx_PRU0 and Tx_PRU1: each slice's watcher. It reads its PRU's edge
  * records from the ring in shared RAM as they come, as the RTU does (each
- * record's seq says it is new, la_map.h), and
+ * record's seq says it is new, la_map.h), whichever PRU writes them, and
  * matches the trigger the RTU passes on from Linux (ai64_la.h): the masked
  * pins coming to a value, or any masked pin changing. Each hit, the edge
  * record that met it, goes into its hit ring, and the RTU puts it in the
@@ -28,7 +28,7 @@ void main(void)
 {
 	volatile struct la_trig *cfg = LA_TRIG_REC;
 	volatile struct la_hits *hits = LA_HITS_REC;
-	uint32_t rd = 0, seq = ~0u, mode = AI64_LA_TRIG_OFF, mask = 0, value = 0, hw = 0;
+	uint32_t rd = LA_CFG_REC->resume, seq = ~0u, mode = AI64_LA_TRIG_OFF, mask = 0, value = 0, hw = 0;
 	uint32_t prev = 0, have_prev = 0;
 
 	tm_clear(AI64_SLICE ? ICSSG_TM_TXPRU1 : ICSSG_TM_TXPRU0);

@@ -58,6 +58,8 @@ int write_all(int fd, const void *buf, size_t len);
 int read_sysfs(const char *path, char *buf, size_t len);
 /* A remoteproc attribute (firmware, state) of the core called rproc, or -1. */
 int rproc_attr(const char *rproc, const char *attr, char *val, size_t len);
+/* Writes a remoteproc attribute (state: start, stop); 0, or -1. */
+int rproc_write(const char *rproc, const char *attr, const char *val);
 /* Whether it runs; state, if not NULL, gets its state. */
 int rproc_running(const char *rproc, char *state, size_t len);
 /* "once" or a number of seconds, for the pwm and sched windows. */

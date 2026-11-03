@@ -33,9 +33,24 @@ struct la_hits {
 	uint32_t hit[LA_HIT_RING][2];
 };
 
+/*
+ * The mode a slice's PRU starts in (la_map.h). The RTU writes mode and
+ * mask from the stream's header (ai64_la.h) and keeps resume at its rd;
+ * the PRU writes t0 in raw mode.
+ */
+struct la_cfg {
+	uint32_t mode;   /* AI64_LA_MODE_EDGE, _RAW, or _CONV */
+	uint32_t mask;   /* the PRU's pins to record */
+	uint32_t resume; /* the seq a writer starting now begins at */
+	uint32_t t0;     /* raw: IEP0's count at the first sample */
+};
+
 #define LA_SREC(s, rd) ((volatile struct la_srec *)(LA_SRING(s) + ((rd) & (LA_SRING_SIZE - 1u))))
 #define LA_TRIG_REC   ((volatile struct la_trig *)LA_TRIG)
 #define LA_HITS_REC   ((volatile struct la_hits *)LA_HITS)
 #define LA_READY_WORD (*(volatile uint32_t *)LA_READY)
+#define LA_CFG_REC    ((volatile struct la_cfg *)LA_CFG)
+/* The other slice's, as a PRU sees it. */
+#define LA_CFG_OTHER  ((volatile struct la_cfg *)(LA_OTHER_DRAM + LA_CFG))
 
 #endif
