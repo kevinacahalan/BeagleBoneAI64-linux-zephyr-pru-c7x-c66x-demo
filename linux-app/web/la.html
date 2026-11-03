@@ -328,19 +328,48 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
 
 const CHUNK = 65536;
 
-// A channel's changes, in blocks of CHUNK times. A full block can move to
-// disk (Spill below): its slot in chunks goes null, and chunk() reads it
-// back, so drawing and measuring go on while it loads.
+// A channel's changes, in blocks of CHUNK times. A block holds each time as
+// a 32-bit offset in ns from its first (firsts), half the memory of a
+// float64; one whose offsets outgrow 32 bits, which only a slow channel's
+// can (over 4.29 s a block), turns into float64 times. time(a, c, k) reads
+// either. A full block can move to disk (Spill below): its slot in chunks
+// goes null, and chunk() reads it back, so drawing and measuring go on
+// while it loads.
 class Track {
-  constructor(ch) { this.ch = ch; this.init = null; this.chunks = []; this.firsts = []; this.onDisk = []; this.n = 0; }
+  constructor(ch) {
+    this.ch = ch; this.init = null; this.chunks = []; this.firsts = []; this.onDisk = []; this.n = 0;
+    // The block being filled: its offsets (null once float64), first time, and next index.
+    this.cur = null; this.base = 0; this.k = CHUNK;
+  }
   push(t) {
-    const k = this.n % CHUNK;
-    if (k === 0) { this.chunks.push(new Float64Array(CHUNK)); this.firsts.push(t); this.onDisk.push(false); Spill.ram += CHUNK * 8; }
-    this.chunks[this.chunks.length - 1][k] = t;
+    if (this.k === CHUNK) {
+      this.cur = new Uint32Array(CHUNK); this.base = t; this.k = 0;
+      this.chunks.push(this.cur); this.firsts.push(t); this.onDisk.push(false); Spill.ram += CHUNK * 4;
+    }
+    const off = t - this.base;
+    if (this.cur !== null && off <= 0xffffffff) { this.cur[this.k++] = off; this.n++; return; }
+    const c = this.chunks.length - 1;
+    if (this.cur !== null) {
+      this.chunks[c] = Float64Array.from(this.cur, v => v + this.base);
+      this.cur = null; Spill.ram += CHUNK * 4;
+    }
+    this.chunks[c][this.k++] = t;
     this.n++;
   }
+  time(a, c, k) { return a instanceof Uint32Array ? this.firsts[c] + a[k] : a[k]; }
   chunk(c) { return this.chunks[c] || Spill.get(this, c); }
-  at(i) { const a = this.chunk((i / CHUNK) | 0); return a ? a[i % CHUNK] : NaN; }
+  at(i) { const c = (i / CHUNK) | 0, a = this.chunk(c); return a ? this.time(a, c, i % CHUNK) : NaN; }
+  // In block c (array a, len times), the first time later than t: its index in the block.
+  search(a, c, len, t) {
+    let l = 0, h = len;
+    if (a instanceof Uint32Array) {
+      const off = t - this.firsts[c];
+      while (l < h) { const m = (l + h) >> 1; if (a[m] <= off) l = m + 1; else h = m; }
+    } else {
+      while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
+    }
+    return l;
+  }
   // The first change later than t: its index, or n. A block still loading
   // from disk answers its start, and sets Spill.missing.
   upper(t) {
@@ -350,9 +379,7 @@ class Track {
     if (lo === 0) return 0;
     const c = lo - 1, a = this.chunk(c), len = c === f.length - 1 ? this.n - c * CHUNK : CHUNK;
     if (!a) return c * CHUNK;
-    let l = 0, h = len;
-    while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
-    return c * CHUNK + l;
+    return c * CHUNK + this.search(a, c, len, t);
   }
   // The level before change i.
   levelAt(i) { return this.init ^ (i & 1); }
@@ -398,9 +425,10 @@ const Spill = {
       while (this.ram > S.limit * 0.75) {
         const o = this.oldest();
         if (!o) break;
-        await this.req(this.store("readwrite").put(o.tr.chunks[o.c], o.tr.ch + ":" + o.c));
+        const a = o.tr.chunks[o.c];
+        await this.req(this.store("readwrite").put(a, o.tr.ch + ":" + o.c));
         o.tr.chunks[o.c] = null; o.tr.onDisk[o.c] = true;
-        this.ram -= CHUNK * 8; this.disk += CHUNK * 8;
+        this.ram -= a.byteLength; this.disk += a.byteLength;
       }
     } catch (e) {
       stop("the disk space the browser allows (" + e.name + ")");
@@ -518,23 +546,42 @@ function onBinary(buf) {
     return;
   }
   if (kind !== 1) return;
-  const map = S.bitCh[s], tracks = S.tracks;
-  let prev = S.prev[s], t = 0;
+  // Packed edges (la_ws.c): the pins before, then a varint each of the
+  // time step in 4 ns << 5 | the pin that changed, or 31 and the pins.
+  const map = S.bitCh[s], tracks = S.tracks, u8 = new Uint8Array(buf);
+  let prev = dv.getUint32(16, true), t = rel(base), o = 20;
+  if (S.prev[s] === null) startState(s, prev);
   for (let i = 0; i < count; i++) {
-    const o = 16 + 8 * i, state = dv.getUint32(o + 4, true);
-    t = rel(base + dv.getUint32(o, true));
-    if (prev === null) { startState(s, state); prev = state; continue; }
-    let x = (prev ^ state) >>> 0;
+    // Up to three bytes in integers, which is nearly every edge; past that, in floats.
+    let byte = u8[o++], v = byte & 127;
+    if (byte & 128) {
+      byte = u8[o++]; v |= (byte & 127) << 7;
+      if (byte & 128) {
+        byte = u8[o++]; v |= (byte & 127) << 14;
+        if (byte & 128) {
+          let mul = 2097152;
+          do { byte = u8[o++]; v += (byte & 127) * mul; mul *= 128; } while (byte & 128);
+        }
+      }
+    }
+    const pin = v % 32;
+    t += (v - pin) / 8;
+    let x;
+    if (pin === 31) {
+      const state = u8[o] | u8[o + 1] << 8 | u8[o + 2] << 16;
+      o += 3; x = (prev ^ state) >>> 0; prev = state;
+    } else {
+      x = 1 << pin; prev = (prev ^ x) >>> 0;
+    }
     while (x) {
       const b = 31 - Math.clz32(x);
       x ^= 1 << b;
       const c = map[b];
       if (c >= 0) tracks[c].push(t);
     }
-    prev = state;
   }
   S.prev[s] = prev;
-  S.held += 8 * count;
+  S.held += buf.byteLength;
   if (count) S.now[s] = Math.max(S.now[s], t);
   S.dirty = true;
   if (Spill.on) {
@@ -1427,7 +1474,7 @@ function buildChanList() {
 async function cursorAt(tr, i, cur) {
   const c = (i / CHUNK) | 0;
   if (cur.c !== c) { cur.arr = await Spill.read(tr, c); cur.c = c; }
-  return cur.arr[i % CHUNK];
+  return tr.time(cur.arr, c, i % CHUNK);
 }
 
 async function upperAsync(tr, t) {
@@ -1436,9 +1483,7 @@ async function upperAsync(tr, t) {
   while (lo < hi) { const m = (lo + hi) >> 1; if (f[m] <= t) lo = m + 1; else hi = m; }
   if (lo === 0) return 0;
   const c = lo - 1, a = await Spill.read(tr, c), len = c === f.length - 1 ? tr.n - c * CHUNK : CHUNK;
-  let l = 0, h = len;
-  while (l < h) { const m = (l + h) >> 1; if (a[m] <= t) l = m + 1; else h = m; }
-  return c * CHUNK + l;
+  return c * CHUNK + tr.search(a, c, len, t);
 }
 
 // The selection, or the time in view, as a VCD file: every channel.
@@ -1504,7 +1549,9 @@ async function saveCapture() {
   for (const tr of S.tracks) {
     for (let c = 0; c < tr.chunks.length; c++) {
       const a = await Spill.read(tr, c), len = c === tr.chunks.length - 1 ? tr.n - c * CHUNK : CHUNK;
-      parts.push(a.slice(0, len));
+      const out = new Float64Array(len);
+      for (let k = 0; k < len; k++) out[k] = tr.time(a, c, k);
+      parts.push(out);
     }
   }
   download(new Blob(parts, { type: "application/octet-stream" }), "la-" + header.saved.replace(/[:.]/g, "-") + ".lacap");
@@ -1527,10 +1574,7 @@ async function openCapture(file) {
     for (let i = 0; i < h.n; i += CHUNK) {
       const k = Math.min(CHUNK, h.n - i);
       const part = new Float64Array(await file.slice(off + i * 8, off + (i + k) * 8).arrayBuffer());
-      const arr = new Float64Array(CHUNK);
-      arr.set(part);
-      tr.chunks.push(arr); tr.firsts.push(arr[0]); tr.onDisk.push(false); Spill.ram += CHUNK * 8;
-      tr.n += k;
+      for (let j = 0; j < k; j++) tr.push(part[j]);
       if (Spill.on && Spill.ram > S.limit) await Spill.spill();
     }
     off += h.n * 8;

@@ -25,6 +25,7 @@ static const struct {
 	  "  la capture <seconds> <file.vcd|-> [--trigger]  record all 19 channels to a VCD file\n"
 	  "  la trigger off | <ch> rise|fall|any | <ch>=0|1 ...  set the Tx_PRUs' trigger\n"
 	  "  la measure [seconds] [a:b ...]  each channel's periods and high times, and a to b timing\n"
+	  "  la rate [seconds]         each PRU's records a second, as copied and as read\n"
 	  "  la mark <value>           a mark in the analyzer's stream, through the fabric" },
 	{ "mcp", mcp_main, "mcp [port]                the logic analyzer's MCP server, on port 8065 (the mcp window)" },
 	{ "sched", sched_main, "sched [seconds|once]      ICSSG1's multicore scheduler, with --icssg1 scheduler" },

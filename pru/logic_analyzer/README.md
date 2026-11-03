@@ -2,7 +2,7 @@
 
 ICSSG1's six cores record every change on 19 header pins, each stamped with the count of IEP0, ICSSG1's nanosecond counter on its 250 MHz clock, and Linux reads the records out of DDR. Jumper wires bring it the demo's own signals: the four PWM generators, SPI7, and the square wave. `ai64 la` then shows what each pin is doing, and `ai64 la capture` writes a VCD file for PulseView or GTKWave.
 
-It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s, and it keeps up with 6 million. Each slice's Tx_PRU matches a trigger on the edges as they come, and the RTUs are fabric nodes, so any core in the demo can put a mark on the timeline.
+It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s, and it streams 15 million a second into a browser, as fast as a test signal makes one PRU record them. Each slice's Tx_PRU matches a trigger on the edges as they come, and the RTUs are fabric nodes, so any core in the demo can put a mark on the timeline.
 
 ## The channels
 
@@ -58,13 +58,13 @@ flowchart LR
 
 | Core | Job | Source |
 | --- | --- | --- |
-| PRU0, PRU1 | Read their pins, and at each change write an edge record: IEP0's count and the new state | `firmware/la_pru.c`, `firmware/la_sample.asm` |
-| RTU0, RTU1 | Copy their PRU's records to its ring in DDR, add a tick each millisecond, keep the stream's header up to date; pass the trigger to the Tx_PRU and its hits into the stream; fabric nodes 10 and 11, which put marks in the stream; RTU0 also starts IEP0 | `firmware/la_rtu.c` |
+| PRU0, PRU1 | Read their pins, and at each change write an edge record: IEP0's count, the new state, and its sequence number | `firmware/la_pru.c`, `firmware/la_sample.asm` |
+| RTU0, RTU1 | Copy their PRU's records to its ring in DDR, in bursts, add a tick each millisecond, keep the stream's header up to date; pass the trigger to the Tx_PRU and its hits into the stream; fabric nodes 10 and 11, which put marks in the stream; RTU0 also starts IEP0 | `firmware/la_rtu.c`, `firmware/la_copy.asm` |
 | Tx_PRU0, Tx_PRU1 | Read their PRU's records as they come, and match the trigger on that PRU's pins | `firmware/la_txpru.c` |
 
-**The PRU's loop** (`la_sample.asm`) takes two cycles, 8 ns, a pass: read R31 through the PRU's mask, and loop while it matches the last state. On a change it reads IEP0's count and stores the record, time then state, into its ring in ICSSG1's shared RAM, then the ring's write count. It touches nothing outside ICSSG1, and never waits for its RTU, so nothing else on the chip can slow it.
+**The PRU's loop** (`la_sample.asm`) takes two cycles, 8 ns, a pass: read R31 through the PRU's mask, and loop while it matches the last state. On a change it reads IEP0's count and stores the record, time, state, and sequence number, in one store into its ring in ICSSG1's shared RAM. That is all an edge costs it: 11 or 12 cycles from one record's time to the next when the pins keep changing. The sequence number, the bytes written before the record, is what tells a reader the record is new, so the PRU keeps no write count; two copies of the loop take turns, each with its own registers, so an edge needs no move between them either (`la_map.h` has the ring's format). It touches nothing outside ICSSG1, and never waits for its RTU, so nothing else on the chip can slow it.
 
-**The RTU** takes the slow, unpredictable work: DDR, and the GTC, the SoC's shared clock. Each millisecond it adds a tick, which pairs IEP0's count with the GTC and says every pin's state. An edge record holds only IEP0's low 32 bits; Linux finds the rest from the stream's last tick, which is never more than a millisecond away. If the RTU ever fell a whole ring behind its PRU, it would skip to where the PRU is and write a gap record, so a hole in the data is always marked.
+**The RTU** takes the slow, unpredictable work: DDR, and the GTC, the SoC's shared clock. It finds how many records are new with a binary search on their sequence numbers, and copies them four at a time (`la_copy.asm`): one 64-byte load from shared RAM, the four times and states packed into one 32-byte store to DDR. Each millisecond it adds a tick, which pairs IEP0's count with the GTC and says every pin's state. An edge record holds only IEP0's low 32 bits; Linux finds the rest from the stream's last tick, which is never more than a millisecond away. If the RTU ever fell a whole ring behind its PRU, it would skip to where the PRU is and write a gap record, so a hole in the data is always marked.
 
 **Linux** (`linux-app/la_stream.c`, for `ai64 la` in `la.c` and the web viewer's stream in `la_ws.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
 
@@ -72,7 +72,7 @@ flowchart LR
 
 ### Triggers
 
-`ai64 la trigger` sets one: an edge on a channel (`6 rise`, `fall`, or `any`), or the moment some channels come to a pattern (`3=0 4=1`: SPI7's CS low with its clock high, the first clock of a transfer). A trigger takes the channels of one PRU. Linux writes it into that stream's header; the RTU passes it on to its Tx_PRU through ICSSG1's shared RAM, and the Tx_PRU, reading the PRU's edge records as fast as they come, writes each hit into its hit ring. The RTU puts each hit in the stream as a trig record, with the time of the edge that met it. So the Tx_PRU never touches DDR either, and a hit is found within microseconds of the edge, with nothing from Linux in between.
+`ai64 la trigger` sets one: an edge on a channel (`6 rise`, `fall`, or `any`), or the moment some channels come to a pattern (`3=0 4=1`: SPI7's CS low with its clock high, the first clock of a transfer). A trigger takes the channels of one PRU. Linux writes it into that stream's header; the RTU passes it on to its Tx_PRU through their slice's data RAM, and the Tx_PRU, reading the PRU's edge records as fast as they come, writes each hit into its hit ring. The RTU puts each hit in the stream as a trig record, with the time of the edge that met it. So the Tx_PRU never touches DDR either, and a hit is found within microseconds of the edge, with nothing from Linux in between.
 
 `ai64 la capture <seconds> <file> --trigger` waits for the next hit and writes the capture around it, a tenth before and the rest after: the part before comes out of the ring, which already holds it. The `trig` signal in the VCD file changes at each hit. Triggered on SPI7's first clock, a 2 ms capture holds the `spi hello` transfer from its start, and the clock and data decode to `hello`.
 
@@ -93,15 +93,23 @@ Checked against the bench's Saleae Logic Pro 8 at 250 MS/s on P8.11, P9.12, and 
 | Slice 0's A at 20 kHz, 25% | high 12,472 to 12,532 ns | 12,476 to 12,524 ns |
 | The same edge on PRU0 and on PRU1 (ch13 against ch7) | −4 ns apart, half of them; 98% within ±8 ns | |
 
-**How close two edges can be.** Slice 1's hardware PWM puts A's fall and B's rise exactly its dead band apart, both on PRU1, so stepping the dead band down measures it (`fabric route g0rtu1 dead <ns>`). From 200 ns down to 64, the analyzer reads the gap right. Below 56 ns it reads 56, or both changes in one record when they fall between two reads of the pins: writing a record takes the PRU 14 cycles, 56 ns, and a change in that time waits for the next pass.
+**How close two edges can be.** Slice 1's hardware PWM puts A's fall and B's rise exactly its dead band apart, both on PRU1, so stepping the dead band down measures it (`fabric route g0rtu1 dead <ns>`). From 200 ns down to 52, the analyzer reads the gap right. Closer than that it reads 44 to 48 ns, or both changes in one record when they fall between two reads of the pins: writing a record takes the PRU 11 or 12 cycles, and a change in that time waits for the next pass. (It took 14 cycles, 56 ns, when the PRU stored a write count after each record.)
 
-**How fast.** With both ICSSG0 slices at their fastest, a 2 µs period with a 100 ns dead band, PRU1 sees 5 million edges a second and PRU0 1 million: no gap from either RTU, nothing missed by Linux, and every period of a 1 s capture there. The demo's generators go no faster, so the analyzer's own ceiling is higher still. Linux reads the rings with 64-byte loads: uncached, each load costs about 190 ns whatever its size, so 64 bytes at a time read 266 MB/s, about 33 million records a second, where a word at a time read 21 MB/s.
+**How fast.** The demo's PWM generators go no faster than a 2 µs period, 1 million edges a second a pin, but P9.25's is the SoC's EHRPWM4, which makes every edge in hardware, so it takes periods down to 16 ns: the analyzer's fast test signal, on ch12 (PRU1). `ai64 la rate` drains both streams and says how many records a second each RTU copied, how many a reader took and missed, and how close two records came; `tests/run.sh stress` steps EHRPWM4 from 2 µs down to 40 ns with it, and puts the steps back after. Each stage, measured that way:
+
+| Stage | How fast, measured |
+| --- | --- |
+| PRU | A record every 44 or 48 ns while its pins keep changing: so at most about 21 million a second, a PRU. A square wave faster than that is not recorded faster: the PRU sees one level a pass, and on EHRPWM4 it caught up to 15 million changes a second. |
+| RTU, to DDR | Every record PRU1 wrote, 15 million a second, with no gap. Copying a word at a time, as C wrote it, the RTU topped out at 9.2 million and fell behind. |
+| Linux's reader | 15 million a second with none missed (`ai64 la rate`). It reads the ring with 64-byte loads: uncached, each costs about 190 ns whatever its size, so 266 MB/s, about 33 million records a second; a word at a time read 21 MB/s. The `la` window, which does more with each edge, keeps up to about 10 million. |
+| The web stream | About 2 bytes an edge: 15 million edges a second took 31 MB/s, a quarter of gigabit Ethernet ([The web viewer](#the-web-viewer)). |
+| The browser | Firefox took 14 to 15 million changes a second, and at that rate now and then fell behind for a moment: the board's reader for it then skips a ring, and the page marks the gap. |
 
 The limits, then:
 
-- **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; one that comes while the PRU is busy with another edge on its pins can be up to 56 ns late.
-- **Short pulses**: a pulse shorter than 56 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record.
-- **Rate**: 6 million edges a second, both PRUs together, with nothing lost; higher not yet measured.
+- **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; one that comes while the PRU is busy with another edge on its pins can be up to 48 ns late.
+- **Short pulses**: a pulse shorter than 48 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record.
+- **Rate**: 15 million edges a second on one PRU, end to end into a browser, with nothing lost; each PRU can write about 21 million.
 
 ## Using it
 
@@ -147,6 +155,7 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 | `sudo ai64 la [seconds\|once\|lines]` | the `la` window, every second; once; or a line every 10 s for the merged console |
 | `sudo ai64 la capture <seconds> <file.vcd\|-> [--trigger]` | records all 19 channels for that long and writes a VCD file, in ns from the start; with `--trigger`, around the next trigger hit |
 | `sudo ai64 la measure [seconds] [a:b ...]` | each channel's edges, frequency, period and high time (min, median, max), and duty; and for each pair, the time from a's changes to b's nearest, by default the demo's A/B pairs and ch7 against ch13 |
+| `sudo ai64 la rate [seconds]` | each PRU's records a second as its RTU copied them and as a reader took them, any missed, and the closest two records came ([How fast](#what-it-measures)) |
 | `sudo ai64 la trigger off \| <ch> rise\|fall\|any \| <ch>=0\|1 ...` | sets the Tx_PRUs' trigger |
 | `sudo ai64 la mark <value>` | puts a mark in the stream, through the fabric to RTU0 |
 | `sudo ai64 la quiet` | stops IEP0 and every task, before ICSSG1's cores stop; `ai64-demo` runs it |
@@ -155,7 +164,7 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 
 ## The web viewer
 
-While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser, with nothing to install: the board streams the edges as they come, and the browser keeps them, as a Saleae's software does, so a capture runs until it is stopped or reaches the memory limit at the top of the page (1 GB to start: about 130 million changes), or, with **Spill to disk**, the disk space the browser allows.
+While the demo runs, `http://<board>:8064/la` is a logic analyzer in the browser, with nothing to install: the board streams the edges as they come, and the browser keeps them, as a Saleae's software does, so a capture runs until it is stopped or reaches the memory limit at the top of the page (1 GB to start: about 260 million changes), or, with **Spill to disk**, the disk space the browser allows.
 
 ![The web viewer on the board's own signals: a pulse on ch9 measured by pointing at it, its period bracketed, and markers A and B one period of ch7 apart](../../media/la-viewer.png)
 
@@ -185,9 +194,9 @@ The waveforms fill the window, a row per channel in its own color, with the time
 
 ![The SPI analyzer on SPI7's hello: CS falling at the trigger hit, then the five bytes, and the Analyzers tab's list](../../media/la-decode.png)
 
-The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`. Each channel's changes are kept as times in blocks of growing arrays, 8 bytes each, and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions. The waveforms draw on one canvas, when the data or the view changes; the pointer, the markers, and the selection on a second canvas over it, so pointing stays smooth while the capture runs.
+The page is `linux-app/web/la.html`, built into `ai64` like the demo's page. It opens the WebSocket `/la/stream`, and `ai64 web` gives each viewer a thread of its own (`linux-app/la_ws.c`), which reads the rings with a reader of its own and sends the edges in binary messages, the format at the top of `la_ws.c`: each edge a varint of its time since the last edge, in IEP0's 4 ns steps, and the one pin that changed, about 2 bytes where a time and a state took 8. Each channel's changes are kept in blocks of 65,536, each time 4 bytes, an offset in ns from the block's first (a block that would span more than 4.29 s, which only a slow channel's does, keeps 8-byte times instead), and drawing does one binary search per pixel column, so it takes the same time for a hundred edges as for millions. The waveforms draw on one canvas, when the data or the view changes; the pointer, the markers, and the selection on a second canvas over it, so pointing stays smooth while the capture runs.
 
-Measured with Firefox on the PC, over the board's gigabit Ethernet: with both ICSSG0 slices at their fastest, the viewer took 6.0 million edges a second, 46 MB/s, for as long as it ran, with nothing lost; it drew 4.2 million changes in 6 ms. Pointing at the demo's signals reads them as the generators make them: S1_A high 33.328 µs of a 66.660 µs period, 15.0015 kHz, at 50% duty; SPI7's clock low 496 ns of a 1.004 µs period. The SPI analyzer reads `hello` from a `spi hello` transfer; with the memory limit at 16 MB and Spill to disk on, 36 s of the demo's signals ran with 15.5 MB in RAM and 46.5 MB on disk, Fit read the blocks back, and the 68 MB saved file opened again with every one of its 8.57 million changes. The UART and I²C analyzers, which no signal of the demo's exercises, decode synthetic captures: "Hi!" at 115200 baud, and an I²C write of 0x50 W, 0xa5. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s and the MCP server's.
+Measured with Firefox on the PC, over the board's gigabit Ethernet: with EHRPWM4 as the fast test signal ([How fast](#what-it-measures)), the viewer took 10 million edges a second at 20 MB/s with nothing lost, and up to 15 million at 31 MB/s, 2.0 bytes an edge, where now and then it fell behind for a moment and the page marked a gap; it drew 4.2 million changes in 6 ms. Pointing at the demo's signals reads them as the generators make them: S1_A high 33.328 µs of a 66.660 µs period, 15.0015 kHz, at 50% duty; SPI7's clock low 496 ns of a 1.004 µs period. The SPI analyzer reads `hello` from a `spi hello` transfer; with the memory limit at 16 MB and Spill to disk on, 36 s of the demo's signals ran with 15.8 MB in RAM and 15.5 MB on disk (with 8-byte times they had taken 62 MB), Fit read the blocks back, and the 68 MB saved file opened again with every one of its 8.54 million changes. The UART and I²C analyzers, which no signal of the demo's exercises, decode synthetic captures: "Hi!" at 115200 baud, and an I²C write of 0x50 W, 0xa5. Like the rest of the web page it only reads: it cannot set the trigger or send a mark, which are `ai64 la`'s and the MCP server's.
 
 ## MCP: the analyzer for a model
 

@@ -138,8 +138,8 @@ static void step_work(struct k_work *work)
 
 static uint32_t clamp_period(uint32_t period_ns)
 {
-	if (period_ns < AI64_PWM_PERIOD_MIN_NS) {
-		return AI64_PWM_PERIOD_MIN_NS;
+	if (period_ns < AI64_PWM_HW_PERIOD_MIN_NS) {
+		return AI64_PWM_HW_PERIOD_MIN_NS;
 	}
 	return period_ns > AI64_PWM_PERIOD_MAX_NS ? AI64_PWM_PERIOD_MAX_NS : period_ns;
 }

@@ -6,6 +6,7 @@ These check a board running the demo, from the PC, over SSH:
 AI64_SSH=USER@BOARD tests/run.sh check
 AI64_SSH=USER@BOARD tests/run.sh soak [runs]
 AI64_SSH=USER@BOARD tests/run.sh routes
+AI64_SSH=USER@BOARD tests/run.sh stress
 ```
 
 `run.sh` copies `board/` to `/tmp/ai64-tests` on the board and runs the test there as root, with `sudo` if `USER` is not root, so it may ask for the board's password. The board needs the demo installed: `install-beagle.sh` on Debian, or the Yocto image. Set `AI64_SSH_OPTS` to pass options to `ssh` and `scp`, for example `-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no` for a card that was just written and has new host keys.
@@ -17,6 +18,7 @@ Each check prints a line, `ok` or `FAIL`, and the test ends with `PASS` or how m
 | `check` | checks the demo as it runs now; start it first with `ai64-demo --tmux` |
 | `soak [runs]` | restarts the demo `runs` times (5 unless you say), every core each time, and checks each run; then checks the kernel log for stops that timed out, oopses, and BUGs |
 | `routes` | sends fabric routes with actions through cores of every kind, and checks that `ai64 pwm` shows each PWM generator running what was asked; then puts the steps back and starts the pipeline again |
+| `stress` | the logic analyzer against a fast test signal: R5F0_1's EHRPWM4 on P9.25, jumpered to ch12, at periods from 2 µs down to 40 ns; at each, `ai64 la rate` checks that RTU1 copied every record PRU1 wrote (at least 10 million a second at 200 ns) and a reader took every one, and at the fastest that no two records came closer than the PRU's loop allows; then puts the steps back and starts the pipeline again |
 
 What `check`, and each run of `soak`, looks at:
 

@@ -12,7 +12,14 @@
  * then binary messages, little-endian, each a 16-byte header
  *   u8 kind, u8 stream (PRU), u16 0, u32 count, f64 base
  * where base is IEP0's count in ns, and a body by kind:
- *   1 edges   count x { u32 t - base, u32 the PRU's pins after the edge }
+ *   1 edges   u32 the PRU's pins before the first edge, then count edges,
+ *             the first at base, each a LEB128 varint (7 bits a byte, low
+ *             first, the top bit set on all but the last) of
+ *               (the time since the edge before, in IEP0's 4 ns steps) << 5 | pin
+ *             where pin is the one GPI bit that changed; or 31 when more
+ *             than one did, followed by the pins after the edge, 3 bytes.
+ *             An edge a few hundred ns after the last takes 2 bytes, one a
+ *             few hundred us after 3: a quarter of a time and state each.
  *   2 events  count x { u32 t - base, u8 1 for a trigger hit or 0 for a
  *             mark, u8 the mark's fabric node, u16 0, u32 its value, or
  *             the hit's pins }
@@ -174,7 +181,7 @@ static int ws_send(int fd, int opcode, const void *buf, size_t len)
 
 /* ---- the viewer's thread ---- */
 
-#define BATCH 8192u /* edges a message, at most */
+#define BATCH 65536u /* bytes of edges a message, at most */
 
 struct head {
 	uint8_t kind;
@@ -190,8 +197,13 @@ struct viewer {
 	uint64_t sent;
 	struct {
 		struct head h;
-		uint32_t rec[BATCH][2];
+		uint32_t state;
+		uint8_t b[BATCH];
 	} out[2];
+	size_t len[2];      /* bytes in out[s].b */
+	uint64_t last_t[2]; /* the last edge's time and pins, each stream */
+	uint32_t last_state[2];
+	int have[2];
 };
 
 static void send_msg(struct viewer *v, const void *buf, size_t len)
@@ -205,27 +217,55 @@ static void send_msg(struct viewer *v, const void *buf, size_t len)
 static void flush(struct viewer *v, int s)
 {
 	if (v->out[s].h.count) {
-		send_msg(v, &v->out[s], sizeof(struct head) + 8u * v->out[s].h.count);
+		send_msg(v, &v->out[s], sizeof(struct head) + 4u + v->len[s]);
 		v->out[s].h.count = 0;
+		v->len[s] = 0;
 	}
 }
 
 static void ws_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 {
 	struct viewer *v = ctx;
-	struct head *h = &v->out[st->s].h;
+	int s = st->s;
+	struct head *h = &v->out[s].h;
+	uint8_t *b = v->out[s].b;
+	uint32_t x, pin;
+	uint64_t code;
+	size_t n;
 
-	/* A batch's times are 32-bit offsets from its base: about 4 s. */
-	if (h->count == BATCH || (h->count && t - (uint64_t)h->base > 0xf0000000u)) {
-		flush(v, st->s);
+	/* The longest edge: a 64-bit time step's varint, and the pins. */
+	if (v->len[s] > BATCH - 16u) {
+		flush(v, s);
+	}
+	if (!v->have[s]) {
+		v->last_t[s] = t;
+		v->last_state[s] = st->first_state;
+		v->have[s] = 1;
 	}
 	if (!h->count) {
 		h->kind = 1;
-		h->stream = (uint8_t)st->s;
+		h->stream = (uint8_t)s;
 		h->base = (double)t;
+		v->out[s].state = v->last_state[s];
+		v->last_t[s] = t;
 	}
-	v->out[st->s].rec[h->count][0] = (uint32_t)(t - (uint64_t)h->base);
-	v->out[st->s].rec[h->count][1] = state;
+	x = state ^ v->last_state[s];
+	pin = x && !(x & (x - 1u)) ? (uint32_t)__builtin_ctz(x) : 31u;
+	code = (t > v->last_t[s] ? (t - v->last_t[s]) >> 2 : 0) << 5 | pin;
+	n = v->len[s];
+	while (code >= 0x80u) {
+		b[n++] = (uint8_t)(code | 0x80u);
+		code >>= 7;
+	}
+	b[n++] = (uint8_t)code;
+	if (pin >= 31u) {
+		b[n++] = (uint8_t)state;
+		b[n++] = (uint8_t)(state >> 8);
+		b[n++] = (uint8_t)(state >> 16);
+	}
+	v->len[s] = n;
+	v->last_t[s] = t;
+	v->last_state[s] = state;
 	h->count++;
 }
 

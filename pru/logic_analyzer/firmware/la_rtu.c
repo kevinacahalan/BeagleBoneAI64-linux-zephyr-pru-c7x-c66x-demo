@@ -2,9 +2,10 @@
 /*
  * ICSSG1 RTU0 and RTU1: each slice's mover. The RTU copies its PRU's edge
  * records from the ring in shared RAM (la_map.h) to the PRU's ring in DDR,
- * adds a tick every millisecond, and keeps the stream's header up to date
- * (ai64_la.h). The PRU never waits for it: if the RTU falls a ring behind,
- * it skips to where the PRU is and writes a gap record.
+ * in bursts (la_copy.asm), adds a tick every millisecond, and keeps the
+ * stream's header up to date (ai64_la.h). The PRU never waits for it: if
+ * the RTU falls a ring behind, it skips to where the PRU is and writes a
+ * gap record.
  *
  * RTU0 also starts IEP0, the analyzer's clock, before either PRU runs:
  * nanoseconds on the 250 MHz core clock, with no compare resetting it.
@@ -36,14 +37,15 @@
 #include "ai64_rsc_trace.h"
 
 #define IEP       ICSSG_IEP0
-#define SRING     ((volatile uint32_t *)LA_SRING(AI64_SLICE))
-#define SWR       (*(volatile uint32_t *)LA_SCTL(AI64_SLICE))
+#define SREC(rd)  LA_SREC(AI64_SLICE, rd)
 #define RING      ((volatile uint32_t *)AI64_LA_RING_ADDR(AI64_SLICE))
 #define HDR       (&((volatile struct ai64_la *)AI64_LA_ADDR)->s[AI64_SLICE])
 #define GTC_LO()  (*(volatile uint32_t *)(AI64_GTC_ADDR + 8u))
 #define GTC_HI()  (*(volatile uint32_t *)(AI64_GTC_ADDR + 12u))
 #define IEP_LO()  ICSSG_REG(IEP_COUNT_LO(IEP))
 #define IEP_HI()  ICSSG_REG(IEP_COUNT_HI(IEP))
+
+extern void la_pack(uint32_t dst, uint32_t src, uint32_t n);
 
 /* Bytes, free-running: rd in the shared ring, wr in the DDR ring. */
 static uint32_t rd, wr;
@@ -118,7 +120,7 @@ static void publish(uint32_t state)
 static void pass_trigger(void)
 {
 	volatile struct ai64_la_stream *h = HDR;
-	volatile struct la_trig *cfg = LA_TRIG_REC(AI64_SLICE);
+	volatile struct la_trig *cfg = LA_TRIG_REC;
 	uint32_t seq = h->trig_seq;
 
 	if (seq == trig_seq) {
@@ -134,7 +136,7 @@ static void pass_trigger(void)
 /* The Tx_PRU's hits since the last call, into the stream. */
 static void take_hits(void)
 {
-	volatile struct la_hits *hits = LA_HITS_REC(AI64_SLICE);
+	volatile struct la_hits *hits = LA_HITS_REC;
 	uint32_t hw = hits->wr;
 
 	if (hw == hits_rd) {
@@ -151,6 +153,34 @@ static void take_hits(void)
 		hits_rd++;
 	}
 	HDR->wr = wr;
+}
+
+/*
+ * How many records from rd on the PRU has written, up to max (at most
+ * 512): it writes them in order, so a binary search on their seqs.
+ */
+static uint32_t ready(uint32_t max)
+{
+	uint32_t n = 1, step;
+
+	for (step = 256; step; step >>= 1) {
+		uint32_t at = rd + (n + step - 1u) * LA_SREC_SIZE;
+
+		if (n + step <= max && SREC(at)->seq == at) {
+			n += step;
+		}
+	}
+	return n;
+}
+
+/* The ring before the PRU starts: each slot as if written the lap before the first. */
+static void ring_clear(void)
+{
+	uint32_t at;
+
+	for (at = 0; at < LA_SRING_SIZE; at += LA_SREC_SIZE) {
+		SREC(at)->seq = at - LA_SRING_SIZE;
+	}
 }
 
 /* A tick: IEP0's and the GTC's counts together, and the state now. */
@@ -176,13 +206,15 @@ void main(void)
 	volatile struct ai64_la_stream *h = HDR;
 	uint32_t state = 0, last_tick, status_at, fab_at;
 
+	/* The PRU waits for this word, the last thing set here. */
+	LA_READY_WORD = 0;
 	tm_clear(AI64_SLICE ? ICSSG_TM_RTU1 : ICSSG_TM_RTU0);
 	trace_init();
 	if (AI64_SLICE == 0) {
 		iep_start();
 	}
-	SWR = 0;
 	rd = 0;
+	ring_clear();
 	wr = 0;
 	h->magic = 0;
 	h->wr = 0;
@@ -202,9 +234,10 @@ void main(void)
 	h->trig_value = 0;
 	trig_seq = h->trig_seq - 1u;
 	hits_rd = 0;
-	LA_HITS_REC(AI64_SLICE)->wr = 0;
+	LA_HITS_REC->wr = 0;
 	pass_trigger();
 	h->magic = AI64_LA_MAGIC;
+	LA_READY_WORD = LA_READY_MAGIC;
 	trace_puts(AI64_SLICE ? "ICSSG1 RTU1 up: PRU1's edges to DDR\n" :
 				"ICSSG1 RTU0 up: IEP0 counting ns; PRU0's edges to DDR\n");
 	fab_init(FAB_NODE);
@@ -216,32 +249,37 @@ void main(void)
 	fab_at = last_tick;
 
 	for (;;) {
-		uint32_t n = SWR - rd;
+		uint32_t seq = SREC(rd)->seq;
 
-		if (n > LA_SRING_SIZE - 64u) {
-			/* The PRU is about to write over what is left: skip to it. */
-			uint32_t skip = n / AI64_LA_REC_SIZE;
+		if ((int32_t)(seq - rd) > 0) {
+			/* The PRU has gone a lap past: skip to the record it left here. */
+			uint32_t skip = (seq - rd) / LA_SREC_SIZE;
 
-			rd += n;
+			rd = seq;
 			put(IEP_LO(), (uint32_t)AI64_LA_GAP << 24 | (skip & 0xffffffu));
 			h->gaps++;
 			h->lost += skip;
 			h->wr = wr;
-		} else if (n) {
-			volatile uint32_t *s;
-			uint32_t i;
+		} else if (seq == rd) {
+			/*
+			 * A burst, up to where either ring wraps; at most 512
+			 * records a pass, so the ticks keep up.
+			 */
+			uint32_t so = rd & (LA_SRING_SIZE - 1u), dof = wr & (AI64_LA_RING_SIZE - 1u);
+			uint32_t max = 512u, n;
 
-			/* At most 512 records a pass, so the ticks keep up. */
-			if (n > 512u * AI64_LA_REC_SIZE) {
-				n = 512u * AI64_LA_REC_SIZE;
+			if (max > (LA_SRING_SIZE - so) / LA_SREC_SIZE) {
+				max = (LA_SRING_SIZE - so) / LA_SREC_SIZE;
 			}
-			for (i = 0; i < n; i += AI64_LA_REC_SIZE) {
-				s = SRING + ((rd + i) & (LA_SRING_SIZE - 1u)) / 4u;
-				state = s[1];
-				put(s[0], state);
+			if (max > (AI64_LA_RING_SIZE - dof) / AI64_LA_REC_SIZE) {
+				max = (AI64_LA_RING_SIZE - dof) / AI64_LA_REC_SIZE;
 			}
-			rd += n;
-			h->edges += n / AI64_LA_REC_SIZE;
+			n = ready(max);
+			la_pack(AI64_LA_RING_ADDR(AI64_SLICE) + dof, LA_SRING(AI64_SLICE) + so, n);
+			rd += n * LA_SREC_SIZE;
+			wr += n * AI64_LA_REC_SIZE;
+			state = SREC(rd - LA_SREC_SIZE)->state;
+			h->edges += n;
 			h->state = state;
 			h->wr = wr;
 		}
@@ -257,11 +295,12 @@ void main(void)
 		take_hits();
 		/*
 		 * The fabric costs a few us of uncached reads a pass; the ring
-		 * holds 400 us of edges at 5 million a second. So the records
+		 * holds 80 us of edges at 25 million a second. So the records
 		 * first: the fabric when the ring is nearly drained, or every
 		 * FAB_EVERY at the latest.
 		 */
-		if (SWR - rd < 64u * AI64_LA_REC_SIZE || FAB_AFTER(GTC_LO(), fab_at)) {
+		if (SREC(rd + 64u * LA_SREC_SIZE)->seq != rd + 64u * LA_SREC_SIZE ||
+		    FAB_AFTER(GTC_LO(), fab_at)) {
 			fab_poll();
 			fab_at = GTC_LO() + FAB_EVERY;
 		}

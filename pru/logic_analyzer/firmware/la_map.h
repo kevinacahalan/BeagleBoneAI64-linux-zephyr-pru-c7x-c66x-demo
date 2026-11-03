@@ -8,23 +8,29 @@
  *
  *   0x0000 - 0x07ff  PRU     2 KiB  stack, data, trace
  *   0x0800 - 0x0bff  Tx_PRU  1 KiB
- *   0x0c00 - 0x1fff  RTU     5 KiB
+ *   0x0c00 - 0x1bff  RTU     4 KiB
+ *   0x1c00           the slice's RTU, Tx_PRU, and PRU share: the trigger
+ *                    as the RTU passes it on, then at 0x1c40 the Tx_PRU's
+ *                    trigger hits, a write count and a ring of 64; at
+ *                    0x1ff0 the RTU's word that the ring is ready
  *
- * Shared RAM, local 0x10000, 64 KiB:
+ * Shared RAM, local 0x10000, 64 KiB: each PRU's ring of edge records,
+ * 32 KiB, 2048 records, PRU0's at 0x10000 and PRU1's at 0x18000.
  *
- *   0x10000  PRU0's ring  16 KiB, 2048 records
- *   0x14000  PRU1's ring  16 KiB
- *   0x18000  PRU0's write count, then PRU1's at 0x18040
- *   0x18080  slice 0's trigger, as the RTU passes it on; slice 1's at 0x180c0
- *   0x18100  slice 0's trigger hits: a write count, then a ring of 64; slice
- *            1's at 0x18400
+ * A record in a ring (struct la_srec) is the edge's time and state, as in
+ * DDR (ai64_la.h), and its seq: the bytes the PRU had written before it,
+ * free-running, a multiple of 16. The PRU writes the three words in one
+ * store and keeps no count, and so does nothing else for an edge: a reader
+ * at rd (bytes, free-running) has a new record when the one at rd's slot
+ * has seq == rd; one less is the last lap's, not yet written over; one
+ * more, the PRU has gone a lap past it. Before its PRU starts, the RTU
+ * gives each slot the seq of the lap before the first.
  *
- * A ring's write count is the bytes its PRU has written since it started,
- * free-running. The PRU writes the record first and the count after it, and
- * never looks at its RTU: an RTU more than a ring behind finds the count
- * past it, and skips to it (a gap record, ai64_la.h). The Tx_PRU reads the
- * same ring, as fast as the records come, to match the trigger; it writes
- * each hit, time and state, into its hit ring for the RTU.
+ * Both the RTU and the Tx_PRU read the ring as fast as the records come:
+ * the RTU copies them into the PRU's ring in DDR, and an RTU more than a
+ * ring behind skips to where the PRU is and writes a gap record
+ * (ai64_la.h); the Tx_PRU matches the trigger, and writes each hit, time
+ * and state, into its hit ring for the RTU.
  *
  * ICSSG1's task managers and IEP0 keep their setup when its cores stop: the
  * multicore scheduler (extra-demos/) leaves IEP0 firing a compare every
@@ -39,18 +45,20 @@
 #define LA_TXPRU_DRAM      0x00000800
 #define LA_TXPRU_DRAM_SIZE 0x00000400
 #define LA_RTU_DRAM        0x00000c00
-#define LA_RTU_DRAM_SIZE   0x00001400
+#define LA_RTU_DRAM_SIZE   0x00001000
 
 /* Instruction RAM: 12 KiB on a PRU, 8 KiB on an RTU, 6 KiB on a Tx_PRU. */
 #define LA_PRU_IRAM_SIZE   0x00003000
 #define LA_RTU_IRAM_SIZE   0x00002000
 #define LA_TXPRU_IRAM_SIZE 0x00001800
 
-#define LA_SRING(s)        (0x00010000 + (s) * 0x4000)
-#define LA_SRING_SIZE      0x00004000
-#define LA_SCTL(s)         (0x00018000 + (s) * 0x40)
-#define LA_TRIG(s)         (0x00018080 + (s) * 0x40)
-#define LA_HITS(s)         (0x00018100 + (s) * 0x300)
+#define LA_SRING(s)        (0x00010000 + (s) * 0x8000)
+#define LA_SRING_SIZE      0x00008000
+#define LA_SREC_SIZE       16
+#define LA_TRIG            0x00001c00
+#define LA_HITS            0x00001c40
 #define LA_HIT_RING        64
+#define LA_READY           0x00001ff0
+#define LA_READY_MAGIC     0x52454459
 
 #endif

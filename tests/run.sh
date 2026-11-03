@@ -4,7 +4,7 @@
 #
 #   AI64_SSH=USER@BOARD tests/run.sh <test> [args]
 #
-# test is check, soak [runs], or routes (tests/board/<test>.sh). This copies
+# test is check, soak [runs], routes, or stress (tests/board/<test>.sh). This copies
 # tests/board/ to the board and runs the test there as root, with sudo if
 # USER is not root, so it may ask for the board's sudo password. The board
 # needs the demo installed (install-beagle.sh, or the Yocto image).
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 if [[ -z ${AI64_SSH:-} || $# -lt 1 ]]; then
-	echo "usage: AI64_SSH=USER@BOARD $0 check | soak [runs] | routes" >&2
+	echo "usage: AI64_SSH=USER@BOARD $0 check | soak [runs] | routes | stress" >&2
 	exit 2
 fi
 test=$1

@@ -23,6 +23,14 @@
  *   (the demo's A/B pairs and the two PRUs' copy of one signal if none is
  *   given), the time from each change of a to b's nearest one.
  *
+ * ai64 la rate [seconds]
+ *   How fast the analyzer goes, end to end: each PRU's records a second as
+ *   its RTU copies them to DDR, and as a reader here takes them out and
+ *   does nothing else with them, with any it missed; and the closest two
+ *   records came, which is the PRU's time to write one when its pins keep
+ *   changing. Run against a fast test signal, it says which stage keeps up
+ *   (pru/logic_analyzer/README.md, tests/board/stress.sh).
+ *
  * ai64 la mark <value>
  *   Puts a mark with that 16-bit value in the analyzer's stream, through a
  *   fabric route to ICSSG1 RTU0 (ai64 fabric route g1rtu0 mark <value>);
@@ -587,6 +595,73 @@ usage:
 }
 
 /* A mark in the analyzer's stream: a fabric route from Linux to ICSSG1 RTU0. */
+/* Each stream's last edge, and the closest two edges came. */
+struct closest {
+	uint64_t last[2];
+	uint64_t min[2];
+};
+
+static void count_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
+{
+	struct closest *c = ctx;
+
+	(void)state;
+	if (c) {
+		if (c->last[st->s] && t - c->last[st->s] < c->min[st->s]) {
+			c->min[st->s] = t - c->last[st->s];
+		}
+		c->last[st->s] = t;
+	}
+}
+
+static int rate_main(int argc, char **argv)
+{
+	double secs = argc > 3 ? atof(argv[3]) : 1.0, t0, t1;
+	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
+	struct stream st[2];
+	uint32_t copied0[2];
+	uint64_t read0[2], missed0[2];
+	int s;
+
+	if (argc > 4 || secs <= 0) {
+		fprintf(stderr, "usage: %s la rate [seconds]\n", argv[0]);
+		return 2;
+	}
+	if (la_map(1)) {
+		return 1;
+	}
+	for (s = 0; s < 2; s++) {
+		if (stream_init(&st[s], s)) {
+			return 1;
+		}
+	}
+	if (wait_ticks(st, count_edge, NULL)) {
+		return 1;
+	}
+	t0 = now_us();
+	for (s = 0; s < 2; s++) {
+		copied0[s] = st[s].h->edges;
+		read0[s] = st[s].edges;
+		missed0[s] = st[s].missed;
+	}
+	do {
+		for (s = 0; s < 2; s++) {
+			stream_poll(&st[s], count_edge, &c);
+		}
+	} while (now_us() < t0 + secs * 1e6);
+	t1 = now_us();
+	for (s = 0; s < 2; s++) {
+		printf("PRU%d: RTU%d copied %.0f records/s, the reader read %.0f/s and missed %.0f/s; "
+		       "RTU gaps %u (%u records) since it started; closest records %lld ns apart\n",
+		       s, s, (uint32_t)(st[s].h->edges - copied0[s]) * 1e6 / (t1 - t0),
+		       (st[s].edges - read0[s]) * 1e6 / (t1 - t0),
+		       (st[s].missed - missed0[s]) * 1e6 / (t1 - t0), st[s].h->gaps, st[s].h->lost,
+		       c.min[s] == UINT64_MAX ? -1LL : (long long)c.min[s]);
+		stream_free(&st[s]);
+	}
+	return 0;
+}
+
 static int mark_main(int argc, char **argv)
 {
 	char *av[] = { argv[0], "fabric", "route", "g1rtu0", "mark", argv[3], NULL };
@@ -611,6 +686,9 @@ int la_main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "mark")) {
 		return mark_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "rate")) {
+		return rate_main(argc, argv);
 	}
 	if (argc > 2 && !strcmp(argv[2], "measure")) {
 		return measure_main(argc, argv);

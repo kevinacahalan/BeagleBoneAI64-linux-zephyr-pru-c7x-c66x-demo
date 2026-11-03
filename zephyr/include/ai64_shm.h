@@ -53,6 +53,12 @@ struct ai64_bulk {
  * clamp what they are asked for and report what they run.
  */
 #define AI64_PWM_PERIOD_MIN_NS 2000u
+/*
+ * The SoC's EHRPWM (P9.25) makes every edge in hardware, from its own
+ * counter, so it can go far faster: down to a few of its clock's cycles.
+ * That makes it the logic analyzer's fast test signal (pru/logic_analyzer/).
+ */
+#define AI64_PWM_HW_PERIOD_MIN_NS 16u
 #define AI64_PWM_PERIOD_MAX_NS 1000000000u
 #define AI64_PWM_EDGE_MIN_NS   400u
 #define AI64_PWM_DEAD_MIN_NS   8u
