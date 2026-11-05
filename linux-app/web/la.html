@@ -100,6 +100,8 @@ button, select {
   padding: 4px 10px; cursor: pointer; white-space: nowrap;
 }
 button:hover, select:hover { border-color: var(--ink-3); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { border-color: var(--border); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; min-width: 84px; }
 button.primary.stopped { background: var(--good); border-color: var(--good); }
 button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -506,7 +508,7 @@ const S = {
   chan: { names: {}, colors: {}, hidden: [] }, rows: [],
   // The analyzer's mode as the board has it, the channels it records, and
   // the Capture section's choice, not yet applied.
-  modeInfo: null, recorded: null, cap: null, applying: false,
+  modeInfo: null, recorded: null, cap: null, applying: null,
   dirty: true, overlayDirty: true,
 };
 
@@ -624,7 +626,7 @@ function onText(text) {
   const m = JSON.parse(text);
   if (m.type === "meta") setMeta(m);
   else if (m.type === "mode") setModeInfo(m);
-  else if (m.type === "mode_error") { S.applying = false; banner("The mode: " + m.error); drawCapture(); }
+  else if (m.type === "mode_error") { doneApplying(); banner("The mode: " + m.error); drawCapture(); }
   else if (m.type === "stats") {
     const now = performance.now();
     if (S.lastStats) {
@@ -642,7 +644,10 @@ function start() {
   ws.binaryType = "arraybuffer";
   S.ws = ws; S.running = true; S.lastStats = null;
   setState("connecting", "");
-  ws.onopen = () => { setState("capturing", "good"); $("banner").style.display = "none"; };
+  ws.onopen = () => {
+    setState("capturing", "good"); $("banner").style.display = "none";
+    if (S.applying && !S.applying.sent) sendMode();
+  };
   ws.onmessage = e => {
     S.rx += typeof e.data === "string" ? e.data.length : e.data.byteLength;
     if (typeof e.data === "string") onText(e.data); else onBinary(e.data);
@@ -1524,11 +1529,17 @@ function setModeInfo(m) {
   const was = S.modeInfo;
   S.modeInfo = m;
   S.recorded = new Set(m.channels);
-  S.applying = false;
-  // A change from anywhere resets the section to what runs now.
-  if (!S.cap || !was || JSON.stringify(was) !== JSON.stringify(m)) {
-    const mo = modeOf(m);
-    S.cap = { mode: mo.raw >= 0 ? "raw" : "edge", pru: mo.raw >= 0 ? mo.raw : 1, sel: new Set(m.channels) };
+  // Applying, the board's mode before the one asked for changes nothing;
+  // the one asked for ends it. A change from anywhere else resets the
+  // section to what runs now.
+  const want = S.applying;
+  if (want && (modeOf(m).raw >= 0) === (want.mode === "raw") && m.channels.join(",") === want.channels.join(",")) doneApplying();
+  if (!S.applying && (!S.cap || !was || JSON.stringify(was) !== JSON.stringify(m))) {
+    // Each mode keeps its own choice of channels: the ones running, or all.
+    const mo = modeOf(m), mode = mo.raw >= 0 ? "raw" : "edge", all = S.meta.channels.map(c => c.ch);
+    const sels = { edge: new Set(all), raw: new Set(all) };
+    sels[mode] = new Set(m.channels);
+    S.cap = { mode, pru: mo.raw >= 0 ? mo.raw : 1, sels, sel: sels[mode] };
   }
   if (was && JSON.stringify(was.channels) !== JSON.stringify(m.channels)) buildChanList();
   drawCapture();
@@ -1591,18 +1602,40 @@ function drawCapture() {
   const st = $("modestate");
   if (!S.modeInfo) st.textContent = "connecting";
   else if (!chs.length) st.innerHTML = `<span class="capwarn">choose at least one channel</span>`;
-  else if (S.applying) st.textContent = "restarting the PRUs";
-  else st.textContent = same ? "running now" : "not applied yet";
-  $("modeapply").disabled = !chs.length || same || S.applying || !S.running;
+  else if (S.applying) st.textContent = S.applying.sent ? "restarting the PRUs" : "connecting";
+  else if (same) st.textContent = S.running ? "running now" : "set on the board; the capture is stopped";
+  else st.textContent = S.running ? "not applied yet" : "not applied yet: the capture is stopped, so Apply starts it";
+  const ap = $("modeapply");
+  ap.textContent = S.running || S.applying ? "Apply" : "Apply and start";
+  ap.disabled = !chs.length || (same && S.running) || !!S.applying;
   updateModeStatus();
 }
 
+// Apply: ask the board for the mode, starting the capture if it is
+// stopped; S.applying holds what was asked until the board runs it.
 function applyMode() {
   const chs = capChannels();
-  if (!S.ws || S.ws.readyState !== 1 || !chs.length) return;
-  S.applying = true;
-  S.ws.send(JSON.stringify({ type: "mode", mode: S.cap.mode, channels: chs }));
+  if (!chs.length || S.applying) return;
+  S.applying = { mode: S.cap.mode, channels: chs, sent: false };
+  S.applying.timer = setTimeout(() => {
+    doneApplying();
+    banner("The mode: the board did not answer in 5 s. Is the stream connected?");
+    drawCapture();
+  }, 5000);
+  if (S.running && S.ws && S.ws.readyState === 1) sendMode();
+  else if (!S.running) clearAll().then(start);
   drawCapture();
+}
+
+function sendMode() {
+  const a = S.applying;
+  S.ws.send(JSON.stringify({ type: "mode", mode: a.mode, channels: a.channels }));
+  a.sent = true;
+}
+
+function doneApplying() {
+  if (S.applying) clearTimeout(S.applying.timer);
+  S.applying = null;
 }
 
 function updateModeStatus() {
@@ -1883,7 +1916,7 @@ $("spill").onchange = e => {
   Spill.enable().catch(err => { e.target.checked = false; banner("Spill to disk: " + err.message); });
 };
 document.querySelectorAll("#modeseg button").forEach(b => {
-  b.onclick = () => { if (S.cap) { S.cap.mode = b.dataset.mode; drawCapture(); } };
+  b.onclick = () => { if (S.cap) { S.cap.mode = b.dataset.mode; S.cap.sel = S.cap.sels[S.cap.mode]; drawCapture(); } };
 });
 $("modeapply").onclick = applyMode;
 $("showall").onclick = () => { S.chan.hidden = []; saveChan(); buildChanList(); layout(); };
