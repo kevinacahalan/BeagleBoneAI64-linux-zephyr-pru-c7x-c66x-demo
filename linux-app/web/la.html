@@ -525,9 +525,33 @@ function chName(c) {
 function chHidden(c) { return S.chan.hidden.includes(c); }
 function saveChan() { store("ai64-la-channels", S.chan); }
 
+// A PRU's holes, where the stream lost records, in time order: from a[k]
+// to b[k] its pins are unknown, and a change at b[k] is no real edge.
+class Holes {
+  constructor() { this.a = new Float64Array(256); this.b = new Float64Array(256); this.n = 0; }
+  push(a, b) {
+    if (this.n === this.a.length) {
+      const na = new Float64Array(this.n * 2), nb = new Float64Array(this.n * 2);
+      na.set(this.a); nb.set(this.b); this.a = na; this.b = nb;
+    }
+    this.a[this.n] = a; this.b[this.n++] = b;
+  }
+  // The first hole ending at or after t.
+  find(t) {
+    let lo = 0, hi = this.n;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (this.b[m] < t) lo = m + 1; else hi = m; }
+    return lo;
+  }
+  // The hole t is in, or -1.
+  at(t) { const k = this.find(t); return k < this.n && this.a[k] <= t ? k : -1; }
+  // Whether one overlaps [a, b): one ending at a does, one starting at b does not.
+  crosses(a, b) { const k = this.find(a); return k < this.n && this.a[k] < b; }
+}
+
 function reset() {
   Spill.ram = 0;
   S.tracks = S.meta ? S.meta.channels.map(c => new Track(c.ch)) : [];
+  S.holes = [new Holes(), new Holes()];
   S.prev = [null, null]; S.t0 = null; S.now = [0, 0]; S.events = []; S.held = 0;
   S.markers = [null, null]; S.sel = null; S.view = { a: 0, b: 1e6 }; S.dirty = true;
 }
@@ -578,7 +602,8 @@ function onBinary(buf) {
   }
   if (kind !== 1) return;
   // Packed edges (la_ws.c): the pins before, then a varint each of the
-  // time step in 4 ns << 5 | the pin that changed, or 31 and the pins.
+  // time step in 4 ns << 5 | the pin that changed, or 31 and the pins, or
+  // 30, a hole: a varint of its length in 4 ns, and the pins at its end.
   const map = S.bitCh[s], tracks = S.tracks, u8 = new Uint8Array(buf);
   let prev = dv.getUint32(16, true), t = rel(base), o = 20;
   if (S.prev[s] === null) startState(s, prev);
@@ -598,7 +623,13 @@ function onBinary(buf) {
     const pin = v % 32;
     t += (v - pin) / 8;
     let x;
-    if (pin === 31) {
+    if (pin === 30) {
+      let len = 0, mul = 1;
+      do { byte = u8[o++]; len += (byte & 127) * mul; mul *= 128; } while (byte & 128);
+      S.holes[s].push(t, t + 4 * len);
+      t += 4 * len;
+    }
+    if (pin >= 30) {
       const state = u8[o] | u8[o + 1] << 8 | u8[o + 2] << 16;
       o += 3; x = (prev ^ state) >>> 0; prev = state;
     } else {
@@ -632,6 +663,7 @@ function onText(text) {
     if (S.lastStats) {
       const dt = (now - S.statsAt) / 1000;
       S.rate = (m.edges[0] + m.edges[1] - S.lastStats.edges[0] - S.lastStats.edges[1]) / dt;
+      S.lateRate = m.late && S.lastStats.late ? (m.late[0] + m.late[1] - S.lastStats.late[0] - S.lastStats.late[1]) / dt : 0;
     }
     S.lastStats = m; S.statsAt = now; S.stats = m;
   }
@@ -1097,6 +1129,7 @@ function draw() {
       if (off) ctx.globalAlpha = 0.35;
       drawTrack(S.tracks[r.ch], y, chColor(r.ch), S.now[c.pru]);
       ctx.globalAlpha = 1;
+      if (!off) drawHoles(S.holes[c.pru], y);
       ctx.restore();
       if (off) {
         ctx.font = "600 10.5px system-ui, sans-serif"; ctx.textBaseline = "middle";
@@ -1135,6 +1168,30 @@ function draw() {
   }
   ctx.setLineDash([]);
   ctx.restore();
+}
+
+// A PRU's holes across a row: a band where its pins are unknown, at least
+// a pixel wide, one search a band, so a view of a million costs no more
+// than its width.
+function drawHoles(h, y) {
+  if (!h.n) return;
+  const xEnd = LABEL + plotW();
+  ctx.fillStyle = colors.critical;
+  ctx.globalAlpha = 0.22;
+  let k = h.find(tOf(LABEL));
+  while (k < h.n) {
+    const x0 = Math.max(LABEL, xOf(h.a[k]));
+    if (x0 > xEnd) break;
+    const x1 = Math.max(x0 + 1, Math.min(xEnd, xOf(h.b[k])));
+    ctx.fillRect(x0, y + 1, x1 - x0, rowH - 2);
+    if (x1 - x0 > 46) {
+      ctx.globalAlpha = 0.9; ctx.font = "600 10.5px system-ui, sans-serif"; ctx.textBaseline = "middle";
+      ctx.fillText("no data", x0 + 4, y + rowH / 2);
+      ctx.globalAlpha = 0.22;
+    }
+    k = Math.max(k + 1, h.find(tOf(x1 + 1)));
+  }
+  ctx.globalAlpha = 1;
 }
 
 // Events are kept in arrival order, which is time order per stream: close enough to search.
@@ -1205,10 +1262,16 @@ function hoverInfo() {
     const hit = res.find(d => t >= d.t0 - 2 * nsPerPx() && t <= Math.max(d.t1, d.t0 + 3 * nsPerPx()));
     return hit ? { kind: "dec", r, hit } : null;
   }
-  const tr = S.tracks[r.ch], dense = densityAt(tr, t);
+  const tr = S.tracks[r.ch], holes = S.holes[S.meta.channels[r.ch].pru], hk = holes.at(t);
+  if (hk >= 0) return { kind: "hole", r, t, a: holes.a[hk], b: holes.b[hk] };
+  const dense = densityAt(tr, t);
   if (tr.upper(t + 1.5 * nsPerPx()) - tr.upper(t - 1.5 * nsPerPx()) > 2) return { kind: "dense", r, t, dense };
   const p = pulseAt(tr, t);
-  return p ? { kind: "pulse", r, t, p, edge: snapEdge(tr, t) } : null;
+  if (!p) return null;
+  // Nothing measured across a hole: an edge at its end is no real edge.
+  if (holes.crosses(p.t0 === null ? -Infinity : p.t0, p.t1 === null ? Infinity : p.t1)) { delete p.width; delete p.duty; p.holed = true; }
+  if (p.c0 !== undefined && holes.crosses(p.c0, p.c1)) { delete p.period; delete p.duty; p.holed = true; }
+  return { kind: "pulse", r, t, p, edge: snapEdge(tr, t) };
 }
 
 function tipHTML(info) {
@@ -1219,6 +1282,11 @@ function tipHTML(info) {
       (d.t1 > d.t0 ? `<span>lasts</span><span class="num">${fmtTime(d.t1 - d.t0)}</span>` : "") + `</div>`;
   }
   const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
+  if (info.kind === "hole") {
+    return `<div class="t">ch${c.ch} ${esc(name)}: no data</div><div class="g">` +
+      `<span>from</span><span class="num">${fmtAt(info.a)}</span><span>for</span><span class="num">${fmtTime(info.b - info.a)}</span></div>` +
+      `<div style="opacity:.7;margin-top:3px">a hole: PRU${c.pru}'s stream lost records here, so its pins are unknown</div>`;
+  }
   if (info.kind === "dense") {
     return `<div class="t">ch${c.ch} ${esc(name)}</div><div class="g">` +
       `<span>edges near</span><span class="num">${info.dense.n} in ${fmtTime(info.dense.w)}</span>` +
@@ -1233,13 +1301,15 @@ function tipHTML(info) {
     if (p.duty !== undefined) g += `<span>duty</span><span class="num">${(100 * p.duty).toFixed(2)} %</span>`;
   }
   if (info.edge !== null) g += `<span>edge at</span><span class="num">${fmtAt(info.edge)}</span>`;
-  return `<div class="t"><span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</div><div class="g">${g}</div>`;
+  return `<div class="t"><span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</div><div class="g">${g}</div>` +
+    (p.holed ? `<div style="opacity:.7;margin-top:3px">next to a hole: only what it leaves is measured</div>` : "");
 }
 
 function statusHover(info) {
   if (!info) return "point at a waveform to measure it";
   if (info.kind === "dec") return `${esc(info.hit.text)} at ${fmtAt(info.hit.t0)}`;
   const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
+  if (info.kind === "hole") return `ch${c.ch} ${esc(name)}: <b>no data</b> for ${fmtTime(info.b - info.a)}, a hole where records were lost`;
   if (info.kind === "dense") return `ch${c.ch} ${esc(name)}: about <b>${fmtHz(info.dense.hz)}</b>, ${info.dense.n} edges near: zoom in`;
   const p = info.p, parts = [`ch${c.ch} ${esc(name)}`];
   if (p.width !== undefined) parts.push(`${p.lvl ? "high" : "low"} <b>${fmtTime(p.width)}</b>`);
@@ -1398,8 +1468,11 @@ function drawMini(force) {
 
 // ---- the side panel ----
 
-function measure(tr, a, b) {
+// A channel over [a, b]: its edges, frequency, time high, and mean widths;
+// with its PRU's holes in it, over only the time they leave known.
+function measure(tr, a, b, holes) {
   if (tr.init === null || b <= a) return null;
+  if (holes && holes.crosses(a, b)) return measureHoled(tr, a, b, holes);
   const i = tr.upper(a), j = tr.upper(b), n = j - i;
   const firstUp = (tr.levelAt(i) === 0) ? i : i + 1;
   const rises = firstUp < j ? Math.floor((j - 1 - firstUp) / 2) + 1 : 0;
@@ -1415,7 +1488,27 @@ function measure(tr, a, b) {
     high = high / N * (b - a);
   }
   const period = rises >= 2 ? (tr.at(firstUp + 2 * (rises - 1)) - tr.at(firstUp)) / (rises - 1) : NaN;
-  return { n, rises, falls, period, high, low: (b - a) - high, level: tr.levelAt(j) };
+  return { n, period, high, known: b - a, hiW: rises ? high / rises : NaN, loW: falls ? ((b - a) - high) / falls : NaN };
+}
+
+// Each time between two edges that crosses no hole: an edge at a hole's
+// end is none. Over the first 200,000 edges, at most.
+function measureHoled(tr, a, b, holes) {
+  const i = tr.upper(a);
+  let j = tr.upper(b);
+  if (j - i > 200000) { j = i + 200000; b = tr.at(j); }
+  let t = a, lvl = tr.levelAt(i), known = 0, high = 0, hw = 0, nh = 0, lw = 0, nl = 0;
+  for (let k = i; k <= j; k++) {
+    const tk = k < j ? tr.at(k) : b;
+    if (!holes.crosses(t, tk)) {
+      known += tk - t;
+      if (lvl) high += tk - t;
+      // A whole pulse: from an edge to an edge.
+      if (k > i && k < j) { if (lvl) { hw += tk - t; nh++; } else { lw += tk - t; nl++; } }
+    }
+    t = tk; lvl ^= 1;
+  }
+  return { n: j - i, period: nh && nl ? hw / nh + lw / nl : NaN, high, known, hiW: nh ? hw / nh : NaN, loW: nl ? lw / nl : NaN };
 }
 
 function updateMeasure() {
@@ -1443,13 +1536,14 @@ function updateMeasure() {
   let h = `<tr><th>channel</th><th class="r">freq</th><th class="r">duty</th><th class="r" title="the mean time high">+width</th><th class="r" title="the mean time low">−width</th></tr>`;
   S.rows.forEach(r => {
     if (r.kind !== "ch") return;
-    const c = S.meta.channels[r.ch], mm = span > 0 ? measure(S.tracks[r.ch], a, b) : null;
+    const c = S.meta.channels[r.ch], mm = span > 0 ? measure(S.tracks[r.ch], a, b, S.holes[c.pru]) : null;
     const name = chName(r.ch) || c.pin;
     h += `<tr title="ch${c.ch} ${esc(c.pin)}${chName(r.ch) ? " " + esc(chName(r.ch)) : ""}: ${mm ? fmtCount(mm.n) : 0} edges"><td><span class="sw" style="background:${chColor(r.ch)}"></span>${c.ch} ${esc(name.slice(0, 10))}</td>`;
-    if (!mm || !mm.n) { h += `<td class="r">–</td><td class="r num">${mm ? (100 * mm.high / span).toFixed(1) + "%" : "–"}</td><td class="r">–</td><td class="r">–</td></tr>`; return; }
+    const duty = mm && mm.known ? (100 * mm.high / mm.known).toFixed(1) + "%" : "–";
+    if (!mm || !mm.n) { h += `<td class="r">–</td><td class="r num">${duty}</td><td class="r">–</td><td class="r">–</td></tr>`; return; }
     h += `<td class="r num">${isFinite(mm.period) ? fmtHzShort(1e9 / mm.period) : "–"}</td>` +
-      `<td class="r num">${(100 * mm.high / span).toFixed(1)}%</td>` +
-      `<td class="r num">${mm.rises ? fmtTime(mm.high / mm.rises) : "–"}</td><td class="r num">${mm.falls ? fmtTime(mm.low / mm.falls) : "–"}</td></tr>`;
+      `<td class="r num">${duty}</td>` +
+      `<td class="r num">${isFinite(mm.hiW) ? fmtTime(mm.hiW) : "–"}</td><td class="r num">${isFinite(mm.loW) ? fmtTime(mm.loW) : "–"}</td></tr>`;
   });
   $("meas").innerHTML = h;
 }
@@ -1715,6 +1809,7 @@ async function saveCapture() {
   const header = {
     format: "ai64-la capture 1", saved: new Date().toISOString(), meta: S.meta, now: S.now,
     events: S.events, tracks: S.tracks.map(t => ({ ch: t.ch, init: t.init, n: t.n })), mode: S.modeInfo,
+    holes: S.holes.map(h => h.n),
   };
   const hj = new TextEncoder().encode(JSON.stringify(header));
   const pad = (8 - hj.length % 8) % 8;
@@ -1731,6 +1826,12 @@ async function saveCapture() {
       for (let k = 0; k < len; k++) out[k] = tr.time(a, c, k);
       parts.push(out);
     }
+  }
+  // Then each PRU's holes, from and to, in turn.
+  for (const h of S.holes) {
+    const out = new Float64Array(2 * h.n);
+    for (let k = 0; k < h.n; k++) { out[2 * k] = h.a[k]; out[2 * k + 1] = h.b[k]; }
+    parts.push(out);
   }
   download(new Blob(parts, { type: "application/octet-stream" }), "la-" + header.saved.replace(/[:.]/g, "-") + ".lacap");
 }
@@ -1757,6 +1858,11 @@ async function openCapture(file) {
     }
     off += h.n * 8;
     S.held += h.n * 8;
+  }
+  for (let s = 0; s < (header.holes || []).length; s++) {
+    const n = header.holes[s], part = new Float64Array(await file.slice(off, off + n * 16).arrayBuffer());
+    for (let k = 0; k < n; k++) S.holes[s].push(part[2 * k], part[2 * k + 1]);
+    off += n * 16;
   }
   S.now = header.now; S.events = header.events; S.t0 = 0;
   S.modeInfo = header.mode || null; S.recorded = header.mode ? new Set(header.mode.channels) : null;
@@ -1954,7 +2060,8 @@ function frame(now) {
     let edges = 0;
     S.tracks.forEach(t => { edges += t.n; });
     const st = S.stats, lost = st ? st.gaps[0] + st.gaps[1] + st.missed[0] + st.missed[1] : 0;
-    $("s-stream").innerHTML = S.running ? `<b>${fmtCount(S.rate)}</b> edges/s · ${fmtBytes(S.rxRate)}/s` + (lost ? ` · <span style="color:var(--critical)">${lost} lost</span>` : "") : "";
+    $("s-stream").innerHTML = S.running ? `<b>${fmtCount(S.rate)}</b> edges/s · ${fmtBytes(S.rxRate)}/s` + (lost ? ` · <span style="color:var(--critical)">${lost} lost</span>` : "") +
+      (S.lateRate >= 1 ? ` · <span style="${S.lateRate >= 0.01 * S.rate ? "color:var(--trig)" : ""}" title="Edges that came while a PRU was busy writing the one before: their times are up to 50 ns late, and pulses that short can be missing without a hole. The signal is faster than edge mode keeps up with; raw mode, in the Channels tab, has it exactly.">${fmtCount(S.lateRate)} late/s</span>` : "") : "";
     $("s-mem").innerHTML = `${fmtTime(Math.max(0, dataEnd()))} held · ${fmtCount(edges)} changes · ${fmtBytes(Spill.ram)} of ${fmtBytes(S.limit)}` + (Spill.disk ? ` + ${fmtBytes(Spill.disk)} on disk` : "");
     const m = S.markers;
     $("s-markers").innerHTML = m[0] !== null && m[1] !== null ? `A→B <b>${fmtTime(Math.abs(m[1] - m[0]))}</b> · ${fmtHz(1e9 / Math.abs(m[1] - m[0]))}` : "";

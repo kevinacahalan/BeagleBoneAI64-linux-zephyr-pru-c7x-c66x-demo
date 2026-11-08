@@ -17,7 +17,10 @@
  *             first, the top bit set on all but the last) of
  *               (the time since the edge before, in IEP0's 4 ns steps) << 5 | pin
  *             where pin is the one GPI bit that changed; or 31 when more
- *             than one did, followed by the pins after the edge, 3 bytes.
+ *             than one did, followed by the pins after the edge, 3 bytes;
+ *             or 30 for a hole, where records were lost, starting then:
+ *             a varint of its length in 4 ns steps, and the pins at its
+ *             end, 3 bytes. Between, the PRU's pins are unknown.
  *             An edge a few hundred ns after the last takes 2 bytes, one a
  *             few hundred us after 3: a quarter of a time and state each.
  *   2 events  count x { u32 t - base, u8 1 for a trigger hit or 0 for a
@@ -29,8 +32,10 @@
  *   5 now     no body: the stream's newest tick, so a viewer knows how far
  *             a channel with no edges has got; every 20 ms
  * and once a second a text message,
- *   {"type":"stats","edges":[n0,n1],"gaps":[g0,g1],"missed":[m0,m1],"sent":bytes}
- * with totals since the viewer connected; and at the start, and whenever
+ *   {"type":"stats","edges":[n0,n1],"gaps":[g0,g1],"missed":[m0,m1],
+ *    "late":[l0,l1],"sent":bytes}
+ * with totals since the viewer connected: late counts edge mode's
+ * changes that came while the PRU was busy (AI64_LA_LATE); and at the start, and whenever
  * it changes, from here or anywhere (ai64 la mode), the analyzer's mode:
  *   {"type":"mode","prus":[{"mode":"edge","lane":0,"mask":m0},
  *    {"mode":"raw","lane":1,"mask":m1}],"channels":[c,...]}
@@ -218,6 +223,7 @@ struct viewer {
 	uint64_t last_t[2]; /* the last edge's time and pins, each stream */
 	uint32_t last_state[2];
 	int have[2];
+	uint64_t hole_to;   /* while ws_hole puts one: where it ends */
 };
 
 static void send_msg(struct viewer *v, const void *buf, size_t len)
@@ -237,6 +243,16 @@ static void flush(struct viewer *v, int s)
 	}
 }
 
+static size_t put_varint(uint8_t *b, size_t n, uint64_t code)
+{
+	while (code >= 0x80u) {
+		b[n++] = (uint8_t)(code | 0x80u);
+		code >>= 7;
+	}
+	b[n++] = (uint8_t)code;
+	return n;
+}
+
 static void ws_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 {
 	struct viewer *v = ctx;
@@ -244,11 +260,10 @@ static void ws_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 	struct head *h = &v->out[s].h;
 	uint8_t *b = v->out[s].b;
 	uint32_t x, pin;
-	uint64_t code;
 	size_t n;
 
-	/* The longest edge: a 64-bit time step's varint, and the pins. */
-	if (v->len[s] > BATCH - 16u) {
+	/* The longest edge, or hole: two 64-bit varints, and the pins. */
+	if (v->len[s] > BATCH - 24u) {
 		flush(v, s);
 	}
 	if (!v->have[s]) {
@@ -264,15 +279,14 @@ static void ws_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 		v->last_t[s] = t;
 	}
 	x = state ^ v->last_state[s];
-	pin = x && !(x & (x - 1u)) ? (uint32_t)__builtin_ctz(x) : 31u;
-	code = (t > v->last_t[s] ? (t - v->last_t[s]) >> 2 : 0) << 5 | pin;
-	n = v->len[s];
-	while (code >= 0x80u) {
-		b[n++] = (uint8_t)(code | 0x80u);
-		code >>= 7;
+	pin = v->hole_to ? 30u : x && !(x & (x - 1u)) ? (uint32_t)__builtin_ctz(x) : 31u;
+	n = put_varint(b, v->len[s], (t > v->last_t[s] ? (t - v->last_t[s]) >> 2 : 0) << 5 | pin);
+	if (pin == 30u) {
+		n = put_varint(b, n, v->hole_to > t ? (v->hole_to - t) >> 2 : 0);
+		t = v->hole_to;
+		v->hole_to = 0;
 	}
-	b[n++] = (uint8_t)code;
-	if (pin >= 31u) {
+	if (pin >= 30u) {
 		b[n++] = (uint8_t)state;
 		b[n++] = (uint8_t)(state >> 8);
 		b[n++] = (uint8_t)(state >> 16);
@@ -281,6 +295,15 @@ static void ws_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 	v->last_t[s] = t;
 	v->last_state[s] = state;
 	h->count++;
+}
+
+/* A hole from from to to, the pins state at its end: code 30, in line with the edges. */
+static void ws_hole(void *ctx, struct stream *st, uint64_t from, uint64_t to, uint32_t state)
+{
+	struct viewer *v = ctx;
+
+	v->hole_to = to > from ? to : from + 1;
+	ws_edge(ctx, st, from, state);
 }
 
 static void send_events(struct viewer *v, struct stream *st)
@@ -489,6 +512,7 @@ static void *viewer_main(void *arg)
 		goto out;
 	}
 	st[0].keep_marks = st[1].keep_marks = 1;
+	st[0].on_hole = st[1].on_hole = ws_hole;
 	send_meta(v);
 	send_modes(v, 1);
 	if (wait_ticks(st, ws_edge, v)) {
@@ -546,10 +570,11 @@ static void *viewer_main(void *arg)
 
 			snprintf(buf, sizeof(buf),
 				 "{\"type\":\"stats\",\"edges\":[%llu,%llu],\"gaps\":[%llu,%llu],"
-				 "\"missed\":[%llu,%llu],\"sent\":%llu}",
+				 "\"missed\":[%llu,%llu],\"late\":[%llu,%llu],\"sent\":%llu}",
 				 (unsigned long long)st[0].edges, (unsigned long long)st[1].edges,
 				 (unsigned long long)st[0].gaps, (unsigned long long)st[1].gaps,
 				 (unsigned long long)st[0].missed, (unsigned long long)st[1].missed,
+				 (unsigned long long)st[0].late, (unsigned long long)st[1].late,
 				 (unsigned long long)v->sent);
 			send_text(v, buf);
 			stats_at = now + 1e6;

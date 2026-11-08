@@ -44,8 +44,12 @@ struct stream {
 	uint32_t first_state;
 	uint32_t state;
 	uint64_t edges;
-	uint64_t gaps;      /* gap records: the RTU fell behind the PRU */
+	uint64_t gaps;      /* gap and hole records: the RTU or raw mode's converter fell behind */
 	uint64_t missed;    /* records this reader fell a ring behind on */
+	uint64_t late;      /* edges with AI64_LA_LATE: edge mode overloaded */
+	uint64_t last;      /* the time of the newest edge or tick */
+	uint64_t hole_from; /* with hole, where the open hole starts */
+	int hole;           /* a hole is open: the pins are unknown until the next record */
 	uint64_t marks;
 	uint64_t trigs;
 	uint32_t wr0;       /* wr when the reader started */
@@ -53,6 +57,8 @@ struct stream {
 	struct mark *mark;  /* the marks and hits, if keep_marks */
 	size_t nmark, capmark;
 	int keep_marks;
+	/* If set, each hole goes here, and not as an edge (la_stream.c). */
+	void (*on_hole)(void *ctx, struct stream *st, uint64_t from, uint64_t to, uint32_t state);
 };
 
 typedef void (*edge_fn)(void *ctx, struct stream *st, uint64_t t, uint32_t state);
@@ -97,14 +103,25 @@ struct events {
 	size_t n, cap;
 };
 
+/* A PRU's holes, in time order: from a[i] to b[i] its pins are unknown. */
+struct holes {
+	uint64_t *a, *b;
+	size_t n, cap;
+};
+
+/* Whether a hole overlaps [from, to): one ending at from does, one starting at to does not. */
+int holes_cross(const struct holes *h, uint64_t from, uint64_t to);
+
 /*
  * A recording: both streams' edges over a span both cover, from the later
  * first tick to the earlier last one, and every pin's state at its start.
- * rec_next() hands the edges back merged by time.
+ * rec_next() hands the edges back merged by time. Each hole's end is an
+ * event too, with the pins there, which may be no change.
  */
 struct recording {
 	struct stream st[2];
 	struct events ev[2];
+	struct holes holes[2];
 	uint32_t state[2];
 	uint64_t begin, finish;
 	uint64_t hit;       /* the trigger hit it was taken around, or 0 */
@@ -125,20 +142,26 @@ struct spread {
 
 struct chan_stats {
 	size_t edges, rises;
-	uint64_t high_ns;
+	uint64_t high_ns;   /* of known_ns, the time not in a hole */
+	uint64_t known_ns;
 	int level_end;
 	struct spread period, high;
 };
 
 void changes_add(struct changes *ch, uint64_t t, int up);
 int cmp_i64(const void *a, const void *b);
-/* For each change of a that goes up (or down), the signed time to b's nearest change. */
-size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out);
+/*
+ * For each change of a that goes up (or down), the signed time to b's
+ * nearest change, leaving out any across a hole of a's PRU (ha) or b's (hb).
+ */
+size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out,
+	       const struct holes *ha, const struct holes *hb);
 void rec_changes(struct recording *r, struct changes ch[AI64_LA_NCHAN]);
 void changes_free(struct changes ch[AI64_LA_NCHAN]);
 void spread_of(int64_t *v, size_t n, struct spread *sp);
+/* Its periods and high times leave out any across one of holes, its PRU's. */
 void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t finish, int64_t *v,
-		struct chan_stats *out);
+		struct chan_stats *out, const struct holes *holes);
 /* The recording as a VCD file (la.c); each PRU's edges in nedge, and the marks and hits. */
 size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2]);
 /*
@@ -155,11 +178,15 @@ uint32_t la_lane(uint32_t mask);
 /* The trigger, on PRU pru (the other's goes off); -1 if the analyzer does not run. */
 int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value);
 
-void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state);
 /* secs of both streams from now; or, with trigger, around the next hit. */
 int record(struct recording *r, double secs, int trigger);
-/* The next edge in time, up to finish: its time, and the state before it in was. */
+/*
+ * The next event in time, up to finish: its time, and the state before it
+ * in was; 1 + its PRU, or 0 at the end.
+ */
 int rec_next(struct recording *r, uint64_t *t, uint32_t was[2]);
+/* How many of a PRU's holes overlap [begin, finish], and how long they are in it. */
+size_t rec_holes(const struct recording *r, int s, uint64_t *ns);
 void rec_free(struct recording *r);
 /* Both streams' marks and hits in [begin, finish], merged by time, into *out. */
 size_t rec_marks(struct recording *r, struct mark **out);

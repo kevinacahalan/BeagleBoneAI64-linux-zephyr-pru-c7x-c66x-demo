@@ -184,22 +184,23 @@ static int view_main(int argc, char **argv)
 			}
 		}
 		if (lines) {
-			printf("la: PRU0 %.0f edges/s, PRU1 %.0f edges/s; gaps %llu, missed %llu\n",
+			printf("la: PRU0 %.0f edges/s, PRU1 %.0f edges/s; gaps %llu, missed %llu, late %llu\n",
 			       (st[0].edges - prev_edges[0]) * 1e9 / span,
 			       (st[1].edges - prev_edges[1]) * 1e9 / span,
 			       (unsigned long long)(st[0].gaps + st[1].gaps),
-			       (unsigned long long)(st[0].missed + st[1].missed));
+			       (unsigned long long)(st[0].missed + st[1].missed),
+			       (unsigned long long)(st[0].late + st[1].late));
 		} else {
 			printf("\033[2J\033[H");
 			printf("ICSSG1 logic analyzer, the last %.3f s; IEP0 at %.3f s\n", span / 1e9,
 			       t1 / 1e9);
 			for (s = 0; s < 2; s++) {
 				printf("  PRU%d %9.0f edges/s, %llu in all; RTU%d gaps %u (%u records), "
-				       "reader missed %llu, marks %llu, trigger hits %llu\n",
+				       "reader missed %llu, late %llu, marks %llu, trigger hits %llu\n",
 				       s, (st[s].edges - prev_edges[s]) * 1e9 / span,
 				       (unsigned long long)st[s].edges, s, st[s].h->gaps, st[s].h->lost,
-				       (unsigned long long)st[s].missed, (unsigned long long)st[s].marks,
-				       (unsigned long long)st[s].trigs);
+				       (unsigned long long)st[s].missed, (unsigned long long)st[s].late,
+				       (unsigned long long)st[s].marks, (unsigned long long)st[s].trigs);
 			}
 			printf("\n  ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty\n");
 			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
@@ -250,18 +251,21 @@ static void vcd_name(char *buf, size_t len, int c)
 
 /*
  * The recording r as a VCD file on f: every channel, the marks as a 16-bit
- * signal, and trig changing at each trigger hit. Reads r to its end;
- * nedge gets each PRU's edges, and the return is the marks and hits.
+ * signal, and trig changing at each trigger hit. A hole, where the stream
+ * lost records, takes its PRU's channels to x, unknown, until its end,
+ * which gives them all again. Reads r to its end; nedge gets each PRU's
+ * edges, and the return is the marks and hits.
  */
 size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2])
 {
 	struct mark *mk;
 	size_t nmk, im = 0;
-	int ntrig = 0;
+	int ntrig = 0, unknown[2] = { 0, 0 };
+	size_t ih[2] = { 0, 0 };
 	uint32_t was[2];
 	uint64_t t;
 	time_t now = time(NULL);
-	int c;
+	int c, s;
 
 	nedge[0] = nedge[1] = 0;
 	fprintf(f, "$date %s$end\n$version ai64 la, ICSSG1 IEP0 at %llu ns $end\n"
@@ -285,8 +289,42 @@ size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2])
 	for (;;) {
 		int edge = rec_next(r, &t, was);
 
-		/* The marks up to this edge, or all that are left after the last. */
-		while (im < nmk && (!edge || mk[im].t <= t)) {
+		/* The marks and holes up to this edge, or all that are left after the
+		 * last, in time order. */
+		for (;;) {
+			uint64_t th = UINT64_MAX;
+			int hs = -1;
+
+			for (s = 0; s < 2; s++) {
+				const struct holes *h = &r->holes[s];
+
+				while (ih[s] < h->n && h->b[ih[s]] <= r->begin) {
+					ih[s]++;
+				}
+				if (ih[s] < h->n && h->a[ih[s]] <= r->finish) {
+					uint64_t a = h->a[ih[s]] > r->begin ? h->a[ih[s]] : r->begin;
+
+					if (a < th) {
+						th = a;
+						hs = s;
+					}
+				}
+			}
+			if (hs >= 0 && (!edge || th <= t) && (im >= nmk || th <= mk[im].t)) {
+				fprintf(f, "#%llu\n$comment a hole in PRU%d's stream: records lost $end\n",
+					(unsigned long long)(th - r->begin), hs);
+				for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+					if (la_chans[c].pru == hs) {
+						fprintf(f, "x%c\n", '!' + c);
+					}
+				}
+				unknown[hs] = 1;
+				ih[hs]++;
+				continue;
+			}
+			if (im >= nmk || (edge && mk[im].t > t)) {
+				break;
+			}
 			if (mk[im].trig) {
 				ntrig++;
 				fprintf(f, "#%llu\n$comment trigger hit%s $end\n%d}\n",
@@ -307,13 +345,20 @@ size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2])
 		if (!edge) {
 			break;
 		}
+		s = edge - 1;
+		if (r->state[s] == was[s] && !unknown[s]) {
+			continue;
+		}
 		fprintf(f, "#%llu\n", (unsigned long long)(t - r->begin));
-		nedge[r->state[0] != was[0] ? 0 : 1]++;
+		if (r->state[s] != was[s]) {
+			nedge[s]++;
+		}
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			if (level(r->state, c) != level(was, c)) {
+			if (level(r->state, c) != level(was, c) || (unknown[s] && la_chans[c].pru == s)) {
 				fprintf(f, "%d%c\n", level(r->state, c), '!' + c);
 			}
 		}
+		unknown[s] = 0;
 	}
 	fprintf(f, "#%llu\n", (unsigned long long)(r->finish - r->begin));
 	free(mk);
@@ -354,16 +399,15 @@ static int capture_main(int argc, char **argv)
 
 /* ---- measure ---- */
 
-/* min, median, and max of v[0..n), sorted in place, printed as "min med max". */
-static void spread(char *buf, size_t len, int64_t *v, size_t n)
+/* A spread as "min med max", or a dash for none. */
+static void spread(char *buf, size_t len, const struct spread *sp)
 {
-	if (!n) {
+	if (!sp->n) {
 		snprintf(buf, len, "%26s", "-");
 		return;
 	}
-	qsort(v, n, sizeof(*v), cmp_i64);
-	snprintf(buf, len, "%8lld %8lld %8lld", (long long)v[0], (long long)v[n / 2],
-		 (long long)v[n - 1]);
+	snprintf(buf, len, "%8lld %8lld %8lld", (long long)sp->min, (long long)sp->med,
+		 (long long)sp->max);
 }
 
 static const char *chan_name(int c)
@@ -375,14 +419,13 @@ static int measure_main(int argc, char **argv)
 {
 	static struct recording r;
 	static const int demo_pairs[][2] = { { 7, 8 }, { 8, 7 }, { 9, 10 }, { 10, 9 }, { 7, 13 } };
-	struct changes ch[AI64_LA_NCHAN] = { { 0 } };
+	struct changes ch[AI64_LA_NCHAN];
 	int pairs[16][2], npairs = 0;
-	uint32_t was[2];
-	uint64_t t, span;
+	uint64_t span;
 	double secs = 1;
 	int64_t *v;
 	size_t vcap = 0;
-	int c, k, argi = 3;
+	int c, k, s, argi = 3;
 
 	if (argc > 3 && strchr(argv[3], ':') == NULL) {
 		secs = atof(argv[3]);
@@ -410,19 +453,7 @@ static int measure_main(int argc, char **argv)
 	if (record(&r, secs, 0)) {
 		return 1;
 	}
-	{
-		uint32_t start[2] = { r.state[0], r.state[1] };
-
-		while (rec_next(&r, &t, was)) {
-			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-				if (level(r.state, c) != level(was, c)) {
-					changes_add(&ch[c], t, level(r.state, c));
-				}
-			}
-		}
-		r.state[0] = start[0];
-		r.state[1] = start[1];
-	}
+	rec_changes(&r, ch);
 	span = r.finish - r.begin;
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		if (ch[c].n > vcap) {
@@ -435,72 +466,52 @@ static int measure_main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("ICSSG1 logic analyzer, %.6f s measured; times in ns\n\n", span / 1e9);
-	printf("  ch  pin    wired to          edges   frequency    period  min      med      max"
+	printf("ICSSG1 logic analyzer, %.6f s measured; times in ns\n", span / 1e9);
+	for (s = 0; s < 2; s++) {
+		uint64_t ns;
+		size_t n = rec_holes(&r, s, &ns);
+
+		if (n) {
+			printf("PRU%d: %zu holes, %.6f s in all, where records were lost: no period or "
+			       "time below spans one\n", s, n, ns / 1e9);
+		}
+	}
+	printf("\n  ch  pin    wired to          edges   frequency    period  min      med      max"
 	       "    high  min      med      max    duty\n");
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		struct chan_stats cs;
 		char hz[24], per[40], high[40], from[24];
-		uint64_t hi_ns = 0, last = r.begin;
-		size_t i, np = 0, nh = 0, rises = 0;
-		int lv = level(r.state, c);
 
-		for (i = 0; i < ch[c].n; i++) {
-			if (lv) {
-				hi_ns += ch[c].t[i] - last;
-			}
-			last = ch[c].t[i];
-			lv = ch[c].up[i];
-			rises += lv;
-		}
-		if (lv) {
-			hi_ns += r.finish - last;
-		}
-		/* Periods, rise to rise; then high times, rise to the next fall. */
-		for (i = 0; i < ch[c].n; i++) {
-			size_t j;
-
-			if (!ch[c].up[i]) {
-				continue;
-			}
-			for (j = i + 1; j < ch[c].n && ch[c].up[j]; j++) {
-			}
-			if (j + 1 < ch[c].n) {
-				v[np++] = (int64_t)(ch[c].t[j + 1] - ch[c].t[i]);
-			}
-		}
-		spread(per, sizeof(per), v, np);
-		for (i = 0; i + 1 < ch[c].n; i++) {
-			if (ch[c].up[i] && !ch[c].up[i + 1]) {
-				v[nh++] = (int64_t)(ch[c].t[i + 1] - ch[c].t[i]);
-			}
-		}
-		spread(high, sizeof(high), v, nh);
-		fmt_hz(hz, sizeof(hz), rises * 1e9 / span);
+		chan_stats(&ch[c], level(r.state, c), r.begin, r.finish, v, &cs,
+			   &r.holes[la_chans[c].pru]);
+		spread(per, sizeof(per), &cs.period);
+		spread(high, sizeof(high), &cs.high);
+		/* With holes, the median period's: rises over the span would count them. */
+		fmt_hz(hz, sizeof(hz), cs.period.n && rec_holes(&r, la_chans[c].pru, &(uint64_t){ 0 }) ?
+		       1e9 / (double)cs.period.med : cs.rises * 1e9 / span);
 		snprintf(from, sizeof(from), "%s%s%s", la_wired[c].name ? la_wired[c].name : "-",
 			 la_wired[c].from ? " " : "", la_wired[c].from ? la_wired[c].from : "");
 		printf("  %2d  %-5s  %-16s %7zu  %s  %s  %s  %5.1f%%\n", c, la_chans[c].pin, from,
-		       ch[c].n, hz, per, high, 100.0 * hi_ns / span);
+		       ch[c].n, hz, per, high, cs.known_ns ? 100.0 * cs.high_ns / cs.known_ns : 0.0);
 	}
 
 	printf("\n  from each change of a, to the nearest change of b       a rises:  min      med      max"
 	       "      a falls:  min      med      max\n");
 	for (k = 0; k < npairs; k++) {
 		int a = pairs[k][0], b = pairs[k][1];
+		const struct holes *ha = &r.holes[la_chans[a].pru], *hb = &r.holes[la_chans[b].pru];
 		char up[40], down[40], label[48];
-		size_t n;
+		struct spread sp;
 
-		n = nearest(&ch[a], &ch[b], 1, v);
-		spread(up, sizeof(up), v, n);
-		n = nearest(&ch[a], &ch[b], 0, v);
-		spread(down, sizeof(down), v, n);
+		spread_of(v, nearest(&ch[a], &ch[b], 1, v, ha, hb), &sp);
+		spread(up, sizeof(up), &sp);
+		spread_of(v, nearest(&ch[a], &ch[b], 0, v, ha, hb), &sp);
+		spread(down, sizeof(down), &sp);
 		snprintf(label, sizeof(label), "ch%d %s -> ch%d %s", a, chan_name(a), b, chan_name(b));
 		printf("  %-54s %s        %s\n", label, up, down);
 	}
 	free(v);
-	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		free(ch[c].t);
-		free(ch[c].up);
-	}
+	changes_free(ch);
 	rec_free(&r);
 	return 0;
 }
@@ -629,7 +640,7 @@ static int rate_main(int argc, char **argv)
 	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
 	struct stream st[2];
 	uint32_t copied0[2];
-	uint64_t read0[2], missed0[2], gaps0[2];
+	uint64_t read0[2], missed0[2], gaps0[2], late0[2];
 	int s;
 
 	if (argc > 4 || secs <= 0) {
@@ -653,6 +664,7 @@ static int rate_main(int argc, char **argv)
 		read0[s] = st[s].edges;
 		missed0[s] = st[s].missed;
 		gaps0[s] = st[s].gaps;
+		late0[s] = st[s].late;
 	}
 	do {
 		for (s = 0; s < 2; s++) {
@@ -663,12 +675,13 @@ static int rate_main(int argc, char **argv)
 	for (s = 0; s < 2; s++) {
 		printf("PRU%d: RTU%d copied %.0f records/s, the reader read %.0f/s and missed %.0f/s; "
 		       "RTU gaps %u (%u records) since it started; gaps in the stream %llu; "
-		       "closest records %lld ns apart\n",
+		       "closest records %lld ns apart; late %.0f/s\n",
 		       s, s, (uint32_t)(st[s].h->edges - copied0[s]) * 1e6 / (t1 - t0),
 		       (st[s].edges - read0[s]) * 1e6 / (t1 - t0),
 		       (st[s].missed - missed0[s]) * 1e6 / (t1 - t0), st[s].h->gaps, st[s].h->lost,
 		       (unsigned long long)(st[s].gaps - gaps0[s]),
-		       c.min[s] == UINT64_MAX ? -1LL : (long long)c.min[s]);
+		       c.min[s] == UINT64_MAX ? -1LL : (long long)c.min[s],
+		       (st[s].late - late0[s]) * 1e6 / (t1 - t0));
 		stream_free(&st[s]);
 	}
 	return 0;

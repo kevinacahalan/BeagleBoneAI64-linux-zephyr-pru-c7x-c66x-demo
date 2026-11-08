@@ -7,7 +7,9 @@
 # mode (ai64 la mode): PRU1 sampling ch12 every 8 ns, PRU0 finding the
 # changes, at 10 million a second with none lost; and slice 1's hardware
 # dead band, 24 ns, read exactly. Then edge mode, EHRPWM4 steps again, and
-# the pipeline follows again. The demo must be running.
+# the pipeline follows again. Past what edge mode keeps up with, it says so
+# with late edges; past raw mode, with holes, which no measurement spans.
+# The demo must be running.
 . "$(dirname "$0")/lib.sh"
 
 # rate PERIOD_NS MIN_RATE: EHRPWM4 at that period; PRU1's records a second
@@ -28,6 +30,7 @@ rate() {
 		ok "EHRPWM4 at $p ns: PRU1 $copied records/s, none lost" ||
 		bad "EHRPWM4 at $p ns: $out"
 	echo "$out" | sed -n 's/.* closest records \(-*[0-9]*\) ns.*/\1/p' >"$HERE/closest"
+	echo "$out" | sed -n 's/.* late \([0-9]*\)\/s.*/\1/p' >"$HERE/late"
 }
 
 echo "stress: the logic analyzer against EHRPWM4 on ch12"
@@ -39,12 +42,25 @@ rate 40 12000000
 n=$(cat "$HERE/closest")
 [ "$n" -ge 40 ] && [ "$n" -le 52 ] && ok "PRU1's closest records: $n ns apart" ||
 	bad "PRU1's closest records: $n ns apart, not 40 to 52"
+n=$(cat "$HERE/late")
+[ -n "$n" ] && [ "$n" -ge 1000000 ] && ok "edge mode says it is overloaded: $n late edges/s" ||
+	bad "edge mode overloaded, but only ${n:-no} late edges/s"
 
 echo "stress: raw mode, ch12 every 8 ns"
 check "ai64 la mode raw 12" "$AI64" la mode raw 12
 "$AI64" la mode | grep -q '^PRU1: raw' && ok "PRU1 is raw, PRU0 converts" || bad "ai64 la mode: $("$AI64" la mode)"
 rate 400 4950000
 rate 200 9900000
+
+echo "stress: raw mode past what it keeps up with: EHRPWM4 at 62.5 MHz, its Nyquist rate"
+"$AI64" fabric route r5f0_1 pwm 16 8 >/dev/null 2>&1
+sleep 1
+out=$("$AI64" la measure 0.2 2>&1)
+echo "$out" | grep -q '^PRU1: [0-9]* holes' && ok "the holes are marked: $(echo "$out" | grep '^PRU1: [0-9]* holes' | cut -d, -f1)" ||
+	bad "no holes marked at 62.5 MHz"
+n=$(echo "$out" | grep ' P8.35 ' | tr -s ' ')
+echo "$n" | grep -q ' MHz 16 16 16 8 8 8 ' && ok "ch12 between them: a period of 16 ns, high 8, every one" ||
+	bad "ch12 at 62.5 MHz: $n"
 
 echo "stress: raw mode, slice 1's dead band at 24 ns"
 "$AI64" la mode raw 9 10 >/dev/null 2>&1

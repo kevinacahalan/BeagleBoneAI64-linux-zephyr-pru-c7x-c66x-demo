@@ -15,9 +15,9 @@
 #include "ai64.h"
 #include "la.h"
 
-void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
+static void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 {
-	struct events *ev = (struct events *)ctx + st->s;
+	struct events *ev = ((struct recording *)ctx)->ev + st->s;
 
 	if (ev->n == ev->cap) {
 		ev->cap = ev->cap ? ev->cap * 2 : 65536;
@@ -30,6 +30,61 @@ void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 	ev->e[ev->n].t = t;
 	ev->e[ev->n].state = state;
 	ev->n++;
+}
+
+/* A hole: kept, and its end an event, with the pins there. */
+static void keep_hole(void *ctx, struct stream *st, uint64_t from, uint64_t to, uint32_t state)
+{
+	struct holes *h = ((struct recording *)ctx)->holes + st->s;
+
+	if (h->n == h->cap) {
+		h->cap = h->cap ? h->cap * 2 : 1024;
+		h->a = realloc(h->a, h->cap * sizeof(*h->a));
+		h->b = realloc(h->b, h->cap * sizeof(*h->b));
+		if (!h->a || !h->b) {
+			fprintf(stderr, "out of memory\n");
+			exit(1);
+		}
+	}
+	h->a[h->n] = from;
+	h->b[h->n++] = to;
+	keep_edge(ctx, st, to, state);
+}
+
+int holes_cross(const struct holes *h, uint64_t from, uint64_t to)
+{
+	size_t lo = 0, hi = h ? h->n : 0;
+
+	/* The first hole ending at or after from: an interval from a hole's end
+	 * starts at no real edge. One ending where a hole starts is whole. */
+	while (lo < hi) {
+		size_t m = (lo + hi) / 2;
+
+		if (h->b[m] < from) {
+			lo = m + 1;
+		} else {
+			hi = m;
+		}
+	}
+	return lo < (h ? h->n : 0) && h->a[lo] < to;
+}
+
+size_t rec_holes(const struct recording *r, int s, uint64_t *ns)
+{
+	const struct holes *h = &r->holes[s];
+	size_t i, n = 0;
+
+	*ns = 0;
+	for (i = 0; i < h->n; i++) {
+		uint64_t a = h->a[i] > r->begin ? h->a[i] : r->begin;
+		uint64_t b = h->b[i] < r->finish ? h->b[i] : r->finish;
+
+		if (a < b) {
+			n++;
+			*ns += b - a;
+		}
+	}
+	return n;
 }
 
 
@@ -77,6 +132,7 @@ int record(struct recording *r, double secs, int trigger)
 			return -1;
 		}
 		r->st[s].keep_marks = 1;
+		r->st[s].on_hole = keep_hole;
 		if (trigger) {
 			/* Back into the ring for the time before the hit, but no further
 			 * than the RTU has written since it started (wr counts from 0). */
@@ -85,13 +141,13 @@ int record(struct recording *r, double secs, int trigger)
 			r->st[s].rd -= back & ~(AI64_LA_REC_SIZE - 1u);
 		}
 	}
-	if (wait_ticks(r->st, keep_edge, r->ev)) {
+	if (wait_ticks(r->st, keep_edge, r)) {
 		return -1;
 	}
 	start = now_us();
 	for (;;) {
 		for (s = 0; s < 2; s++) {
-			stream_poll(&r->st[s], keep_edge, r->ev);
+			stream_poll(&r->st[s], keep_edge, r);
 		}
 		if (!trigger) {
 			if (now_us() - start >= secs * 1e6) {
@@ -110,11 +166,17 @@ int record(struct recording *r, double secs, int trigger)
 		usleep(2000);
 	}
 	for (s = 0; s < 2; s++) {
-		stream_poll(&r->st[s], keep_edge, r->ev);
+		stream_poll(&r->st[s], keep_edge, r);
 		if (r->st[s].missed || r->st[s].gaps) {
 			fprintf(stderr, "PRU%d: %llu records missed here, %llu gaps in the stream: "
-				"the recording has holes\n", s, (unsigned long long)r->st[s].missed,
-				(unsigned long long)r->st[s].gaps);
+				"the recording has %zu holes, marked\n", s,
+				(unsigned long long)r->st[s].missed, (unsigned long long)r->st[s].gaps,
+				r->holes[s].n);
+		}
+		if (r->st[s].late) {
+			fprintf(stderr, "PRU%d: %llu edges came while it was busy with the one before: "
+				"their times are up to 50 ns late, and pulses that short can be missing "
+				"(raw mode has them exactly)\n", s, (unsigned long long)r->st[s].late);
 		}
 	}
 	r->begin = r->st[0].first > r->st[1].first ? r->st[0].first : r->st[1].first;
@@ -155,13 +217,17 @@ int rec_next(struct recording *r, uint64_t *t, uint32_t was[2])
 	s = a && (!b || r->ev[0].e[r->i[0]].t <= r->ev[1].e[r->i[1]].t) ? 0 : 1;
 	*t = r->ev[s].e[r->i[s]].t;
 	r->state[s] = r->ev[s].e[r->i[s]++].state;
-	return 1;
+	return 1 + s;
 }
 
 void rec_free(struct recording *r)
 {
 	free(r->ev[0].e);
 	free(r->ev[1].e);
+	free(r->holes[0].a);
+	free(r->holes[0].b);
+	free(r->holes[1].a);
+	free(r->holes[1].b);
 	stream_free(&r->st[0]);
 	stream_free(&r->st[1]);
 }
@@ -211,8 +277,8 @@ int cmp_i64(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* For each change of a that goes up (or down), the signed time to b's nearest change. */
-size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out)
+size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out,
+	       const struct holes *ha, const struct holes *hb)
 {
 	size_t i, j = 0, n = 0;
 
@@ -231,6 +297,14 @@ size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t
 		best = (int64_t)(b->t[j] - a->t[i]);
 		if (j + 1 < b->n && llabs((int64_t)(b->t[j + 1] - a->t[i])) < llabs(best)) {
 			best = (int64_t)(b->t[j + 1] - a->t[i]);
+		}
+		{
+			uint64_t lo = best < 0 ? a->t[i] + (uint64_t)best : a->t[i];
+			uint64_t hi = best < 0 ? a->t[i] : a->t[i] + (uint64_t)best;
+
+			if (holes_cross(ha, lo, hi) || holes_cross(hb, lo, hi)) {
+				continue;
+			}
 		}
 		out[n++] = best;
 	}
@@ -289,7 +363,7 @@ void spread_of(int64_t *v, size_t n, struct spread *sp)
  * times. v has room for c->n values.
  */
 void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t finish, int64_t *v,
-		struct chan_stats *out)
+		struct chan_stats *out, const struct holes *holes)
 {
 	uint64_t last = begin;
 	size_t i, n;
@@ -297,26 +371,32 @@ void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t fi
 
 	memset(out, 0, sizeof(*out));
 	out->edges = c->n;
-	for (i = 0; i < c->n; i++) {
-		if (lv) {
-			out->high_ns += c->t[i] - last;
+	for (i = 0; i <= c->n; i++) {
+		uint64_t t = i < c->n ? c->t[i] : finish;
+
+		/* Time high, of the time known: none across a hole. */
+		if (!holes_cross(holes, last, t)) {
+			out->known_ns += t - last;
+			if (lv) {
+				out->high_ns += t - last;
+			}
 		}
-		last = c->t[i];
+		if (i == c->n) {
+			break;
+		}
+		last = t;
 		lv = c->up[i];
 		out->rises += (size_t)lv;
 	}
-	if (lv) {
-		out->high_ns += finish - last;
-	}
 	out->level_end = lv;
 	for (i = 0, n = 0; i < c->n; i++) {
-		if (c->up[i] && i + 2 < c->n) {
+		if (c->up[i] && i + 2 < c->n && !holes_cross(holes, c->t[i], c->t[i + 2])) {
 			v[n++] = (int64_t)(c->t[i + 2] - c->t[i]);
 		}
 	}
 	spread_of(v, n, &out->period);
 	for (i = 0, n = 0; i + 1 < c->n; i++) {
-		if (c->up[i] && !c->up[i + 1]) {
+		if (c->up[i] && !c->up[i + 1] && !holes_cross(holes, c->t[i], c->t[i + 1])) {
 			v[n++] = (int64_t)(c->t[i + 1] - c->t[i]);
 		}
 	}

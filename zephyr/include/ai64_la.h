@@ -14,13 +14,18 @@
  * A record is two words:
  *
  *   edge  time   IEP0's count, ns, low 32 bits, when the PRU saw the change
- *         state  the PRU's GPI pins (R31 & its mask), bits 31:24 zero
+ *         state  the PRU's GPI pins (R31 & its mask), bits 31:24 zero, and
+ *                AI64_LA_LATE if the change came while the PRU was busy
  *   tick  time   IEP0's count, low 32 bits
  *         state  AI64_LA_TICK << 24 | the state at that time
  *         and the next record holds the GTC's low word, then the GTC's and
  *         IEP0's bits 47:32: gtc_hi16 << 16 | iep_hi16
  *   gap   time   IEP0's count when the RTU found it had fallen behind
  *         state  AI64_LA_GAP << 24 | the records it skipped (24 bits)
+ *   hole  time   in raw mode, the first sample after samples the converter
+ *                lost, falling behind (la_conv.asm)
+ *         state  AI64_LA_HOLE << 24 | the samples lost, 8 ns each, before
+ *                time; the next record holds the pins at time
  *   mark  time   IEP0's count when the RTU read a fabric route's mark
  *         state  AI64_LA_MARK << 24 | the route's origin << 16 | its value
  *   trig  time   the time of the edge that met the trigger
@@ -60,6 +65,16 @@
 #define AI64_LA_GAP        0x81u
 #define AI64_LA_MARK       0x82u
 #define AI64_LA_TRIG       0x83u
+#define AI64_LA_HOLE       0x84u
+
+/*
+ * In an edge record's state: the PRU saw this change at its first look
+ * after writing the record before, so it came while the PRU was busy with
+ * that one (la_sample.asm). Its time is up to some 50 ns late, and a pulse
+ * that started and ended in that time is missing: edge mode is faster than
+ * it can keep up with. No pin is bit 23 (AI64_LA_CHANNELS).
+ */
+#define AI64_LA_LATE       (1u << 23)
 
 /*
  * A PRU's mode (pru/logic_analyzer/firmware/la_map.h): edge, a record at

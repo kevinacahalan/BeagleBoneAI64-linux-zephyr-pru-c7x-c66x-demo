@@ -304,9 +304,9 @@ void main(void)
 			la_pack(AI64_LA_RING_ADDR(AI64_SLICE) + dof, LA_SRING(AI64_SLICE) + so, n);
 			rd += n * LA_SREC_SIZE;
 			wr += n * AI64_LA_REC_SIZE;
-			/* The newest pins: a raw-mode gap record holds none. */
+			/* The newest pins: a raw-mode hole record holds none. */
 			if (!AI64_LA_TYPE(SREC(rd - LA_SREC_SIZE)->state)) {
-				state = SREC(rd - LA_SREC_SIZE)->state;
+				state = SREC(rd - LA_SREC_SIZE)->state & ~AI64_LA_LATE;
 			}
 			LA_CFG_REC->resume = rd;
 			h->edges += n;

@@ -57,6 +57,9 @@ void main(void)
 		t = r->time;
 		v = r->state;
 		rd += LA_SREC_SIZE;
+		if (AI64_LA_TYPE(v)) {
+			continue; /* raw mode's hole records: no pins */
+		}
 		if (have_prev && mode != AI64_LA_TRIG_OFF &&
 		    (mode == AI64_LA_TRIG_ANY ? ((prev ^ v) & mask) != 0 :
 		     (v & mask) == value && (prev & mask) != value)) {

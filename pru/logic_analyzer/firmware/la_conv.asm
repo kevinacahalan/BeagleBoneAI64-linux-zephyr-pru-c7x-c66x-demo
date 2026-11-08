@@ -23,8 +23,9 @@
 ; first, for the next register's compare. A change takes about 7 cycles
 ; more, 9 at two a register. Behind, the converter has two blocks more in
 ; the other banks before the PRU writes over one; if it finds a block newer
-; than the one it wants, it writes a gap record, the samples lost, and takes
-; up from there.
+; than the one it wants, it writes a hole record, the samples lost
+; (ai64_la.h), then a record of the pins at the block's first sample, and
+; takes up from there.
 ;
 ;   r1 - r19  a block's samples    r20  its number    r21  the pins' shift
 ;   r22  the register before r1, its last sample twice
@@ -111,7 +112,7 @@ LATE	.macro	b, W
 n:W:_:b::
 	SUB	r25, r20, r23
 	QBBS	w:W:_:b:, r25, 31
-	; r24 moves on by the lost blocks' time, and a gap record says how
+	; r24 moves on by the lost blocks' time, and a hole record says how
 	; many samples: 152 ns and 19 a block, or 304 ns and 38.
 	.if	W == 32
 	LSL	r27, r25, 7
@@ -137,9 +138,16 @@ n:W:_:b::
 	LSL	r27, r25, 1
 	ADD	r28, r28, r27
 	.endif
-	LDI32	r27, 0x81000000
+	LDI32	r27, 0x84000000
 	OR	r28, r28, r27
 	MOV	r27, r24
+	PUT
+	; The pins at the block's first sample, where the hole ends.
+	.if	W == 32
+	MOV	r28, r1
+	.else
+	LSL	r28, r1.w0, r21
+	.endif
 	PUT
 	MOV	r23, r20
 	PREV	W

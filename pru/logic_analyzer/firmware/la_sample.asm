@@ -18,6 +18,13 @@
 ; There is no write count to store: the seq in each record says it is new
 ; (la_map.h).
 ;
+; The first look at the pins after a record comes straight after its
+; store. A change there came while the PRU was busy with the record, so
+; its time is late, and a pulse in that time may be missing: its record
+; goes out with AI64_LA_LATE (bit 23, ai64_la.h) set, through a third and
+; fourth copy, two cycles longer, which Linux counts. The look takes the
+; place of the loop's first pass, so an edge on time costs no more.
+;
 ;   r14  ring      the ring's local address, LA_SRING_SIZE bytes
 ;   r15  mask      the PRU's GPI pins to record
 ;   r16  seq       the first record's seq
@@ -40,6 +47,8 @@ la_loop_a:
 	ADD	r9, r6, 16
 	AND	r20, r9, r19
 	SBBO	&r7, r14, r20, 12
+	AND	r5, r31, r15
+	QBNE	la_late_a, r5, r8
 la_loop_b:
 	AND	r5, r31, r15
 	QBEQ	la_loop_b, r5, r8
@@ -47,4 +56,25 @@ la_loop_b:
 	ADD	r6, r9, 16
 	AND	r20, r6, r19
 	SBBO	&r4, r14, r20, 12
-	QBA	la_loop_a
+	AND	r8, r31, r15
+	QBEQ	la_loop_a, r8, r5
+	; A change while busy: on into record B, late.
+la_late_b:
+	LBBO	&r7, r21, 0, 4
+	SET	r8, r8, 23
+	ADD	r9, r6, 16
+	AND	r20, r9, r19
+	SBBO	&r7, r14, r20, 12
+	CLR	r8, r8, 23
+	AND	r5, r31, r15
+	QBEQ	la_loop_b, r5, r8
+la_late_a:
+	LBBO	&r4, r21, 0, 4
+	SET	r5, r5, 23
+	ADD	r6, r9, 16
+	AND	r20, r6, r19
+	SBBO	&r4, r14, r20, 12
+	CLR	r5, r5, 23
+	AND	r8, r31, r15
+	QBEQ	la_loop_a, r8, r5
+	QBA	la_late_b

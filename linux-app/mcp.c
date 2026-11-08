@@ -501,12 +501,12 @@ static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 	sb_add(o, "\"duration_ns\":%llu,\"active\":[", (unsigned long long)(r->finish - r->begin));
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		struct chan_stats cs;
-		double span = (double)(r->finish - r->begin);
 
 		if (!ch[c].n) {
 			continue;
 		}
-		chan_stats(&ch[c], level(r->state, c), r->begin, r->finish, v, &cs);
+		chan_stats(&ch[c], level(r->state, c), r->begin, r->finish, v, &cs,
+			   &r->holes[la_chans[c].pru]);
 		sb_add(o, "%s{", first ? "" : ",");
 		chan_json(o, c);
 		sb_add(o, ",\"edges\":%zu,\"freq_hz\":", cs.edges);
@@ -519,7 +519,7 @@ static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 		sb_spread(o, &cs.period);
 		sb_add(o, ",\"high_ns\":");
 		sb_spread(o, &cs.high);
-		sb_add(o, ",\"duty_pct\":%.2f}", 100.0 * (double)cs.high_ns / span);
+		sb_add(o, ",\"duty_pct\":%.2f}", cs.known_ns ? 100.0 * (double)cs.high_ns / (double)cs.known_ns : 0.0);
 		first = 0;
 	}
 	sb_add(o, "],\"idle\":[");
@@ -532,6 +532,16 @@ static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 		chan_json(o, c);
 		sb_add(o, ",\"level\":%d}", level(r->state, c));
 		first = 0;
+	}
+	sb_add(o, "]");
+	/* Holes, where the stream lost records: no period or time spans one. */
+	sb_add(o, ",\"holes\":[");
+	for (c = 0; c < 2; c++) {
+		uint64_t ns;
+		size_t n = rec_holes(r, c, &ns);
+
+		sb_add(o, "%s{\"pru\":%d,\"holes\":%zu,\"ns\":%llu,\"late_edges\":%llu}", c ? "," : "",
+		       c, n, (unsigned long long)ns, (unsigned long long)r->st[c].late);
 	}
 	sb_add(o, "]");
 	free(v);
@@ -566,8 +576,11 @@ static const char *t_measure(const struct jv *args, struct sb *o)
 	for (k = 0; k < np; k++) {
 		struct spread up, down;
 
-		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 1, v), &up);
-		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 0, v), &down);
+		const struct holes *ha = &r.holes[la_chans[pairs[k][0]].pru];
+		const struct holes *hb = &r.holes[la_chans[pairs[k][1]].pru];
+
+		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 1, v, ha, hb), &up);
+		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 0, v, ha, hb), &down);
 		sb_add(o, "%s{\"a\":%d,\"b\":%d,\"after_a_rises_ns\":", k ? "," : "", pairs[k][0],
 		       pairs[k][1]);
 		sb_spread(o, &up);
@@ -1034,7 +1047,10 @@ static const struct {
 	{ "la_measure", t_measure,
 	  "Records the channels for some seconds and measures each active one: edges, frequency, "
 	  "period and high time (min, median, max, in ns), and duty. Pairs a:b give the time from "
-	  "each change of a to b's nearest change, such as a PWM's dead band between A and B.",
+	  "each change of a to b's nearest change, such as a PWM's dead band between A and B. "
+	  "holes lists each PRU's holes, where the stream lost records (no interval spans one), "
+	  "and its late edges: in edge mode, changes that came while the PRU was busy, so up to "
+	  "50 ns late, with pulses that short possibly missing; raw mode has them exactly.",
 	  "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":\"number\",\"description\":"
 	  "\"how long to record, at most 10; default 1\"},\"pairs\":{\"type\":\"array\",\"items\":"
 	  "{\"type\":\"string\"},\"description\":\"\\\"a:b\\\" channel pairs; default the demo's PWM "

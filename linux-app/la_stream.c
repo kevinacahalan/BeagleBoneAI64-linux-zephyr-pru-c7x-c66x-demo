@@ -127,7 +127,7 @@ static void keep_mark(struct stream *st, uint64_t t, uint32_t trig, uint32_t v)
 	st->mark[st->nmark].t = t;
 	st->mark[st->nmark].trig = trig;
 	st->mark[st->nmark].from = trig ? 0 : (v >> 16) & 0xffu;
-	st->mark[st->nmark].value = trig ? v & 0xffffffu : v & 0xffffu;
+	st->mark[st->nmark].value = trig ? v & 0xffffffu & ~AI64_LA_LATE : v & 0xffffu;
 	st->mark[st->nmark++].fresh = (int32_t)(st->rd - st->wr0) >= 0;
 }
 
@@ -157,8 +157,38 @@ static void copy_blocks(const struct stream *st, uint32_t from, uint32_t to)
 }
 
 /*
+ * A hole opens at from: the pins are unknown from there to the next record,
+ * or, with raw 2, raw mode's converter's, the next record it writes.
+ */
+static void open_hole(struct stream *st, uint64_t from, int raw)
+{
+	if (!st->hole && st->last) {
+		st->hole = raw ? 2 : 1;
+		st->hole_from = from > st->last ? from : st->last;
+	}
+}
+
+/* The open hole ends at t, the pins there state: to on_hole, or as an edge. */
+static void close_hole(struct stream *st, edge_fn fn, void *ctx, uint64_t t, uint32_t state, int edge)
+{
+	st->hole = 0;
+	if (st->on_hole) {
+		st->on_hole(ctx, st, st->hole_from, t, state);
+	} else if (edge) {
+		fn(ctx, st, t, state);
+	}
+}
+
+/*
  * Every record the RTU has written since the last call. The RTU updates wr
  * after a tick's second record, so a tick never shows up half written.
+ *
+ * A hole, where records were lost, runs from the last edge before it to
+ * the next record after, which holds every pin: an RTU's gap record, or
+ * this reader falling a ring behind; a tick ends one too, with the pins the
+ * RTU copied last. Raw mode's converter says where its hole starts, and
+ * writes the pins where it ends; its records come a few microseconds
+ * behind the RTU's ticks, so a tick neither ends its hole nor sets last.
  */
 void stream_poll(struct stream *st, edge_fn fn, void *ctx)
 {
@@ -167,6 +197,9 @@ void stream_poll(struct stream *st, edge_fn fn, void *ctx)
 	if (wr - st->rd > AI64_LA_RING_SIZE - 65536u) {
 		st->missed += (wr - st->rd) / AI64_LA_REC_SIZE;
 		st->rd = wr;
+		if (st->ticked) {
+			open_hole(st, st->last, 0);
+		}
 		st->ticked = 0;
 	}
 	while (wr - st->rd >= AI64_LA_REC_SIZE) {
@@ -198,11 +231,23 @@ void stream_poll(struct stream *st, edge_fn fn, void *ctx)
 						st->first_state = st->state;
 					}
 				}
+				if (st->hole == 1) {
+					st->state = v & 0xffffffu;
+					close_hole(st, fn, ctx, st->base > st->hole_from ? st->base : st->hole_from,
+						   st->state, 0);
+				}
 				st->rd += 2u * AI64_LA_REC_SIZE;
 				continue;
 			}
 			case AI64_LA_GAP:
 				st->gaps++;
+				open_hole(st, st->last, 0);
+				break;
+			case AI64_LA_HOLE:
+				st->gaps++;
+				if (st->ticked) {
+					open_hole(st, at - (uint64_t)(v & 0xffffffu) * 8u, 1);
+				}
 				break;
 			case AI64_LA_MARK:
 			case AI64_LA_TRIG:
@@ -217,9 +262,18 @@ void stream_poll(struct stream *st, edge_fn fn, void *ctx)
 				break;
 			default:
 				if (st->ticked) {
+					if (v & AI64_LA_LATE) {
+						st->late++;
+						v &= ~AI64_LA_LATE;
+					}
 					st->state = v;
 					st->edges++;
-					fn(ctx, st, at, v);
+					if (st->hole) {
+						close_hole(st, fn, ctx, at, v, 1);
+					} else {
+						fn(ctx, st, at, v);
+					}
+					st->last = at;
 				}
 				break;
 			}

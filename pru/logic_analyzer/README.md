@@ -85,7 +85,7 @@ flowchart LR
 - **The raw PRU** (`la_raw.asm`) takes R31 through the mask every two cycles, into the next register of 19, and every 19 registers stores the block in one `XOUT` to a scratchpad bank, in turn banks 10, 11, and 12, with the block's number. The instruction between two samples is the `XOUT`, the number's `ADD`, the jump back, or one that does nothing, so the samples are exactly 8 ns apart for as long as it runs. When the channels fit in 16 pins, 0 to 15 or 8 to 23, it takes two samples a register: a block is 304 ns instead of 152.
 - **The other PRU** (`la_conv.asm`) is the converter: the J721E's PRUs share their scratchpad banks, which a Tx_PRU or an RTU cannot reach (SPRUJ61, the J721E PRU guide). It loads each block with one `XIN` as it comes, compares each register with the one before, and for each change writes an edge record into the raw PRU's ring: the time of the first sample with the new pins, from the time of the run's first sample and the sample's number. The records are the same as edge mode's, so the RTU, its Tx_PRU and the trigger, Linux, the web page, and the MCP server take them as they are.
 - **The other PRU's own channels are not recorded** while it converts: raw mode trades them for speed, as a Saleae trades channels for sample rate.
-- **How fast**: a block with no change costs the converter about 26 of its cycles, of 38 at a sample a register or 76 at two; each change, 7 or 9 more. On EHRPWM4 alone it kept up with 6.7 million changes a second at a sample a register, and 10 million at two; faster than that it falls a few blocks behind, and writes a gap record saying how many samples it lost, so a hole is marked. The converter has two blocks in hand, about half a microsecond: a burst faster than that for longer than a few microseconds is cut.
+- **How fast**: a block with no change costs the converter about 26 of its cycles, of 38 at a sample a register or 76 at two; each change, 7 or 9 more. On EHRPWM4 alone it kept up with 6.7 million changes a second at a sample a register, and 10 million at two; faster than that it falls a few blocks behind, and writes a hole record saying how many samples it lost, then the pins at the first sample after, so the hole is marked exactly ([Holes and late edges](#holes-and-late-edges)). The converter has two blocks in hand, about half a microsecond: a burst faster than that for longer than a few microseconds is cut. At EHRPWM4's fastest, 62.5 MHz, the Nyquist rate, it keeps about an eighth of the time, in bursts a few blocks long: in them every period is exactly 16 ns and every high time 8.
 - **Accuracy**: slice 1's dead band reads exactly what it is set to, at every step from 1000 ns down to 16 ns, with no spread, every edge alike. Raw mode's times are where edge mode's are, within 4 ns: slice 1's PWM, on a clock the same as IEP0's, kept its phase across the change.
 
 `ai64 la mode raw <ch> ...` sets it, for channels of one PRU, and `ai64 la mode edge` sets it back; so does the web page's Capture section, and the MCP server's `la_mode`. Either restarts both PRUs, a gap of some 50 ms, and the RTUs and readers carry on across it: each new writer's sequence numbers go on from its RTU's.
@@ -115,6 +115,13 @@ Checked against the bench's Saleae Logic Pro 8 at 250 MS/s on P8.11, P9.12, and 
 
 **How close two edges can be.** Slice 1's hardware PWM puts A's fall and B's rise exactly its dead band apart, both on PRU1, so stepping the dead band down measures it (`fabric route g0rtu1 dead <ns>`). From 200 ns down to 52, the analyzer reads the gap right. Closer than that it reads 44 to 48 ns, or both changes in one record when they fall between two reads of the pins: writing a record takes the PRU 11 or 12 cycles, and a change in that time waits for the next pass. (It took 14 cycles, 56 ns, when the PRU stored a write count after each record.)
 
+### Holes and late edges
+
+Nothing the analyzer cannot keep up with is passed off as signal.
+
+- **A hole** is where records were lost: raw mode's converter fell behind the samples (a hole record, which says where it starts), an RTU fell a ring behind its PRU (a gap record), or a reader fell a ring behind the RTU. Linux's reader turns each into a span on its PRU's channels, from the last edge before to the next record, which holds every pin. A VCD file takes those channels to `x` in a hole; `la measure`, the MCP server's tools, and the web page measure no period, pulse, or a-to-b time across one, and duty over only the time that is known; the page draws a hole as a band marked "no data", and pointing at one says so.
+- **A late edge**, in edge mode, came while the PRU was still writing the record for the change before. The PRU's first look at its pins after a record comes straight after the store, and a change there gets `AI64_LA_LATE` (bit 23 of the state, no pin's) in its record (`la_sample.asm`), at no cost to an edge on time. Its time is up to some 50 ns late, and a pulse that came and went in that time is missing, with no hole: a pin that changes twice while the PRU is busy looks unchanged, so the count is a floor. `ai64 la rate`, the `la` window, a capture, and the MCP server count them, and the page's status bar gives them a second, amber once they are 1% of the edges. On EHRPWM4, 1% of edges came late at 5 million edges a second, 8% at 10 million, where the PRU's stores now and then wait on the RTU's reads of shared RAM, and over two thirds at 20 million, where raw mode has every one; the demo's own signals make about 15 a second, where SPI7's clock and data change together.
+
 **How fast.** The demo's PWM generators go no faster than a 2 µs period, 1 million edges a second a pin, but P9.25's is the SoC's EHRPWM4, which makes every edge in hardware, so it takes periods down to 16 ns: the analyzer's fast test signal, on ch12 (PRU1). `ai64 la rate` drains both streams and says how many records a second each RTU copied, how many a reader took and missed, and how close two records came; `tests/run.sh stress` steps EHRPWM4 from 2 µs down to 40 ns with it, and puts the steps back after. Each stage, measured that way:
 
 | Stage | How fast, measured |
@@ -128,7 +135,7 @@ Checked against the bench's Saleae Logic Pro 8 at 250 MS/s on P8.11, P9.12, and 
 The limits, then:
 
 - **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; in edge mode one that comes while the PRU is busy with another edge on its pins can be up to 48 ns late. In raw mode none is late.
-- **Short pulses**: in edge mode a pulse shorter than 48 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record. In raw mode every pulse of 8 ns or more is there.
+- **Short pulses**: in edge mode a pulse shorter than 48 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record, and the edge after it comes late, which is counted ([Holes and late edges](#holes-and-late-edges)). In raw mode every pulse of 8 ns or more is there, or in a marked hole.
 - **Rate**: in edge mode 15 million edges a second on one PRU, end to end into a browser, with nothing lost, and each PRU can write about 21 million; in raw mode 10 million on the raw PRU's channels with none lost when they fit 16 pins, 6.7 million when they do not.
 
 ## Using it
@@ -137,8 +144,8 @@ The limits, then:
 
 ```
 ICSSG1 logic analyzer, the last 1.000 s; IEP0 at 176.965 s
-  PRU0     31861 edges/s, 31905 in all; RTU0 gaps 0 (0 records), reader missed 0, marks 0, trigger hits 0
-  PRU1    179173 edges/s, 179625 in all; RTU1 gaps 0 (0 records), reader missed 0, marks 0, trigger hits 0
+  PRU0     31861 edges/s, 31905 in all; RTU0 gaps 0 (0 records), reader missed 0, late 0, marks 0, trigger hits 0
+  PRU1    179173 edges/s, 179625 in all; RTU1 gaps 0 (0 records), reader missed 0, late 0, marks 0, trigger hits 0
 
   ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty
    0  P8.03  0/19     -                 low            0      0.0 Hz     0.0%
@@ -176,7 +183,7 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 | `sudo ai64 la capture <seconds> <file.vcd\|-> [--trigger]` | records all 19 channels for that long and writes a VCD file, in ns from the start; with `--trigger`, around the next trigger hit |
 | `sudo ai64 la measure [seconds] [a:b ...]` | each channel's edges, frequency, period and high time (min, median, max), and duty; and for each pair, the time from a's changes to b's nearest, by default the demo's A/B pairs and ch7 against ch13 |
 | `sudo ai64 la mode [edge [ch ...] \| raw <ch> ...]` | each PRU's mode and the channels it records; or sets them: edge, every channel or those given; raw, channels of one PRU every 8 ns with no gap ([Raw mode](#raw-mode-every-8-ns-with-no-gap)) |
-| `sudo ai64 la rate [seconds]` | each PRU's records a second as its RTU copied them and as a reader took them, any missed, and the closest two records came ([How fast](#what-it-measures)) |
+| `sudo ai64 la rate [seconds]` | each PRU's records a second as its RTU copied them and as a reader took them, any missed, the closest two records came, and late edges a second ([How fast](#what-it-measures), [Holes and late edges](#holes-and-late-edges)) |
 | `sudo ai64 la trigger off \| <ch> rise\|fall\|any \| <ch>=0\|1 ...` | sets the Tx_PRUs' trigger |
 | `sudo ai64 la mark <value>` | puts a mark in the stream, through the fabric to RTU0 |
 | `sudo ai64 la quiet` | stops IEP0 and every task, before ICSSG1's cores stop; `ai64-demo` runs it |
@@ -197,6 +204,7 @@ The waveforms fill the window, a row per channel in its own color, with the time
 - **Navigation**: the wheel zooms at the pointer, a drag or a trackpad's sideways swipe pans, double-click fits the whole capture, and the overview strip at the bottom shows where the view is and moves it with a click or a drag. `[` and `]` jump to the previous or next edge on the channel pointed at. **Live** keeps the newest data at the right. The ruler labels times to the digits the zoom resolves.
 - **Analyzers**: SPI (chip select active low, any of the four modes, MOSI and MISO), UART (8N1, any baud, inverted or not), and I²C (starts, stops, addresses, data, acknowledges) each add a row under the channels, decoded over the time in view; pointing at a decoded byte gives its value, time, and length, and the Analyzers tab lists them, searchable, a click away.
 - **Events**: marks, trigger hits, and gaps are drawn as flags on the ruler and lines down the rows, and listed in the Events tab.
+- **Holes and late edges**: a hole is a band across its PRU's channels marked "no data", and nothing is measured across one; the status bar counts late edges a second ([Holes and late edges](#holes-and-late-edges)).
 - **Capture**, in the Channels tab: edge mode, with the channels to record, or raw 125 MS/s, with the channels of one PRU, and what each costs and keeps up with; Apply sets it on the board ([Raw mode](#raw-mode-every-8-ns-with-no-gap)), for every viewer, and the status bar says which runs. A channel not recorded is drawn faint and tagged so.
 - **Channels**: show or hide each channel, name it, and pick its color; the browser remembers them, and the theme (light or dark) and the side panel.
 - **Save** writes the capture to a `.lacap` file, and **Open** reads one back.
