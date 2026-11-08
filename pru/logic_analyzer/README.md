@@ -2,7 +2,7 @@
 
 ICSSG1's six cores record every change on 19 header pins, each stamped with the count of IEP0, ICSSG1's nanosecond counter on its 250 MHz clock, and Linux reads the records out of DDR. Jumper wires bring it the demo's own signals: the four PWM generators, SPI7, and the square wave. `ai64 la` then shows what each pin is doing, and `ai64 la capture` writes a VCD file for PulseView or GTKWave.
 
-It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s, and it streams 15 million a second into a browser, as fast as a test signal makes one PRU record them. In its usual edge mode every pin is read every 8 ns, but a change less than 48 ns after another on the same PRU waits for it; [raw mode](#raw-mode-every-8-ns-with-no-gap) takes one PRU's channels every 8 ns with no gap at all, so pulses and gaps down to 8 ns come out exact, and the other PRU turns the samples into the same edge records. Each slice's Tx_PRU matches a trigger on the edges as they come, and the RTUs are fabric nodes, so any core in the demo can put a mark on the timeline.
+It records changes, not samples, so how much it writes depends on what the pins do, not on a sample rate: the demo's signals come to about 210,000 edges a second, under 2 MB/s, and it streams 15 million a second into a browser, as fast as a test signal makes one PRU record them. In its usual edge mode every pin is read every 8 ns, but a change less than 48 ns after another on the same PRU waits for it, and is counted as late; [raw mode](#raw-mode-every-8-ns-with-no-gap) takes one PRU's channels every 8 ns with no gap at all, so pulses and gaps down to 8 ns come out exact, and the other PRU turns the samples into the same edge records; a [burst](#bursts-every-sample-whatever-the-signal) copies those samples to memory as they are, so no signal is too fast, for up to 255 ms. What it cannot keep up with is a [marked hole](#holes-and-late-edges), never a false level. Each slice's Tx_PRU matches a trigger on the edges as they come, and the RTUs are fabric nodes, so any core in the demo can put a mark on the timeline.
 
 ## The channels
 
@@ -49,8 +49,8 @@ flowchart LR
   tx0 -->|"hits"| rtu0
   tx1 -->|"hits"| rtu1
   rtu0 -->|"starts"| iep
-  rtu0 -->|"records, ticks, marks, hits:<br/>a 32 MiB ring"| ddr[("DDR")]
-  rtu1 -->|"records, ticks, marks, hits:<br/>a 32 MiB ring"| ddr
+  rtu0 -->|"records, ticks, marks, hits:<br/>a 16 MiB ring"| ddr[("DDR")]
+  rtu1 -->|"records, ticks, marks, hits:<br/>a 16 MiB ring"| ddr
   fab(("the fabric")) -->|"marks"| rtu0
   fab -->|"marks"| rtu1
   ddr -->|"/dev/mem"| ai64["ai64 la"]
@@ -66,7 +66,7 @@ flowchart LR
 
 **The RTU** takes the slow, unpredictable work: DDR, and the GTC, the SoC's shared clock. It finds how many records are new with a binary search on their sequence numbers, and copies them four at a time (`la_copy.asm`): one 64-byte load from shared RAM, the four times and states packed into one 32-byte store to DDR. Each millisecond it adds a tick, which pairs IEP0's count with the GTC and says every pin's state. An edge record holds only IEP0's low 32 bits; Linux finds the rest from the stream's last tick, which is never more than a millisecond away. If the RTU ever fell a whole ring behind its PRU, it would skip to where the PRU is and write a gap record, so a hole in the data is always marked.
 
-**Linux** (`linux-app/la_stream.c`, for `ai64 la` in `la.c` and the web viewer's stream in `la_ws.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 32 MiB ring behind, about 20 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
+**Linux** (`linux-app/la_stream.c`, for `ai64 la` in `la.c` and the web viewer's stream in `la_ws.c`) follows both streams in DDR, unwraps each edge's time, and merges the two by time. Nothing waits for Linux either: a reader that falls a whole 16 MiB ring behind, about 10 s of the demo's signals on PRU1, sees it from the ring's write count and counts what it missed.
 
 `zephyr/include/ai64_la.h` has the record format and the addresses; `firmware/la_map.h` how each slice's data RAM and ICSSG1's shared RAM are split, and the modes; and `firmware/la_ipc.h` the records the slice's cores share.
 
@@ -89,6 +89,24 @@ flowchart LR
 - **Accuracy**: slice 1's dead band reads exactly what it is set to, at every step from 1000 ns down to 16 ns, with no spread, every edge alike. Raw mode's times are where edge mode's are, within 4 ns: slice 1's PWM, on a clock the same as IEP0's, kept its phase across the change.
 
 `ai64 la mode raw <ch> ...` sets it, for channels of one PRU, and `ai64 la mode edge` sets it back; so does the web page's Capture section, and the MCP server's `la_mode`. Either restarts both PRUs, a gap of some 50 ms, and the RTUs and readers carry on across it: each new writer's sequence numbers go on from its RTU's.
+
+### Bursts: every sample, whatever the signal
+
+Raw mode's converter costs 7 to 9 cycles a change, so a signal faster than 10 million changes a second comes out in bursts with holes between. A burst trades time for that: in dump mode the PRU that is not raw copies each block of samples, as it is, into a 32 MiB buffer in DDR (`la_dump.asm`), one `XIN` and one 80-byte store, the same cost whatever the pins do, and Linux finds the changes after (`linux-app/la_burst.c`). Each block's number goes into its slot XOR the burst's start time, so a slot an earlier burst left reads as none of this one's, and a missing number is a marked hole.
+
+| Channels | Samples a word | Copied | Longest burst |
+| --- | --- | --- | --- |
+| within pins 0 to 7, or 8 to 15, of their PRU | 4 | 132 MB/s | 255 ms |
+| within pins 0 to 15, or 8 to 23 | 2 | 250 MB/s | 127 ms |
+| any | 1 | 500 MB/s | 64 ms |
+
+The four-a-word lanes are a burst's only: the raw PRU takes R31's byte into the next byte of a register (`la_raw.asm`). Unrolled for three banks, as the other lanes are, that loop would not fit in the PRU's 12 KiB of IRAM; the banks share one body, which jumps to a short tail of each bank's own in the spare cycle between two samples, so the samples are still exactly 8 ns apart. There is room for two such lanes, not three: channels on pins 16 to 23 take two a word.
+
+**What held it back was the RTUs.** At first the copier lost 35% of the blocks at two samples a word and 68% at one, as if ICSSG1 could write only 160 MB/s to DDR. But with its ring idle an RTU polls the fabric every pass, microseconds of reads from DDR, and reads the GTC several times a pass, all through the same port out of ICSSG1. So in dump mode both RTUs keep quiet (`la_rtu.c`): no tick, no fabric, only a look a millisecond, by IEP0, which is ICSSG1's own, for the next mode. Then a 255 ms burst at four samples a word lost 27 of its 419,429 blocks, in three holes of 5.5 µs, 84 ms apart, something elsewhere in the SoC holding DDR longer than the copier's two blocks in hand cover; at two a word, 45; at one, 279. Across a burst, then, the stream has no ticks and no marks, and the fabric does not see either RTU.
+
+On EHRPWM4 at 62.5 MHz, its Nyquist rate, a 10 ms burst of ch10 to ch12 at four samples a word held 1,249,286 changes on ch12, every one 8 ns after the one before; at two a word, 1,249,971, with no block lost. At one a word, on EHRPWM4 at 31.25 MHz, every change was 16 ns after the last.
+
+`sudo ai64 la burst <seconds|max> <file.vcd> <ch> ...` takes one, of channels of one PRU, and writes a VCD file, the other PRU's channels unknown (`x`); the web page's Burst, in the Capture section in raw mode, puts one into the timeline and zooms to it; the MCP server's `la_capture` takes one with `burst`. Each puts the mode back after. While it lasts, both PRUs are in it: every viewer's stream has a gap there.
 
 ### Triggers
 
@@ -136,7 +154,7 @@ The limits, then:
 
 - **Time**: an edge's time is within a pass of the loop, 8 ns, of the truth; in edge mode one that comes while the PRU is busy with another edge on its pins can be up to 48 ns late. In raw mode none is late.
 - **Short pulses**: in edge mode a pulse shorter than 48 ns, right after another edge on the same PRU, can be missed: the PRU sees a pin's level at its next pass, so a pulse that is over by then leaves no record, and the edge after it comes late, which is counted ([Holes and late edges](#holes-and-late-edges)). In raw mode every pulse of 8 ns or more is there, or in a marked hole.
-- **Rate**: in edge mode 15 million edges a second on one PRU, end to end into a browser, with nothing lost, and each PRU can write about 21 million; in raw mode 10 million on the raw PRU's channels with none lost when they fit 16 pins, 6.7 million when they do not.
+- **Rate**: in edge mode 15 million edges a second on one PRU, end to end into a browser, with nothing lost, and each PRU can write about 21 million; in raw mode 10 million on the raw PRU's channels with none lost when they fit 16 pins, 6.7 million when they do not. A burst has no rate limit, only a length: up to 255 ms of any signal ([Bursts](#bursts-every-sample-whatever-the-signal)).
 
 ## Using it
 
@@ -183,6 +201,7 @@ When A falls, B rises a dead band later: 1000 ns on slice 1, exact in hardware, 
 | `sudo ai64 la capture <seconds> <file.vcd\|-> [--trigger]` | records all 19 channels for that long and writes a VCD file, in ns from the start; with `--trigger`, around the next trigger hit |
 | `sudo ai64 la measure [seconds] [a:b ...]` | each channel's edges, frequency, period and high time (min, median, max), and duty; and for each pair, the time from a's changes to b's nearest, by default the demo's A/B pairs and ch7 against ch13 |
 | `sudo ai64 la mode [edge [ch ...] \| raw <ch> ...]` | each PRU's mode and the channels it records; or sets them: edge, every channel or those given; raw, channels of one PRU every 8 ns with no gap ([Raw mode](#raw-mode-every-8-ns-with-no-gap)) |
+| `sudo ai64 la burst <seconds\|max> <file.vcd\|-> <ch> ...` | channels of one PRU every 8 ns with no gap, whatever the signal, copied as they are and read after ([Bursts](#bursts-every-sample-whatever-the-signal)): up to 255 ms; the mode goes back after |
 | `sudo ai64 la rate [seconds]` | each PRU's records a second as its RTU copied them and as a reader took them, any missed, the closest two records came, and late edges a second ([How fast](#what-it-measures), [Holes and late edges](#holes-and-late-edges)) |
 | `sudo ai64 la trigger off \| <ch> rise\|fall\|any \| <ch>=0\|1 ...` | sets the Tx_PRUs' trigger |
 | `sudo ai64 la mark <value>` | puts a mark in the stream, through the fabric to RTU0 |
@@ -205,6 +224,7 @@ The waveforms fill the window, a row per channel in its own color, with the time
 - **Analyzers**: SPI (chip select active low, any of the four modes, MOSI and MISO), UART (8N1, any baud, inverted or not), and I²C (starts, stops, addresses, data, acknowledges) each add a row under the channels, decoded over the time in view; pointing at a decoded byte gives its value, time, and length, and the Analyzers tab lists them, searchable, a click away.
 - **Events**: marks, trigger hits, and gaps are drawn as flags on the ruler and lines down the rows, and listed in the Events tab.
 - **Holes and late edges**: a hole is a band across its PRU's channels marked "no data", and nothing is measured across one; the status bar counts late edges a second ([Holes and late edges](#holes-and-late-edges)).
+- **Burst**, in the Capture section in raw mode: every sample of the chosen channels for up to 255 ms, whatever the signal ([Bursts](#bursts-every-sample-whatever-the-signal)), added to the timeline and zoomed to; the channels it left out are "no data" there.
 - **Capture**, in the Channels tab: edge mode, with the channels to record, or raw 125 MS/s, with the channels of one PRU, and what each costs and keeps up with; Apply sets it on the board ([Raw mode](#raw-mode-every-8-ns-with-no-gap)), for every viewer, and the status bar says which runs. A channel not recorded is drawn faint and tagged so.
 - **Channels**: show or hide each channel, name it, and pick its color; the browser remembers them, and the theme (light or dark) and the side panel.
 - **Save** writes the capture to a `.lacap` file, and **Open** reads one back.
@@ -241,7 +261,7 @@ claude mcp add --transport http ai64-la http://<board>:8065/mcp
 | `la_channels` | the 19 channels: pin, ball, PRU and GPI bit, and what the demo's jumpers bring |
 | `la_status` | a quarter-second look: each PRU's edges a second and totals, gaps, marks, trigger hits, the trigger, and every channel's level |
 | `la_measure` | records for some seconds, and for each active channel gives edges, frequency, period and high time (min, median, max), and duty; and for channel pairs, the time from each change of one to the other's nearest |
-| `la_capture` | records for some seconds, or around the next trigger hit, and keeps it on the board, also as a VCD file; returns the same summary as `la_measure`, and the marks and hits |
+| `la_capture` | records for some seconds, or around the next trigger hit, or takes a burst of channels of one PRU (`burst`), and keeps it on the board, also as a VCD file; returns the same summary as `la_measure`, with its holes and late edges, and the marks and hits |
 | `la_edges` | the last capture's changes on some channels in a time window, at most a limit a channel |
 | `la_decode` | SPI or UART in the last capture |
 | `la_mode` | the capture mode, or sets it: edge, or raw on one PRU's channels |

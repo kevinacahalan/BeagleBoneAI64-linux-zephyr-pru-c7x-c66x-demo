@@ -222,7 +222,7 @@ static void tick(uint32_t state)
 void main(void)
 {
 	volatile struct ai64_la_stream *h = HDR;
-	uint32_t state = 0, last_tick, status_at, fab_at;
+	uint32_t state = 0, last_tick, status_at, fab_at, quiet_at = 0;
 
 	/* The PRU waits for this word, the last thing set here. */
 	LA_READY_WORD = 0;
@@ -276,6 +276,23 @@ void main(void)
 
 	for (;;) {
 		uint32_t seq = SREC(rd)->seq;
+
+		/*
+		 * A burst (la_dump.asm): one PRU copies samples to DDR as fast
+		 * as ICSSG1's port to the SoC takes them, and the ring has no
+		 * records. Every read or write this RTU makes outside ICSSG1,
+		 * the GTC, the fabric, a tick, waits on the same port, and cost
+		 * the copier a block a millisecond. So until the mode changes,
+		 * only that, once a millisecond by IEP0, which is ICSSG1's own.
+		 */
+		if (AI64_LA_MODE_OF(LA_CFG_REC->mode) == AI64_LA_MODE_DUMP ||
+		    AI64_LA_MODE_OF(LA_CFG_OTHER->mode) == AI64_LA_MODE_DUMP) {
+			if (IEP_LO() - quiet_at >= 1000000u) {
+				quiet_at = IEP_LO();
+				pass_mode();
+			}
+			continue;
+		}
 
 		if ((int32_t)(seq - rd) > 0) {
 			/* The PRU has gone a lap past: skip to the record it left here. */

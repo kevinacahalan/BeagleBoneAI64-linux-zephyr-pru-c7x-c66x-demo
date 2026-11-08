@@ -12,6 +12,14 @@
  *   waits for the next trigger hit and records around it, a tenth of the
  *   time before it, read back from the ring, and the rest after.
  *
+ * ai64 la burst <seconds|max> <file.vcd|-> <ch> ...
+ *   Channels of one PRU every 8 ns with no gap, whatever the signal, for
+ *   that long, at most what the burst buffer holds (la_burst.c): 134 ms
+ *   for channels within 16 pins, 67 ms otherwise. The other PRU copies the
+ *   samples as they are, and they are read after, so a signal too fast to
+ *   stream in raw mode comes out whole. Writes a VCD file, as capture, the
+ *   other PRU's channels unknown, and puts the mode back.
+ *
  * ai64 la trigger off | <ch> rise|fall|any | <ch>=0|1 ...
  *   Sets the trigger the Tx_PRUs match (ai64_la.h): an edge on a channel,
  *   or the channels coming to a pattern. A trigger takes the channels of
@@ -397,6 +405,66 @@ static int capture_main(int argc, char **argv)
 	return 0;
 }
 
+static int burst_main(int argc, char **argv)
+{
+	static struct recording r;
+	struct burst_info bi;
+	uint32_t mask[2] = { 0, 0 }, was_mask[2];
+	char err[160];
+	double secs;
+	size_t nedge[2];
+	int was_raw, pru = -1, i, rc;
+	FILE *f;
+
+	secs = argc > 3 && !strcmp(argv[3], "max") ? 0 : argc > 3 ? atof(argv[3]) : -1;
+	for (i = 5; i < argc; i++) {
+		int c = atoi(argv[i]);
+
+		if (c < 0 || c >= (int)AI64_LA_NCHAN || (pru >= 0 && la_chans[c].pru != pru)) {
+			pru = -2;
+			break;
+		}
+		pru = la_chans[c].pru;
+		mask[pru] |= 1u << la_chans[c].bit;
+	}
+	if (argc < 6 || secs < 0 || pru < 0) {
+		fprintf(stderr, "usage: %s la burst <seconds|max> <file.vcd|-> <ch> ...  (channels of one PRU)\n",
+			argv[0]);
+		return 2;
+	}
+	if (la_get_mode(&was_raw, was_mask)) {
+		fprintf(stderr, "the logic analyzer does not run\n");
+		return 1;
+	}
+	rc = la_burst(pru, mask[pru], secs, &r, &bi, err, sizeof(err));
+	if (la_set_mode(was_raw, was_mask, err, sizeof(err))) {
+		fprintf(stderr, "putting the mode back: %s\n", err);
+	}
+	if (rc) {
+		fprintf(stderr, "la burst: %s\n", err);
+		rec_free(&r);
+		return 1;
+	}
+	f = strcmp(argv[4], "-") ? fopen(argv[4], "w") : stdout;
+	if (!f) {
+		perror(argv[4]);
+		rec_free(&r);
+		return 1;
+	}
+	rec_write_vcd(&r, f, nedge);
+	if (f != stdout) {
+		fclose(f);
+	}
+	fprintf(stderr, "%.6f s of PRU%d every 8 ns, %s: %llu blocks, %llu lost; %llu edges%s%s\n",
+		(r.finish - r.begin) / 1e9, pru,
+		bi.lane == AI64_LA_LANE_ALL ? "a sample a word" :
+		bi.lane <= AI64_LA_LANE_MID16 ? "two samples a word" : "four samples a word",
+		(unsigned long long)bi.blocks, (unsigned long long)bi.lost,
+		(unsigned long long)bi.edges, f != stdout ? ", in " : "", f != stdout ? argv[4] : "");
+	rec_free(&r);
+	return 0;
+}
+
 /* ---- measure ---- */
 
 /* A spread as "min med max", or a dash for none. */
@@ -778,6 +846,9 @@ int la_main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "capture")) {
 		return capture_main(argc, argv);
+	}
+	if (argc > 2 && !strcmp(argv[2], "burst")) {
+		return burst_main(argc, argv);
 	}
 	if (argc > 2 && !strcmp(argv[2], "trigger")) {
 		return trigger_main(argc, argv);

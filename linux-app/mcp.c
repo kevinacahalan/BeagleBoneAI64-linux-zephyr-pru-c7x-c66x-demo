@@ -596,10 +596,44 @@ static const char *t_measure(const struct jv *args, struct sb *o)
 	return NULL;
 }
 
+/*
+ * A burst instead of a recording (la_burst.c): channels of one PRU every
+ * 8 ns, secs or as long as the buffer holds; then the mode put back.
+ */
+static const char *burst_capture(const struct jv *burst, double secs, struct burst_info *bi)
+{
+	static char err[200];
+	uint32_t mask[2] = { 0, 0 }, was_mask[2];
+	char back[160];
+	int was_raw, pru = -1, rc;
+	size_t i;
+
+	for (i = 0; burst->t == J_ARR && i < burst->n; i++) {
+		const struct jv *c = &burst->kid[i];
+
+		if (c->t != J_NUM || c->num < 0 || c->num >= AI64_LA_NCHAN ||
+		    (pru >= 0 && la_chans[(int)c->num].pru != pru)) {
+			return "burst: channels of one PRU";
+		}
+		pru = la_chans[(int)c->num].pru;
+		mask[pru] |= 1u << la_chans[(int)c->num].bit;
+	}
+	if (pru < 0) {
+		return "burst: channels of one PRU";
+	}
+	if (la_get_mode(&was_raw, was_mask)) {
+		return "the analyzer is not running";
+	}
+	rc = la_burst(pru, mask[pru], secs, &cap, bi, err, sizeof(err));
+	la_set_mode(was_raw, was_mask, back, sizeof(back));
+	return rc ? err : NULL;
+}
+
 static const char *t_capture(const struct jv *args, struct sb *o)
 {
 	double secs = jnum(args, "seconds", 0.1);
-	const struct jv *trig = jget(args, "trigger");
+	const struct jv *trig = jget(args, "trigger"), *burst = jget(args, "burst");
+	struct burst_info bi;
 	size_t nedge[2], nmk, i, shown = 0;
 	struct mark *mk;
 	FILE *f;
@@ -613,7 +647,14 @@ static const char *t_capture(const struct jv *args, struct sb *o)
 		rec_free(&cap);
 		have_cap = 0;
 	}
-	if (record(&cap, secs, trig && trig->t == J_BOOL && trig->b)) {
+	if (burst) {
+		const char *bad = burst_capture(burst, secs, &bi);
+
+		if (bad) {
+			rec_free(&cap);
+			return bad;
+		}
+	} else if (record(&cap, secs, trig && trig->t == J_BOOL && trig->b)) {
 		return "no recording: the analyzer is not running, or no trigger hit came in 30 s "
 		       "(la_trigger sets one)";
 	}
@@ -624,6 +665,11 @@ static const char *t_capture(const struct jv *args, struct sb *o)
 	have_cap = 1;
 	sb_add(o, "{");
 	stats_json(o, &cap, cap_ch);
+	if (burst) {
+		sb_add(o, ",\"burst\":{\"pru\":%d,\"blocks\":%llu,\"lost_blocks\":%llu,\"edges\":%llu}",
+		       bi.pru, (unsigned long long)bi.blocks, (unsigned long long)bi.lost,
+		       (unsigned long long)bi.edges);
+	}
 	if (cap.hit) {
 		sb_add(o, ",\"trigger_at_ns\":%llu", (unsigned long long)(cap.hit - cap.begin));
 	}
@@ -1058,10 +1104,16 @@ static const struct {
 	{ "la_capture", t_capture,
 	  "Records all 19 channels, for some seconds or around the next trigger hit (a tenth before, "
 	  "the rest after), keeps it for la_edges and la_decode, saves a VCD file on the board, and "
-	  "returns a summary: each active channel's measurements, and the marks and trigger hits.",
+	  "returns a summary: each active channel's measurements, and the marks and trigger hits. "
+	  "With burst, channels of one PRU instead, sampled every 8 ns with no gap whatever the "
+	  "signal, for seconds or as long as the buffer holds: 255 ms for channels within pins "
+	  "0-7 or 8-15 of their PRU, 127 ms within 16 pins, 64 ms otherwise; the other channels are "
+	  "a hole. For signals too fast to stream.",
 	  "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":\"number\",\"description\":"
 	  "\"at most 10; default 0.1\"},\"trigger\":{\"type\":\"boolean\",\"description\":\"wait for "
-	  "the next trigger hit (la_trigger sets one) and record around it\"}}}" },
+	  "the next trigger hit (la_trigger sets one) and record around it\"},\"burst\":{\"type\":"
+	  "\"array\",\"items\":{\"type\":\"integer\"},\"description\":\"channels of one PRU for a "
+	  "burst (la_channels has each one's PRU)\"}}}" },
 	{ "la_edges", t_edges,
 	  "The last capture's changes on some channels in a time window, as [t_ns, level] from the "
 	  "capture's start, at most limit a channel.",

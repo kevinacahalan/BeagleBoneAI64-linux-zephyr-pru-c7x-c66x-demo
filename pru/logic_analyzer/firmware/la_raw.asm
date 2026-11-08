@@ -6,6 +6,8 @@
 ;   la_raw(mask, t0)      every pin, a sample a register
 ;   la_raw16_0(mask, t0)  pins 0 - 15, two samples a register
 ;   la_raw16_8(mask, t0)  pins 8 - 23, two samples a register
+;   la_raw8_0(mask, t0)   pins 0 - 7, four samples a register, for a burst
+;   la_raw8_8(mask, t0)   pins 8 - 15, the same (la_dump.asm)
 ;
 ; Every two cycles, 8 ns, without a gap, it takes R31 through the mask
 ; (all of it, or the 16 pins) into the next register, or half register, of
@@ -32,6 +34,8 @@
 	.global la_raw
 	.global la_raw16_0
 	.global la_raw16_8
+	.global la_raw8_0
+	.global la_raw8_8
 
 ; Sample s of a block (from 1), W bits wide, from R31's field L.
 SAMPLE	.macro	s, W, L
@@ -90,3 +94,57 @@ RAW	.macro	name, W, L
 	RAW	la_raw, 32, w0
 	RAW	la_raw16_0, 16, w0
 	RAW	la_raw16_8, 16, w1
+
+; Four samples a register, a byte each, 76 a block, 608 ns: for a burst,
+; where the other PRU copies the bytes as they are, and fewer bytes keep
+; it up. Unrolled three times, as above, it would not fit in IRAM, so the
+; three banks share one body, samples 3 to 75, and the spare slot after
+; sample 75 jumps through r23 to a tail of the bank's own: sample 76, the
+; XOUT, sample 1, r23 to the next bank's tail, sample 2, and back. The
+; jumps take spare slots, so the samples stay exactly 8 ns apart.
+SAMPLE8	.macro	s, L
+	.eval	(s + 3) / 4, rk
+	.eval	(s - 1) & 3, by
+	AND	r:rk:.b:by:, r31.:L:, r22.:L:
+	.endm
+
+TAIL8	.macro	name, b, nb, L
+:name:_t:b::
+	SAMPLE8	76, L
+	XOUT	b, &r1, 80
+	SAMPLE8	1, L
+	LDI	r23, $CODE(:name:_t:nb:)
+	SAMPLE8	2, L
+	QBA	:name:_body
+	.endm
+
+RAW8	.macro	name, L
+:name::
+	LDI	r0, 0
+	MOV	r22, r14
+	LDI32	r20, 0xffffffff
+	LDI32	r23, 0x0002e010
+	LBBO	&r24, r23, 0, 4
+	SBBO	&r24, r15, 0, 4
+	SAMPLE8	1, L
+	LDI	r23, $CODE(:name:_t10)
+	SAMPLE8	2, L
+	MOV	r0, r0
+:name:_body:
+	SAMPLE8	3, L
+	ADD	r20, r20, 1
+	.asg	4, s
+	.loop	71
+	SAMPLE8	s, L
+	MOV	r0, r0
+	.eval	s + 1, s
+	.endloop
+	SAMPLE8	75, L
+	JMP	r23
+	TAIL8	name, 10, 11, L
+	TAIL8	name, 11, 12, L
+	TAIL8	name, 12, 10, L
+	.endm
+
+	RAW8	la_raw8_0, b0
+	RAW8	la_raw8_8, b1

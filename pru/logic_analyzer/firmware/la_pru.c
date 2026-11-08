@@ -6,9 +6,10 @@
  * its ring in shared RAM at every change (la_sample.asm); in raw mode it
  * samples every 8 ns and passes the samples to the other PRU (la_raw.asm);
  * in conv mode it is that other PRU, and writes the records for them into
- * the raw PRU's ring (la_conv.asm). It touches nothing outside ICSSG1, so
- * nothing outside can slow the loop: each slice's RTU takes the records
- * from its ring.
+ * the raw PRU's ring (la_conv.asm); in dump mode it copies them into the
+ * burst buffer in DDR (la_dump.asm). Except in dump mode it touches nothing
+ * outside ICSSG1, so nothing outside can slow the loop: each slice's RTU
+ * takes the records from its ring.
  */
 
 #include <stdint.h>
@@ -33,8 +34,11 @@ extern void la_sample(uint32_t ring, uint32_t mask, uint32_t seq);
 extern void la_raw(uint32_t mask, uint32_t t0);
 extern void la_raw16_0(uint32_t mask, uint32_t t0);
 extern void la_raw16_8(uint32_t mask, uint32_t t0);
+extern void la_raw8_0(uint32_t mask, uint32_t t0);
+extern void la_raw8_8(uint32_t mask, uint32_t t0);
 extern void la_conv(uint32_t ring, uint32_t seq, uint32_t t0);
 extern void la_conv16(uint32_t ring, uint32_t seq, uint32_t t0, uint32_t shift);
+extern void la_dump(uint32_t buf, uint32_t t0);
 
 void main(void)
 {
@@ -63,6 +67,13 @@ void main(void)
 		if (lane == AI64_LA_LANE_MID16) {
 			la_raw16_8(mask, (uint32_t)&LA_CFG_REC->t0);
 		}
+		/* A burst's lanes, four samples a word (la_dump.asm). */
+		if (lane == AI64_LA_LANE_B0) {
+			la_raw8_0(mask, (uint32_t)&LA_CFG_REC->t0);
+		}
+		if (lane == AI64_LA_LANE_B1) {
+			la_raw8_8(mask, (uint32_t)&LA_CFG_REC->t0);
+		}
 		la_raw(mask, (uint32_t)&LA_CFG_REC->t0);
 	}
 	if (mode == AI64_LA_MODE_CONV) {
@@ -75,6 +86,12 @@ void main(void)
 				  (uint32_t)&LA_CFG_OTHER->t0, lane == AI64_LA_LANE_MID16 ? 8u : 0u);
 		}
 		la_conv(LA_SRING(1 - AI64_SLICE), LA_CFG_OTHER->resume, (uint32_t)&LA_CFG_OTHER->t0);
+	}
+	if (mode == AI64_LA_MODE_DUMP) {
+		/* Started before the raw PRU too. */
+		trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: PRU0's samples to the burst buffer\n" :
+					"ICSSG1 PRU0 up: PRU1's samples to the burst buffer\n");
+		la_dump(AI64_LA_BURST_ADDR, (uint32_t)&LA_CFG_OTHER->t0);
 	}
 	trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: an edge record at each change\n" :
 				"ICSSG1 PRU0 up: an edge record at each change\n");

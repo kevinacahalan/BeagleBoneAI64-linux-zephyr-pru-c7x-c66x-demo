@@ -306,6 +306,19 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
         <button id="modeapply" class="primary">Apply</button>
         <span class="hint" id="modestate"></span>
       </div>
+      <div id="burstbox" style="display:none">
+        <div class="hint" id="bursthint"></div>
+        <div class="capfoot">
+          <select id="burstlen" title="How long a burst">
+            <option value="0">as long as it holds</option>
+            <option value="0.1">100 ms</option>
+            <option value="0.01">10 ms</option>
+            <option value="0.001">1 ms</option>
+          </select>
+          <button id="burstgo">Burst</button>
+          <span class="hint" id="burststate"></span>
+        </div>
+      </div>
       <h3>Channels</h3>
       <div class="hint">Show, name, and color each channel. This browser remembers them.</div>
       <div id="chlist"></div>
@@ -548,10 +561,20 @@ class Holes {
   crosses(a, b) { const k = this.find(a); return k < this.n && this.a[k] < b; }
 }
 
+// A channel's holes: its PRU's, and its own, where a burst of its PRU's
+// other channels left it out. at(t) gives the hole t is in, [a, b], or null.
+class ChanHoles {
+  constructor(pru, own) { this.lists = [pru, own]; }
+  at(t) { for (const h of this.lists) { const k = h.at(t); if (k >= 0) return [h.a[k], h.b[k]]; } return null; }
+  crosses(a, b) { return this.lists.some(h => h.crosses(a, b)); }
+}
+function holesOf(ch) { return new ChanHoles(S.holes[S.meta.channels[ch].pru], S.chHoles[ch]); }
+
 function reset() {
   Spill.ram = 0;
   S.tracks = S.meta ? S.meta.channels.map(c => new Track(c.ch)) : [];
   S.holes = [new Holes(), new Holes()];
+  S.chHoles = S.meta ? S.meta.channels.map(() => new Holes()) : [];
   S.prev = [null, null]; S.t0 = null; S.now = [0, 0]; S.events = []; S.held = 0;
   S.markers = [null, null]; S.sel = null; S.view = { a: 0, b: 1e6 }; S.dirty = true;
 }
@@ -658,6 +681,8 @@ function onText(text) {
   if (m.type === "meta") setMeta(m);
   else if (m.type === "mode") setModeInfo(m);
   else if (m.type === "mode_error") { doneApplying(); banner("The mode: " + m.error); drawCapture(); }
+  else if (m.type === "burst") burstDone(m);
+  else if (m.type === "burst_error") { S.bursting = false; banner("The burst: " + m.error); drawCapture(); }
   else if (m.type === "stats") {
     const now = performance.now();
     if (S.lastStats) {
@@ -1129,7 +1154,7 @@ function draw() {
       if (off) ctx.globalAlpha = 0.35;
       drawTrack(S.tracks[r.ch], y, chColor(r.ch), S.now[c.pru]);
       ctx.globalAlpha = 1;
-      if (!off) drawHoles(S.holes[c.pru], y);
+      if (!off) { drawHoles(S.holes[c.pru], y); drawHoles(S.chHoles[r.ch], y); }
       ctx.restore();
       if (off) {
         ctx.font = "600 10.5px system-ui, sans-serif"; ctx.textBaseline = "middle";
@@ -1156,13 +1181,13 @@ function draw() {
     const e = S.events[k];
     if (e.t > S.view.b) break;
     shown++;
-    const x = Math.round(xOf(e.t)) + 0.5, col = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
+    const x = Math.round(xOf(e.t)) + 0.5, col = e.kind === "mark" || e.kind === "burst" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
     ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash(e.kind === "gap" ? [3, 3] : [1, 0]);
     ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(x, RULER); ctx.lineTo(x, H); ctx.stroke(); ctx.globalAlpha = 1;
     ctx.fillStyle = col;
     ctx.beginPath(); ctx.moveTo(x - 4, RULER - 8); ctx.lineTo(x + 4, RULER - 8); ctx.lineTo(x, RULER - 2); ctx.fill();
     if (x - lastLabel > 52) {
-      ctx.fillText(e.kind === "mark" ? "M" + e.value : e.kind === "trig" ? "T" : "gap", x + 5, RULER - 7);
+      ctx.fillText(e.kind === "mark" ? "M" + e.value : e.kind === "trig" ? "T" : e.kind === "burst" ? "burst" : "gap", x + 5, RULER - 7);
       lastLabel = x;
     }
   }
@@ -1262,8 +1287,8 @@ function hoverInfo() {
     const hit = res.find(d => t >= d.t0 - 2 * nsPerPx() && t <= Math.max(d.t1, d.t0 + 3 * nsPerPx()));
     return hit ? { kind: "dec", r, hit } : null;
   }
-  const tr = S.tracks[r.ch], holes = S.holes[S.meta.channels[r.ch].pru], hk = holes.at(t);
-  if (hk >= 0) return { kind: "hole", r, t, a: holes.a[hk], b: holes.b[hk] };
+  const tr = S.tracks[r.ch], holes = holesOf(r.ch), hk = holes.at(t);
+  if (hk) return { kind: "hole", r, t, a: hk[0], b: hk[1] };
   const dense = densityAt(tr, t);
   if (tr.upper(t + 1.5 * nsPerPx()) - tr.upper(t - 1.5 * nsPerPx()) > 2) return { kind: "dense", r, t, dense };
   const p = pulseAt(tr, t);
@@ -1285,7 +1310,7 @@ function tipHTML(info) {
   if (info.kind === "hole") {
     return `<div class="t">ch${c.ch} ${esc(name)}: no data</div><div class="g">` +
       `<span>from</span><span class="num">${fmtAt(info.a)}</span><span>for</span><span class="num">${fmtTime(info.b - info.a)}</span></div>` +
-      `<div style="opacity:.7;margin-top:3px">a hole: PRU${c.pru}'s stream lost records here, so its pins are unknown</div>`;
+      `<div style="opacity:.7;margin-top:3px">not recorded here: a hole where PRU${c.pru}'s stream lost records, or a burst without this channel</div>`;
   }
   if (info.kind === "dense") {
     return `<div class="t">ch${c.ch} ${esc(name)}</div><div class="g">` +
@@ -1309,7 +1334,7 @@ function statusHover(info) {
   if (!info) return "point at a waveform to measure it";
   if (info.kind === "dec") return `${esc(info.hit.text)} at ${fmtAt(info.hit.t0)}`;
   const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
-  if (info.kind === "hole") return `ch${c.ch} ${esc(name)}: <b>no data</b> for ${fmtTime(info.b - info.a)}, a hole where records were lost`;
+  if (info.kind === "hole") return `ch${c.ch} ${esc(name)}: <b>no data</b> for ${fmtTime(info.b - info.a)}, not recorded here`;
   if (info.kind === "dense") return `ch${c.ch} ${esc(name)}: about <b>${fmtHz(info.dense.hz)}</b>, ${info.dense.n} edges near: zoom in`;
   const p = info.p, parts = [`ch${c.ch} ${esc(name)}`];
   if (p.width !== undefined) parts.push(`${p.lvl ? "high" : "low"} <b>${fmtTime(p.width)}</b>`);
@@ -1458,7 +1483,7 @@ function drawMini(force) {
   mctx.globalAlpha = 1;
   for (const e of S.events) {
     if (e.kind === "gap") continue;
-    mctx.fillStyle = e.kind === "mark" ? colors.mark : colors.trig;
+    mctx.fillStyle = e.kind === "mark" || e.kind === "burst" ? colors.mark : colors.trig;
     mctx.fillRect(e.t / end * w, 0, 1, 6);
   }
   const x0 = Math.max(0, S.view.a / end * w), x1 = Math.min(w, S.view.b / end * w);
@@ -1472,7 +1497,7 @@ function drawMini(force) {
 // with its PRU's holes in it, over only the time they leave known.
 function measure(tr, a, b, holes) {
   if (tr.init === null || b <= a) return null;
-  if (holes && holes.crosses(a, b)) return measureHoled(tr, a, b, holes);
+  if (holes.crosses(a, b)) return measureHoled(tr, a, b, holes);
   const i = tr.upper(a), j = tr.upper(b), n = j - i;
   const firstUp = (tr.levelAt(i) === 0) ? i : i + 1;
   const rises = firstUp < j ? Math.floor((j - 1 - firstUp) / 2) + 1 : 0;
@@ -1536,7 +1561,7 @@ function updateMeasure() {
   let h = `<tr><th>channel</th><th class="r">freq</th><th class="r">duty</th><th class="r" title="the mean time high">+width</th><th class="r" title="the mean time low">−width</th></tr>`;
   S.rows.forEach(r => {
     if (r.kind !== "ch") return;
-    const c = S.meta.channels[r.ch], mm = span > 0 ? measure(S.tracks[r.ch], a, b, S.holes[c.pru]) : null;
+    const c = S.meta.channels[r.ch], mm = span > 0 ? measure(S.tracks[r.ch], a, b, holesOf(r.ch)) : null;
     const name = chName(r.ch) || c.pin;
     h += `<tr title="ch${c.ch} ${esc(c.pin)}${chName(r.ch) ? " " + esc(chName(r.ch)) : ""}: ${mm ? fmtCount(mm.n) : 0} edges"><td><span class="sw" style="background:${chColor(r.ch)}"></span>${c.ch} ${esc(name.slice(0, 10))}</td>`;
     const duty = mm && mm.known ? (100 * mm.high / mm.known).toFixed(1) + "%" : "–";
@@ -1699,6 +1724,7 @@ function drawCapture() {
   else if (S.applying) st.textContent = S.applying.sent ? "restarting the PRUs" : "connecting";
   else if (same) st.textContent = S.running ? "running now" : "set on the board; the capture is stopped";
   else st.textContent = S.running ? "not applied yet" : "not applied yet: the capture is stopped, so Apply starts it";
+  drawBurst(chs);
   const ap = $("modeapply");
   ap.textContent = S.running || S.applying ? "Apply" : "Apply and start";
   ap.disabled = !chs.length || (same && S.running) || !!S.applying;
@@ -1730,6 +1756,48 @@ function sendMode() {
 function doneApplying() {
   if (S.applying) clearTimeout(S.applying.timer);
   S.applying = null;
+}
+
+// ---- a burst (la_burst.c) ----
+
+// The longest burst for these channels, in ms: their pins in a byte, four
+// samples a word; in 16, two; else one, of the buffer's 419,429 blocks of 19 words.
+function burstMax(chs) {
+  const bits = chs.map(c => S.meta.channels[c].bit);
+  const perWord = bits.every(b => b < 8) || bits.every(b => b >= 8 && b < 16) ? 4 : laneFits(chs) ? 2 : 1;
+  return 419429 * 152 * perWord / 1e6;
+}
+
+function drawBurst(chs) {
+  const box = $("burstbox"), raw = S.cap.mode === "raw";
+  box.style.display = raw ? "" : "none";
+  if (!raw) return;
+  const max = chs.length ? burstMax(chs) : 0;
+  $("bursthint").textContent = `A burst: ${PRU_NAME[1 - S.cap.pru]} copies every sample to memory as it is, instead of finding the changes, so no signal is too fast: ` +
+    `up to ${max.toFixed(0)} ms with no gap for these channels (pins 0 to 7 or 8 to 15 hold the longest), added to the timeline here. The mode goes back after.`;
+  $("burstgo").disabled = !chs.length || S.bursting || !S.running || !!S.applying;
+  $("burststate").textContent = S.bursting ? "taking a burst" : S.lastBurst || "";
+}
+
+function startBurst() {
+  const chs = capChannels();
+  if (!S.ws || S.ws.readyState !== 1 || !chs.length || S.cap.mode !== "raw") return;
+  S.bursting = true;
+  S.ws.send(JSON.stringify({ type: "burst", channels: chs, seconds: Number($("burstlen").value) }));
+  drawCapture();
+}
+
+// The burst is in the stream now: show it whole.
+function burstDone(m) {
+  S.bursting = false;
+  const a = rel(m.from), b = rel(m.to), chs = new Set(m.channels || []);
+  S.events.push({ t: a, kind: "burst", s: m.pru, value: fmtTime(b - a) });
+  // Its PRU's channels it left out were not recorded in it.
+  S.meta.channels.forEach(c => { if (c.pru === m.pru && !chs.has(c.ch)) S.chHoles[c.ch].push(a, b); });
+  S.lastBurst = `${fmtTime(b - a)}, ${fmtCount(m.edges)} edges` + (m.lost ? `, ${fmtCount(m.lost)} of ${fmtCount(m.blocks)} blocks lost` : ", none lost");
+  setFollow(false);
+  setView(a - (b - a) * 0.02, b + (b - a) * 0.02);
+  drawCapture();
 }
 
 function updateModeStatus() {
@@ -1809,7 +1877,7 @@ async function saveCapture() {
   const header = {
     format: "ai64-la capture 1", saved: new Date().toISOString(), meta: S.meta, now: S.now,
     events: S.events, tracks: S.tracks.map(t => ({ ch: t.ch, init: t.init, n: t.n })), mode: S.modeInfo,
-    holes: S.holes.map(h => h.n),
+    holes: S.holes.map(h => h.n), chHoles: S.chHoles.map(h => h.n),
   };
   const hj = new TextEncoder().encode(JSON.stringify(header));
   const pad = (8 - hj.length % 8) % 8;
@@ -1827,8 +1895,8 @@ async function saveCapture() {
       parts.push(out);
     }
   }
-  // Then each PRU's holes, from and to, in turn.
-  for (const h of S.holes) {
+  // Then each PRU's holes, from and to, in turn, then each channel's.
+  for (const h of [...S.holes, ...S.chHoles]) {
     const out = new Float64Array(2 * h.n);
     for (let k = 0; k < h.n; k++) { out[2 * k] = h.a[k]; out[2 * k + 1] = h.b[k]; }
     parts.push(out);
@@ -1859,9 +1927,10 @@ async function openCapture(file) {
     off += h.n * 8;
     S.held += h.n * 8;
   }
-  for (let s = 0; s < (header.holes || []).length; s++) {
-    const n = header.holes[s], part = new Float64Array(await file.slice(off, off + n * 16).arrayBuffer());
-    for (let k = 0; k < n; k++) S.holes[s].push(part[2 * k], part[2 * k + 1]);
+  const lists = [...S.holes, ...S.chHoles], counts = [...(header.holes || []), ...(header.chHoles || [])];
+  for (let i = 0; i < counts.length; i++) {
+    const n = counts[i], part = new Float64Array(await file.slice(off, off + n * 16).arrayBuffer());
+    for (let k = 0; k < n; k++) lists[i].push(part[2 * k], part[2 * k + 1]);
     off += n * 16;
   }
   S.now = header.now; S.events = header.events; S.t0 = 0;
@@ -2025,6 +2094,7 @@ document.querySelectorAll("#modeseg button").forEach(b => {
   b.onclick = () => { if (S.cap) { S.cap.mode = b.dataset.mode; S.cap.sel = S.cap.sels[S.cap.mode]; drawCapture(); } };
 });
 $("modeapply").onclick = applyMode;
+$("burstgo").onclick = startBurst;
 $("showall").onclick = () => { S.chan.hidden = []; saveChan(); buildChanList(); layout(); };
 $("showact").onclick = () => { S.chan.hidden = S.tracks.filter(t => !t.n).map(t => t.ch); saveChan(); buildChanList(); layout(); };
 $("resetch").onclick = () => { S.chan = { names: {}, colors: {}, hidden: [] }; saveChan(); buildChanList(); drawDecoderForms(); layout(); };

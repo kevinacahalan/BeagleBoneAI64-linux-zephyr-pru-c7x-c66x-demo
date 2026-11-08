@@ -9,7 +9,7 @@
 # dead band, 24 ns, read exactly. Then edge mode, EHRPWM4 steps again, and
 # the pipeline follows again. Past what edge mode keeps up with, it says so
 # with late edges; past raw mode, with holes, which no measurement spans.
-# The demo must be running.
+# A burst takes 62.5 MHz whole. The demo must be running.
 . "$(dirname "$0")/lib.sh"
 
 # rate PERIOD_NS MIN_RATE: EHRPWM4 at that period; PRU1's records a second
@@ -61,6 +61,19 @@ echo "$out" | grep -q '^PRU1: [0-9]* holes' && ok "the holes are marked: $(echo 
 n=$(echo "$out" | grep ' P8.35 ' | tr -s ' ')
 echo "$n" | grep -q ' MHz 16 16 16 8 8 8 ' && ok "ch12 between them: a period of 16 ns, high 8, every one" ||
 	bad "ch12 at 62.5 MHz: $n"
+
+echo "stress: a burst of ch10 to ch12, EHRPWM4 at 62.5 MHz, every sample copied"
+"$AI64" fabric route r5f0_1 pwm 16 8 >/dev/null 2>&1
+sleep 0.5
+out=$("$AI64" la burst 0.05 "$HERE/burst.vcd" 10 11 12 2>&1)
+blocks=$(echo "$out" | sed -n 's/.*: \([0-9]*\) blocks, \([0-9]*\) lost; \([0-9]*\) edges.*/\1/p')
+lost=$(echo "$out" | sed -n 's/.*: \([0-9]*\) blocks, \([0-9]*\) lost; \([0-9]*\) edges.*/\2/p')
+edges=$(echo "$out" | sed -n 's/.*: \([0-9]*\) blocks, \([0-9]*\) lost; \([0-9]*\) edges.*/\3/p')
+rm -f "$HERE/burst.vcd"
+[ -n "$blocks" ] && [ $((lost * 1000)) -le "$blocks" ] && [ "$edges" -ge 6187500 ] &&
+	ok "50 ms burst: $edges edges, $lost of $blocks blocks lost" || bad "la burst: $out"
+"$AI64" la mode | grep -q '^PRU1: raw.* channels 12$' && ok "the mode is back after the burst: raw, ch12" ||
+	bad "after the burst: $("$AI64" la mode)"
 
 echo "stress: raw mode, slice 1's dead band at 24 ns"
 "$AI64" la mode raw 9 10 >/dev/null 2>&1

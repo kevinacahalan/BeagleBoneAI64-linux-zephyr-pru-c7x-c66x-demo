@@ -34,8 +34,9 @@ The board's device tree reserves each core's carveout, and the demo's overlay re
 | `0xa9090000` | 64 KiB | the pipeline's block (`struct ai64_pipe`): Linux's control record, each stage's numbers, the score, the result ring, the weights, the feature log | Linux (control, weights), each stage (its own numbers), R5F0_1 (score), the C7x (results, log) | everyone; Linux shows it |
 | `0xa90a0000` | 128 B | the logic analyzer's two stream headers (`struct ai64_la`): each ring's write count, edges, gaps, newest state, and the trigger | ICSSG1 RTU0, RTU1, each its own; Linux the trigger | Linux; the RTU the trigger |
 | `0xa90a0080` | | free, inside the reservation, to `0xa9100000` | | |
-| `0xac000000` | 32 MiB | the logic analyzer's ring for PRU0: edge records, a tick each ms, gap records | ICSSG1 RTU0 | Linux (`ai64 la`) |
-| `0xae000000` | 32 MiB | its ring for PRU1 | ICSSG1 RTU1 | Linux |
+| `0xac000000` | 16 MiB | the logic analyzer's ring for PRU0: edge records, a tick each ms, gap and hole records | ICSSG1 RTU0 | Linux (`ai64 la`) |
+| `0xad000000` | 16 MiB | its ring for PRU1 | ICSSG1 RTU1 | Linux |
+| `0xae000000` | 32 MiB | its burst buffer: a header, then a slot of raw samples a block (`ai64_la.h`) | the PRU in dump mode (`la_dump.asm`) | Linux (`ai64 la burst`) |
 
 ## On-chip RAM
 

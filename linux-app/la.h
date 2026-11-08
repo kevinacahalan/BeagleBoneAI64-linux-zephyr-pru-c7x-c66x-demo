@@ -173,8 +173,14 @@ size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2]);
  * with why in err. Needs root.
  */
 int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen);
+/* The same, and with dump, the other PRU copies the samples into the burst buffer. */
+int la_set_mode_ex(int raw, const uint32_t mask[2], int dump, char *err, size_t errlen);
+/* The mode set now, as la_set_mode() takes it; -1 if the analyzer does not run. */
+int la_get_mode(int *raw, uint32_t mask[2]);
 /* Raw mode's lane for a PRU's pins (AI64_LA_LANE_*): 16 of them, if they fit. */
 uint32_t la_lane(uint32_t mask);
+/* A burst's: 8 of them, pins 0 - 7 or 8 - 15, if they fit, or as la_lane(). */
+uint32_t la_lane_burst(uint32_t mask);
 /* The trigger, on PRU pru (the other's goes off); -1 if the analyzer does not run. */
 int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value);
 
@@ -190,5 +196,31 @@ size_t rec_holes(const struct recording *r, int s, uint64_t *ns);
 void rec_free(struct recording *r);
 /* Both streams' marks and hits in [begin, finish], merged by time, into *out. */
 size_t rec_marks(struct recording *r, struct mark **out);
+/* An edge of PRU s, or a hole and the pins at its end, onto r's events, in time order. */
+void rec_add_edge(struct recording *r, int s, uint64_t t, uint32_t state);
+void rec_add_hole(struct recording *r, int s, uint64_t from, uint64_t to, uint32_t state);
+
+/* What a burst took (la_burst.c). */
+struct burst_info {
+	int pru;            /* the PRU sampled */
+	uint32_t lane;      /* AI64_LA_LANE_*, and so the block's length */
+	uint64_t blocks;    /* blocks in the recording */
+	uint64_t lost;      /* blocks the copier missed in it */
+	uint64_t edges;
+};
+
+/*
+ * A burst: the channels in mask, all of PRU pru, sampled every 8 ns with
+ * no gap for secs (at most what the burst buffer holds), copied as they
+ * are and read after, into r as a recording, the other PRU's channels a
+ * hole. Leaves the analyzer in dump mode: la_set_mode() puts a mode back.
+ * 0, or -1 with why in err. Needs root.
+ */
+int la_burst(int pru, uint32_t mask, double secs, struct recording *r, struct burst_info *info,
+	     char *err, size_t errlen);
+/* The longest burst, in seconds, for those pins. */
+double la_burst_max(int pru, uint32_t mask);
+/* len bytes of the analyzer's reserved memory from addr, 64-aligned, out of DDR. */
+void la_read_res(void *dst, uint32_t addr, size_t len);
 
 #endif

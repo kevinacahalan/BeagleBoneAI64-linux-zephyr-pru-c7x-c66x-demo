@@ -42,13 +42,22 @@
  * each PRU's mode (edge, raw, or conv), raw mode's lane, and the pins it
  * records, and the channels recorded.
  *
- * The viewer sends one kind of message, a text message that sets the mode
+ * The viewer sends two kinds of text message. One sets the mode
  * (la_set_mode()), with the channels to record:
  *   {"type":"mode","mode":"edge"|"raw","channels":[c,...]}
  * and gets back {"type":"mode_error","error":"..."} if it cannot be set.
  * That restarts both PRUs, a gap of some 50 ms in every viewer's stream.
+ * The other takes a burst (la_burst.c) of channels of one PRU, seconds
+ * long, 0 for as long as the buffer holds:
+ *   {"type":"burst","channels":[c,...],"seconds":s}
+ * which comes in this viewer's stream as edges and holes like any, the
+ * other PRU a hole, followed by
+ *   {"type":"burst","from":t,"to":t,"pru":p,"blocks":n,"lost":n,"edges":n,
+ *    "channels":[c,...]}
+ * or {"type":"burst_error","error":"..."}. Every viewer's stream has a gap
+ * where it was: the PRUs restart into dump mode and back.
  *
- * A viewer too slow for the stream falls behind in the 32 MiB ring, and
+ * A viewer too slow for the stream falls behind in the 16 MiB ring, and
  * then a ring behind: it gets a gap message, and carries on from the
  * newest records.
  */
@@ -224,6 +233,7 @@ struct viewer {
 	uint32_t last_state[2];
 	int have[2];
 	uint64_t hole_to;   /* while ws_hole puts one: where it ends */
+	char burst[512];    /* a burst message, for the main loop to run */
 };
 
 static void send_msg(struct viewer *v, const void *buf, size_t len)
@@ -390,52 +400,146 @@ static void send_modes(struct viewer *v, int force)
 	send_text(v, buf);
 }
 
-/* {"type":"mode","mode":"edge"|"raw","channels":[...]}: set it, one viewer at a time. */
-static void set_mode(struct viewer *v, const char *msg)
-{
-	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-	uint32_t mask[2] = { 0, 0 };
-	const char *p = strstr(msg, "\"channels\""), *m = strstr(msg, "\"mode\":\"");
-	char err[160], reply[256];
-	int raw = -1;
+/* One viewer at a time sets the mode, or takes a burst. */
+static pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
 
-	if (!p || !m || !(p = strchr(p, '['))) {
-		snprintf(err, sizeof(err), "a mode message needs mode and channels");
-		goto fail;
+/* A message's "channels":[...], as each PRU's pins; NULL, or what is wrong. */
+static const char *parse_channels(const char *msg, uint32_t mask[2])
+{
+	const char *p = strstr(msg, "\"channels\"");
+
+	mask[0] = mask[1] = 0;
+	if (!p || !(p = strchr(p, '['))) {
+		return "no channels";
 	}
 	for (p++; *p && *p != ']'; p++) {
 		if (*p >= '0' && *p <= '9') {
 			long c = strtol(p, (char **)&p, 10);
 
-			if (c < 0 || c >= (long)AI64_LA_NCHAN) {
-				snprintf(err, sizeof(err), "no channel %ld", c);
-				goto fail;
+			if (c >= (long)AI64_LA_NCHAN) {
+				return "no such channel";
 			}
 			mask[la_chans[c].pru] |= 1u << la_chans[c].bit;
 			p--;
 		}
 	}
+	return NULL;
+}
+
+static void send_error(struct viewer *v, const char *type, const char *err)
+{
+	char reply[256];
+
+	snprintf(reply, sizeof(reply), "{\"type\":\"%s\",\"error\":\"%s\"}", type, err);
+	send_text(v, reply);
+}
+
+/* {"type":"mode","mode":"edge"|"raw","channels":[...]}: set it. */
+static void set_mode(struct viewer *v, const char *msg)
+{
+	uint32_t mask[2];
+	const char *m = strstr(msg, "\"mode\":\""), *bad = parse_channels(msg, mask);
+	char err[160];
+	int raw = -1;
+
+	if (bad || !m) {
+		send_error(v, "mode_error", bad ? bad : "a mode message needs mode and channels");
+		return;
+	}
 	if (!strncmp(m + 8, "raw\"", 4)) {
 		if (!mask[0] == !mask[1]) {
-			snprintf(err, sizeof(err), mask[0] ? "raw mode takes the channels of one PRU" :
-				 "raw mode needs at least one channel");
-			goto fail;
+			send_error(v, "mode_error", mask[0] ? "raw mode takes the channels of one PRU" :
+				   "raw mode needs at least one channel");
+			return;
 		}
 		raw = mask[0] ? 0 : 1;
 	} else if (!mask[0] && !mask[1]) {
-		snprintf(err, sizeof(err), "edge mode needs at least one channel");
-		goto fail;
+		send_error(v, "mode_error", "edge mode needs at least one channel");
+		return;
 	}
-	pthread_mutex_lock(&lock);
+	pthread_mutex_lock(&mode_lock);
 	if (la_set_mode(raw, mask, err, sizeof(err))) {
-		pthread_mutex_unlock(&lock);
-		goto fail;
+		send_error(v, "mode_error", err);
 	}
-	pthread_mutex_unlock(&lock);
-	return;
-fail:
-	snprintf(reply, sizeof(reply), "{\"type\":\"mode_error\",\"error\":\"%s\"}", err);
-	send_text(v, reply);
+	pthread_mutex_unlock(&mode_lock);
+}
+
+/*
+ * {"type":"burst","channels":[...],"seconds":s}: a burst of those channels
+ * (la_burst.c), s long or as long as the buffer holds, into this viewer's
+ * stream in time order: what came before it, then the burst, the other
+ * PRU a hole, then a text {"type":"burst","from":t,"to":t,...}; then the
+ * mode as it was, and the stream from there.
+ */
+static void run_burst(struct viewer *v, struct stream st[2], const char *msg)
+{
+	static struct recording r;
+	struct burst_info bi;
+	uint32_t mask[2], was_mask[2];
+	const char *bad = parse_channels(msg, mask), *sec = strstr(msg, "\"seconds\":");
+	char err[160], back[160], reply[400];
+	size_t j = 0, k, n;
+	int was_raw, pru, s, rc;
+
+	if (!bad && !mask[0] == !mask[1]) {
+		bad = "a burst takes channels of one PRU";
+	}
+	if (bad) {
+		send_error(v, "burst_error", bad);
+		return;
+	}
+	pru = mask[0] ? 0 : 1;
+	pthread_mutex_lock(&mode_lock);
+	if (la_get_mode(&was_raw, was_mask)) {
+		pthread_mutex_unlock(&mode_lock);
+		send_error(v, "burst_error", "the logic analyzer does not run");
+		return;
+	}
+	for (s = 0; s < 2; s++) {
+		stream_poll(&st[s], ws_edge, v);
+	}
+	rc = la_burst(pru, mask[pru], sec ? atof(sec + 10) : 0, &r, &bi, err, sizeof(err));
+	if (!rc) {
+		/* Whatever came before it, then the burst, in time order. */
+		for (s = 0; s < 2; s++) {
+			stream_poll(&st[s], ws_edge, v);
+		}
+		for (k = 0; k < r.ev[pru].n; k++) {
+			const struct event *e = &r.ev[pru].e[k];
+
+			if (j < r.holes[pru].n && r.holes[pru].b[j] == e->t) {
+				ws_hole(v, &st[pru], r.holes[pru].a[j], e->t, e->state);
+				j++;
+			} else {
+				ws_edge(v, &st[pru], e->t, e->state);
+			}
+		}
+		ws_hole(v, &st[1 - pru], r.begin, r.finish, v->last_state[1 - pru]);
+		flush(v, 0);
+		flush(v, 1);
+		/* A hole the readers find later starts after the burst, not before it. */
+		st[0].last = st[1].last = r.finish;
+		n = (size_t)snprintf(reply, sizeof(reply),
+				     "{\"type\":\"burst\",\"from\":%llu,\"to\":%llu,\"pru\":%d,\"blocks\":%llu,"
+				     "\"lost\":%llu,\"edges\":%llu,\"channels\":[", (unsigned long long)r.begin,
+				     (unsigned long long)r.finish, pru, (unsigned long long)bi.blocks,
+				     (unsigned long long)bi.lost, (unsigned long long)bi.edges);
+		for (k = 0, s = 0; k < AI64_LA_NCHAN; k++) {
+			if (la_chans[k].pru == pru && mask[pru] >> la_chans[k].bit & 1u) {
+				n += (size_t)snprintf(reply + n, sizeof(reply) - n, "%s%zu", s++ ? "," : "", k);
+			}
+		}
+		snprintf(reply + n, sizeof(reply) - n, "]}");
+		send_text(v, reply);
+	}
+	if (la_set_mode(was_raw, was_mask, back, sizeof(back))) {
+		send_error(v, "mode_error", back);
+	}
+	pthread_mutex_unlock(&mode_lock);
+	if (rc) {
+		send_error(v, "burst_error", err);
+	}
+	rec_free(&r);
 }
 
 /*
@@ -491,6 +595,9 @@ static void read_viewer(struct viewer *v)
 			data[len] = '\0';
 			if (strstr((char *)data, "\"type\":\"mode\"")) {
 				set_mode(v, (char *)data);
+			}
+			if (strstr((char *)data, "\"type\":\"burst\"") && len < sizeof(v->burst)) {
+				memcpy(v->burst, data, len + 1);
 			}
 			data[len] = (uint8_t)save;
 		}
@@ -554,6 +661,10 @@ static void *viewer_main(void *arg)
 			}
 		}
 		read_viewer(v);
+		if (v->burst[0]) {
+			run_burst(v, st, v->burst);
+			v->burst[0] = '\0';
+		}
 		send_modes(v, 0);
 		now = now_us();
 		if (now >= flush_at) {

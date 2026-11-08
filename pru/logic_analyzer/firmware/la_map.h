@@ -47,6 +47,10 @@
  *   conv  the other PRU, which records none of its own pins: it writes
  *         a record into the raw PRU's ring at each change it finds in
  *         its samples (la_conv.asm).
+ *   dump  the other PRU, in place of conv: it copies each block of
+ *         samples into the burst buffer in DDR as it is (la_dump.asm),
+ *         and Linux finds the changes after (ai64 la burst). The raw
+ *         PRU's stream has no records meanwhile.
  *
  * Either way the ring's records are the same, and the RTU and Tx_PRU take
  * them as they come, whoever writes them: the trigger works in raw mode

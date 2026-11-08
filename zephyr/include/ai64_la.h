@@ -54,11 +54,31 @@
 #define AI64_LA_ADDR       0xA90A0000u
 #define AI64_LA_MAGIC      0x4c413634u /* 'LA64' */
 
-/* Each PRU's ring, in the 64 MiB the overlay reserves for it. */
+/* Each PRU's ring, and the burst buffer, in the 64 MiB the overlay reserves. */
 #define AI64_LA_RES_ADDR   0xAC000000u
 #define AI64_LA_RES_SIZE   0x04000000u
-#define AI64_LA_RING_SIZE  0x02000000u
+#define AI64_LA_RING_SIZE  0x01000000u
 #define AI64_LA_RING_ADDR(s) (AI64_LA_RES_ADDR + (uint32_t)(s) * AI64_LA_RING_SIZE)
+
+/*
+ * The burst buffer: in dump mode the PRU that is not raw copies each block
+ * of the raw PRU's samples here as it comes (la_dump.asm), for Linux to
+ * read after (ai64 la burst). A header, then slots of a block each, in
+ * turn from the first, round again when full:
+ *   header  AI64_LA_BURST_MAGIC, t0, the first block's number, slots
+ *   slot    the block's 19 sample words, as raw mode's registers r1 - r19
+ *           hold them (la_raw.asm), then its number XOR t0, so a slot
+ *           an earlier burst left reads as no block of this one
+ * Block n's first sample is at t0 + 24 + n * 152 ns, 304 at two samples a
+ * word, or 608 at four, the same times raw mode's records have
+ * (la_conv.asm).
+ */
+#define AI64_LA_BURST_ADDR  (AI64_LA_RES_ADDR + 2u * AI64_LA_RING_SIZE)
+#define AI64_LA_BURST_SIZE  0x02000000u
+#define AI64_LA_BURST_MAGIC 0x42525354u /* 'BRST' */
+#define AI64_LA_BURST_HEAD  64u
+#define AI64_LA_BURST_SLOT  80u
+#define AI64_LA_BURST_SLOTS ((AI64_LA_BURST_SIZE - AI64_LA_BURST_HEAD) / AI64_LA_BURST_SLOT)
 
 #define AI64_LA_REC_SIZE   8u
 #define AI64_LA_TICK       0x80u
@@ -79,22 +99,28 @@
 /*
  * A PRU's mode (pru/logic_analyzer/firmware/la_map.h): edge, a record at
  * each change, with up to 48 ns lost after one; raw, every 8 ns sampled
- * without a gap; or conv, finding the changes in the other PRU's raw
- * samples, for that PRU's stream, and recording none of its own.
+ * without a gap; conv, finding the changes in the other PRU's raw
+ * samples, for that PRU's stream, and recording none of its own; or dump,
+ * copying the raw PRU's samples into the burst buffer as they are.
  */
 #define AI64_LA_MODE_EDGE  0u
 #define AI64_LA_MODE_RAW   1u
 #define AI64_LA_MODE_CONV  2u
+#define AI64_LA_MODE_DUMP  3u
 /*
  * Raw mode's lane, in a mode's bits 15:8: 0, every pin, a sample a word;
  * or two samples a word, of pins 0 - 15 (1) or 8 - 23 (2), when the
- * channels fit in one, so the other PRU keeps up with twice the changes.
+ * channels fit in one, so the other PRU keeps up with twice the changes;
+ * or, for a burst only, four a word, of pins 0 - 7 (3) or 8 - 15 (4), a
+ * quarter of the bytes to copy (a third byte lane would not fit in IRAM).
  */
 #define AI64_LA_MODE_OF(m) ((m) & 0xffu)
 #define AI64_LA_LANE_OF(m) ((m) >> 8 & 0xffu)
 #define AI64_LA_LANE_ALL   0u
 #define AI64_LA_LANE_LO16  1u
 #define AI64_LA_LANE_MID16 2u
+#define AI64_LA_LANE_B0    3u
+#define AI64_LA_LANE_B1    4u
 
 #define AI64_LA_TRIG_OFF   0u
 #define AI64_LA_TRIG_ENTER 1u /* (state & mask) becomes value */

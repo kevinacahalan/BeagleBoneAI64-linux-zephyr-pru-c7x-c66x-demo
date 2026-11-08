@@ -39,7 +39,7 @@ struct la_hits {
  * the PRU writes t0 in raw mode.
  */
 struct la_cfg {
-	uint32_t mode;   /* AI64_LA_MODE_EDGE, _RAW, or _CONV */
+	uint32_t mode;   /* AI64_LA_MODE_EDGE, _RAW, _CONV, or _DUMP */
 	uint32_t mask;   /* the PRU's pins to record */
 	uint32_t resume; /* the seq a writer starting now begins at */
 	uint32_t t0;     /* raw: IEP0's count at the first sample */

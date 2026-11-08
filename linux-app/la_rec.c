@@ -51,6 +51,20 @@ static void keep_hole(void *ctx, struct stream *st, uint64_t from, uint64_t to, 
 	keep_edge(ctx, st, to, state);
 }
 
+void rec_add_edge(struct recording *r, int s, uint64_t t, uint32_t state)
+{
+	struct stream st = { .s = s };
+
+	keep_edge(r, &st, t, state);
+}
+
+void rec_add_hole(struct recording *r, int s, uint64_t from, uint64_t to, uint32_t state)
+{
+	struct stream st = { .s = s };
+
+	keep_hole(r, &st, from, to, state);
+}
+
 int holes_cross(const struct holes *h, uint64_t from, uint64_t to)
 {
 	size_t lo = 0, hi = h ? h->n : 0;
@@ -414,7 +428,50 @@ uint32_t la_lane(uint32_t mask)
 	return AI64_LA_LANE_ALL;
 }
 
+uint32_t la_lane_burst(uint32_t mask)
+{
+	if (!(mask & ~0xffu)) {
+		return AI64_LA_LANE_B0;
+	}
+	if (!(mask & ~0xff00u)) {
+		return AI64_LA_LANE_B1;
+	}
+	return la_lane(mask);
+}
+
+int la_get_mode(int *raw, uint32_t mask[2])
+{
+	volatile struct ai64_la *hdr = la_map_trigger();
+	int s;
+
+	if (!hdr) {
+		return -1;
+	}
+	*raw = -1;
+	for (s = 0; s < 2; s++) {
+		uint32_t m = AI64_LA_MODE_OF(hdr->s[s].cfg_mode);
+
+		mask[s] = hdr->s[s].cfg_mask;
+		if (m == AI64_LA_MODE_RAW) {
+			*raw = s;
+		}
+		if (m == AI64_LA_MODE_DUMP) {
+			/* A burst that never put the mode back: edge mode, every channel. */
+			*raw = -1;
+			mask[0] = AI64_LA_MASK(0);
+			mask[1] = AI64_LA_MASK(1);
+			break;
+		}
+	}
+	return 0;
+}
+
 int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen)
+{
+	return la_set_mode_ex(raw, mask, 0, err, errlen);
+}
+
+int la_set_mode_ex(int raw, const uint32_t mask[2], int dump, char *err, size_t errlen)
 {
 	static const char *const pru[2] = { "g1pru0", "g1pru1" };
 	volatile struct ai64_la *hdr = la_map_trigger();
@@ -438,8 +495,10 @@ int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen)
 			snprintf(err, errlen, "no core %s", pru[s]);
 			return -1;
 		}
-		h->cfg_mode = raw < 0 ? AI64_LA_MODE_EDGE : s != raw ? AI64_LA_MODE_CONV :
-			      AI64_LA_MODE_RAW | la_lane(mask[s] & AI64_LA_MASK(s)) << 8;
+		h->cfg_mode = raw < 0 ? AI64_LA_MODE_EDGE :
+			      s != raw ? (dump ? AI64_LA_MODE_DUMP : AI64_LA_MODE_CONV) :
+			      AI64_LA_MODE_RAW | (dump ? la_lane_burst(mask[s] & AI64_LA_MASK(s)) :
+						  la_lane(mask[s] & AI64_LA_MASK(s))) << 8;
 		h->cfg_mask = raw >= 0 && s != raw ? 0 : mask[s] & AI64_LA_MASK(s);
 		__sync_synchronize();
 		h->cfg_seq++;
@@ -455,8 +514,8 @@ int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen)
 	}
 	/*
 	 * Stop both PRUs, let the RTUs take what is left in the rings, and
-	 * start them again: in raw mode the converter first, so it is waiting
-	 * when the raw PRU's first block comes. The Tx_PRUs run on.
+	 * start them again: in raw mode the converter (or copier) first, so it
+	 * is waiting when the raw PRU's first block comes. The Tx_PRUs run on.
 	 */
 	for (s = 0; s < 2; s++) {
 		if (rproc_running(c[s]->rproc, NULL, 0) && rproc_write(c[s]->rproc, "state", "stop")) {

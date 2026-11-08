@@ -23,6 +23,7 @@ static const struct {
 	{ "la", la_main,
 	  "la [seconds|once|lines]   ICSSG1's logic analyzer: every channel (the la window)\n"
 	  "  la capture <seconds> <file.vcd|-> [--trigger]  record all 19 channels to a VCD file\n"
+	  "  la burst <seconds|max> <file.vcd|-> <ch> ...  one PRU's channels every 8 ns, no gap, any signal\n"
 	  "  la trigger off | <ch> rise|fall|any | <ch>=0|1 ...  set the Tx_PRUs' trigger\n"
 	  "  la measure [seconds] [a:b ...]  each channel's periods and high times, and a to b timing\n"
 	  "  la mode [edge [ch ...] | raw <ch> ...]  edge: a record each change; raw: every 8 ns\n"

@@ -179,6 +179,25 @@ static void close_hole(struct stream *st, edge_fn fn, void *ctx, uint64_t t, uin
 	}
 }
 
+void la_read_res(void *dst, uint32_t addr, size_t len)
+{
+	size_t at;
+
+	for (at = 0; at < len; at += 64u) {
+		const volatile uint32_t *src = rings + (addr - AI64_LA_RES_ADDR + at) / 4u;
+		uint32_t *d = (uint32_t *)dst + at / 4u;
+#ifdef __aarch64__
+		__asm__ volatile("ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%0]\n\t"
+				 "st1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%1]"
+				 : : "r"(src), "r"(d) : "v0", "v1", "v2", "v3", "memory");
+#else
+		for (int i = 0; i < 16; i++) {
+			d[i] = src[i];
+		}
+#endif
+	}
+}
+
 /*
  * Every record the RTU has written since the last call. The RTU updates wr
  * after a tick's second record, so a tick never shows up half written.
