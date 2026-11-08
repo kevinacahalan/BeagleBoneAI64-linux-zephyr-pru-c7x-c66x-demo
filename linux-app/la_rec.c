@@ -439,7 +439,7 @@ uint32_t la_lane_burst(uint32_t mask)
 	return la_lane(mask);
 }
 
-int la_get_mode(int *raw, uint32_t mask[2])
+int la_get_mode(int *raw, uint32_t mask[2], int *dump)
 {
 	volatile struct ai64_la *hdr = la_map_trigger();
 	int s;
@@ -448,6 +448,7 @@ int la_get_mode(int *raw, uint32_t mask[2])
 		return -1;
 	}
 	*raw = -1;
+	*dump = 0;
 	for (s = 0; s < 2; s++) {
 		uint32_t m = AI64_LA_MODE_OF(hdr->s[s].cfg_mode);
 
@@ -456,12 +457,14 @@ int la_get_mode(int *raw, uint32_t mask[2])
 			*raw = s;
 		}
 		if (m == AI64_LA_MODE_DUMP) {
-			/* A burst that never put the mode back: edge mode, every channel. */
-			*raw = -1;
-			mask[0] = AI64_LA_MASK(0);
-			mask[1] = AI64_LA_MASK(1);
-			break;
+			*dump = 1;
 		}
+	}
+	if (*dump && *raw < 0) {
+		/* Dump mode with no raw PRU: edge mode, every channel. */
+		*dump = 0;
+		mask[0] = AI64_LA_MASK(0);
+		mask[1] = AI64_LA_MASK(1);
 	}
 	return 0;
 }

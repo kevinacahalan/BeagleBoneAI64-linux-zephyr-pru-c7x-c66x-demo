@@ -39,14 +39,17 @@
  *   changing. Run against a fast test signal, it says which stage keeps up
  *   (pru/logic_analyzer/README.md, tests/board/stress.sh).
  *
- * ai64 la mode [edge [ch ...] | raw <ch> ...]
+ * ai64 la mode [edge [ch ...] | raw <ch> ... | dump <ch> ...]
  *   Each PRU's mode and the channels it records; or sets them. Edge mode
  *   (all 19 channels, or those given) writes a record at each change, and
  *   can be up to 48 ns late after one. Raw mode takes channels of one PRU:
  *   it samples them every 8 ns with no gap, and the other PRU finds the
  *   changes, so its own channels are not recorded
- *   (pru/logic_analyzer/firmware/la_map.h). Channels not recorded read
- *   low. Restarts both PRUs, a gap of some 50 ms.
+ *   (pru/logic_analyzer/firmware/la_map.h). Dump mode samples them so too,
+ *   and the other PRU copies every sample, as it is, into the burst buffer,
+ *   which a reader here follows as it fills (la_burst.c): no limit on the
+ *   changes in the PRUs, only on how fast Linux takes them. Channels not
+ *   recorded read low. Restarts both PRUs, a gap of some 50 ms.
  *
  * ai64 la mark <value>
  *   Puts a mark with that 16-bit value in the analyzer's stream, through a
@@ -413,7 +416,7 @@ static int burst_main(int argc, char **argv)
 	char err[160];
 	double secs;
 	size_t nedge[2];
-	int was_raw, pru = -1, i, rc;
+	int was_raw, was_dump, pru = -1, i, rc;
 	FILE *f;
 
 	secs = argc > 3 && !strcmp(argv[3], "max") ? 0 : argc > 3 ? atof(argv[3]) : -1;
@@ -432,12 +435,12 @@ static int burst_main(int argc, char **argv)
 			argv[0]);
 		return 2;
 	}
-	if (la_get_mode(&was_raw, was_mask)) {
+	if (la_get_mode(&was_raw, was_mask, &was_dump)) {
 		fprintf(stderr, "the logic analyzer does not run\n");
 		return 1;
 	}
 	rc = la_burst(pru, mask[pru], secs, &r, &bi, err, sizeof(err));
-	if (la_set_mode(was_raw, was_mask, err, sizeof(err))) {
+	if (la_set_mode_ex(was_raw, was_mask, was_dump, err, sizeof(err))) {
 		fprintf(stderr, "putting the mode back: %s\n", err);
 	}
 	if (rc) {
@@ -702,6 +705,42 @@ static void count_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
 	}
 }
 
+/*
+ * In dump mode: the copier's blocks a second, and how fast a reader here
+ * follows them, finding every change, with any it missed.
+ */
+static int follow_rate(double secs)
+{
+	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
+	struct la_follow f;
+	struct stream st;
+	char err[128];
+	double t0, t1;
+	uint32_t wr0;
+
+	if (la_follow_open(&f, err, sizeof(err))) {
+		fprintf(stderr, "%s\n", err);
+		return 1;
+	}
+	memset(&st, 0, sizeof(st));
+	st.s = f.pru;
+	wr0 = *f.wr;
+	t0 = now_us();
+	do {
+		la_follow_poll(&f, &st, count_edge, &c);
+	} while (now_us() < t0 + secs * 1e6);
+	t1 = now_us();
+	printf("PRU%d, dump mode: the copier copied %.0f blocks/s (%.0f MS/s); the reader read %.0f "
+	       "blocks/s and found %.0f edges/s; blocks the copier missed %llu, times the reader fell "
+	       "a buffer behind %llu; closest edges %lld ns apart\n", f.pru,
+	       (uint32_t)(*f.wr - wr0) * 1e6 / (t1 - t0), (uint32_t)(*f.wr - wr0) * f.n / (t1 - t0),
+	       f.blocks * 1e6 / (t1 - t0), f.edges * 1e6 / (t1 - t0), (unsigned long long)f.lost,
+	       (unsigned long long)f.behind,
+	       c.min[f.pru] == UINT64_MAX ? -1LL : (long long)c.min[f.pru]);
+	la_follow_close(&f);
+	return 0;
+}
+
 static int rate_main(int argc, char **argv)
 {
 	double secs = argc > 3 ? atof(argv[3]) : 1.0, t0, t1;
@@ -717,6 +756,11 @@ static int rate_main(int argc, char **argv)
 	}
 	if (la_map(1)) {
 		return 1;
+	}
+	for (s = 0; s < 2; s++) {
+		if (AI64_LA_MODE_OF(la_hdr->s[s].cfg_mode) == AI64_LA_MODE_DUMP) {
+			return follow_rate(secs);
+		}
 	}
 	for (s = 0; s < 2; s++) {
 		if (stream_init(&st[s], s)) {
@@ -765,11 +809,15 @@ static void print_modes(void)
 		printf("PRU%d: %s", s,
 		       AI64_LA_MODE_OF(h->cfg_mode) == AI64_LA_MODE_CONV ?
 		       "converting the other's samples, no channels" :
+		       AI64_LA_MODE_OF(h->cfg_mode) == AI64_LA_MODE_DUMP ?
+		       "copying the other's samples to the burst buffer, no channels" :
 		       AI64_LA_MODE_OF(h->cfg_mode) != AI64_LA_MODE_RAW ?
 		       "edge, a record at each change, channels" :
 		       AI64_LA_LANE_OF(h->cfg_mode) == AI64_LA_LANE_ALL ?
 		       "raw, every 8 ns with no gap, a sample a word, channels" :
-		       "raw, every 8 ns with no gap, two samples a word, channels");
+		       AI64_LA_LANE_OF(h->cfg_mode) <= AI64_LA_LANE_MID16 ?
+		       "raw, every 8 ns with no gap, two samples a word, channels" :
+		       "raw, every 8 ns with no gap, four samples a word, channels");
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 			if (la_chans[c].pru == s && (h->cfg_mask >> la_chans[c].bit & 1u)) {
 				printf(" %d", c);
@@ -792,8 +840,8 @@ static int mode_main(int argc, char **argv)
 		print_modes();
 		return 0;
 	}
-	if (strcmp(argv[3], "edge") && strcmp(argv[3], "raw")) {
-		fprintf(stderr, "usage: %s la mode [edge [ch ...] | raw <ch> ...]\n", argv[0]);
+	if (strcmp(argv[3], "edge") && strcmp(argv[3], "raw") && strcmp(argv[3], "dump")) {
+		fprintf(stderr, "usage: %s la mode [edge [ch ...] | raw <ch> ... | dump <ch> ...]\n", argv[0]);
 		return 2;
 	}
 	for (i = 4; i < argc; i++) {
@@ -820,7 +868,7 @@ static int mode_main(int argc, char **argv)
 	} else {
 		raw = mask[0] ? 0 : 1;
 	}
-	if (la_set_mode(raw, mask, err, sizeof(err))) {
+	if (la_set_mode_ex(raw, mask, !strcmp(argv[3], "dump"), err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err);
 		return 1;
 	}

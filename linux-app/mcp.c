@@ -605,7 +605,7 @@ static const char *burst_capture(const struct jv *burst, double secs, struct bur
 	static char err[200];
 	uint32_t mask[2] = { 0, 0 }, was_mask[2];
 	char back[160];
-	int was_raw, pru = -1, rc;
+	int was_raw, was_dump, pru = -1, rc;
 	size_t i;
 
 	for (i = 0; burst->t == J_ARR && i < burst->n; i++) {
@@ -621,11 +621,11 @@ static const char *burst_capture(const struct jv *burst, double secs, struct bur
 	if (pru < 0) {
 		return "burst: channels of one PRU";
 	}
-	if (la_get_mode(&was_raw, was_mask)) {
+	if (la_get_mode(&was_raw, was_mask, &was_dump)) {
 		return "the analyzer is not running";
 	}
 	rc = la_burst(pru, mask[pru], secs, &cap, bi, err, sizeof(err));
-	la_set_mode(was_raw, was_mask, back, sizeof(back));
+	la_set_mode_ex(was_raw, was_mask, was_dump, back, sizeof(back));
 	return rc ? err : NULL;
 }
 
@@ -929,7 +929,7 @@ static const char *t_decode(const struct jv *args, struct sb *o)
 /* The analyzer's mode, as the RTUs have it. */
 static void mode_json(struct sb *o)
 {
-	static const char *const names[] = { "edge", "raw", "conv" };
+	static const char *const names[] = { "edge", "raw", "conv", "dump" };
 	int s, c, n = 0;
 
 	sb_add(o, "{\"prus\":[");
@@ -937,7 +937,7 @@ static void mode_json(struct sb *o)
 		uint32_t m = la_hdr->s[s].cfg_mode;
 
 		sb_add(o, "%s{\"pru\":%d,\"mode\":\"%s\",\"two_samples_a_word\":%s}", s ? "," : "", s,
-		       names[AI64_LA_MODE_OF(m) < 3 ? AI64_LA_MODE_OF(m) : 0],
+		       names[AI64_LA_MODE_OF(m) < 4 ? AI64_LA_MODE_OF(m) : 0],
 		       AI64_LA_LANE_OF(m) ? "true" : "false");
 	}
 	sb_add(o, "],\"channels_recorded\":[");
@@ -986,16 +986,16 @@ static const char *t_mode(const struct jv *args, struct sb *o)
 			mask[0] = AI64_LA_MASK(0);
 			mask[1] = AI64_LA_MASK(1);
 		}
-	} else if (!strcmp(mode, "raw")) {
+	} else if (!strcmp(mode, "raw") || !strcmp(mode, "dump")) {
 		if (!mask[0] == !mask[1]) {
 			return mask[0] ? "raw mode takes the channels of one PRU (la_channels has which)" :
 			       "raw mode needs its channels";
 		}
 		raw = mask[0] ? 0 : 1;
 	} else {
-		return "mode: edge or raw";
+		return "mode: edge, raw, or dump";
 	}
-	if (la_set_mode(raw, mask, err, sizeof(err))) {
+	if (la_set_mode_ex(raw, mask, !strcmp(mode, "dump"), err, sizeof(err))) {
 		sb_add(o, "{\"error\":\"%s\"}", err);
 		return NULL;
 	}
@@ -1135,10 +1135,13 @@ static const struct {
 	  "The capture mode, or sets it. edge: every channel (or those given), each change "
 	  "stamped to within 8 ns, a change within 48 ns of another on the same PRU late. raw: "
 	  "the given channels, all of one PRU, sampled every 8 ns with no gap, so pulses and "
-	  "gaps down to 8 ns are exact; the other PRU's channels are not recorded. Setting it "
-	  "restarts both PRUs, a gap of about 50 ms. Without mode, says which runs.",
+	  "gaps down to 8 ns are exact; the other PRU's channels are not recorded. dump: as raw, "
+	  "but the other PRU copies every sample to memory and the board finds the changes, so the "
+	  "PRUs keep up with any signal, for the web page to follow live; the RTUs keep quiet then "
+	  "(no ticks, trigger, or marks), so la_capture and la_measure need edge or raw, or a "
+	  "burst. Setting it restarts both PRUs, a gap of about 50 ms. Without mode, says which runs.",
 	  "{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"edge\","
-	  "\"raw\"]},\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}" },
+	  "\"raw\",\"dump\"]},\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}" },
 	{ "la_trigger", t_trigger,
 	  "Sets the trigger the ICSSG1 Tx_PRUs match on the edges as they come: off, a channel's "
 	  "rise, fall, or any change, or a pattern of channel levels (one PRU's channels only).",

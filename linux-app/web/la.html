@@ -301,6 +301,7 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
         <button data-mode="raw" title="One PRU's channels, every 8 ns with no gap">Raw · 125 MS/s, no gaps</button>
       </div>
       <div class="hint" id="modehint"></div>
+      <label id="copybox" class="hint" style="display:none; gap:6px; align-items:center; margin:4px 0"><input type="checkbox" id="capcopy"> Copy every sample: no limit in the PRUs</label>
       <div id="caplist"></div>
       <div class="capfoot">
         <button id="modeapply" class="primary">Apply</button>
@@ -1639,9 +1640,9 @@ const PRU_NAME = ["PRU0", "PRU1"];
 
 // The mode the board runs: which PRU is raw (or -1), and its lane.
 function modeOf(info) {
-  if (!info) return { raw: -1, lane: 0 };
+  if (!info) return { raw: -1, lane: 0, copy: false };
   const raw = info.prus.findIndex(p => p.mode === "raw");
-  return { raw, lane: raw >= 0 ? info.prus[raw].lane : 0 };
+  return { raw, lane: raw >= 0 ? info.prus[raw].lane : 0, copy: info.prus.some(p => p.mode === "dump") };
 }
 
 function setModeInfo(m) {
@@ -1652,13 +1653,14 @@ function setModeInfo(m) {
   // the one asked for ends it. A change from anywhere else resets the
   // section to what runs now.
   const want = S.applying;
-  if (want && (modeOf(m).raw >= 0) === (want.mode === "raw") && m.channels.join(",") === want.channels.join(",")) doneApplying();
+  if (want && (modeOf(m).raw >= 0) === (want.mode !== "edge") && modeOf(m).copy === (want.mode === "dump") &&
+      m.channels.join(",") === want.channels.join(",")) doneApplying();
   if (!S.applying && (!S.cap || !was || JSON.stringify(was) !== JSON.stringify(m))) {
     // Each mode keeps its own choice of channels: the ones running, or all.
     const mo = modeOf(m), mode = mo.raw >= 0 ? "raw" : "edge", all = S.meta.channels.map(c => c.ch);
     const sels = { edge: new Set(all), raw: new Set(all) };
     sels[mode] = new Set(m.channels);
-    S.cap = { mode, pru: mo.raw >= 0 ? mo.raw : 1, sels, sel: sels[mode] };
+    S.cap = { mode, pru: mo.raw >= 0 ? mo.raw : 1, sels, sel: sels[mode], copy: mo.copy };
   }
   if (was && JSON.stringify(was.channels) !== JSON.stringify(m.channels)) buildChanList();
   drawCapture();
@@ -1686,12 +1688,18 @@ function drawCapture() {
   let hint;
   if (cap.mode === "edge") {
     hint = "Both PRUs record each change on their channels, stamped to within 8 ns. A change less than 48 ns after another on the same PRU waits for it. About 15 million edges a second stream to this page. A channel left out costs nothing.";
+  } else if (cap.copy) {
+    const bits = chs.map(c => S.meta.channels[c].bit), byte = bits.every(b => b < 8) || bits.every(b => b >= 8 && b < 16);
+    hint = `${PRU_NAME[cap.pru]} samples its channels every 8 ns with no gap, and ${PRU_NAME[1 - cap.pru]} copies every sample into memory as it is, so the PRUs keep up with any signal; the board finds the changes, about 15 million a second for this page, and more makes holes. Its own channels are not recorded, and while it runs there is no trigger, no marks, and the analyzer's RTUs leave the fabric. ` +
+      (byte ? "These fit a byte of pins, four samples a word: 132 MB/s to copy." : "Channels within pins 0 to 7, or 8 to 15, copy a quarter as much; these copy " + (laneFits(chs) ? "250" : "500") + " MB/s, and blocks may be lost.");
   } else {
     const lane = laneFits(chs);
     hint = `${PRU_NAME[cap.pru]} samples its channels every 8 ns with no gap, so pulses and gaps down to 8 ns show exactly; ${PRU_NAME[1 - cap.pru]} finds the changes, so its own channels are not recorded. ` +
       (lane ? `These fit pins ${lane}, two samples a word: up to 10 million edges a second with none lost.` :
        "These take every pin, a sample a word: up to 6.7 million edges a second with none lost. Channels within pins 0 to 15, or 8 to 23, take 10 million.");
   }
+  $("copybox").style.display = cap.mode === "raw" ? "flex" : "none";
+  $("capcopy").checked = !!cap.copy;
   $("modehint").textContent = hint;
   let h = "";
   for (const pru of [0, 1]) {
@@ -1717,7 +1725,7 @@ function drawCapture() {
     el.onchange = () => { cap.pru = Number(el.value); drawCapture(); };
   });
   const run = modeOf(S.modeInfo), now = S.modeInfo ? S.modeInfo.channels.join(",") : "";
-  const same = S.modeInfo && (cap.mode === "raw") === (run.raw >= 0) && (cap.mode === "edge" || cap.pru === run.raw) && chs.join(",") === now;
+  const same = S.modeInfo && (cap.mode === "raw") === (run.raw >= 0) && (cap.mode === "edge" || (cap.pru === run.raw && !!cap.copy === run.copy)) && chs.join(",") === now;
   const st = $("modestate");
   if (!S.modeInfo) st.textContent = "connecting";
   else if (!chs.length) st.innerHTML = `<span class="capwarn">choose at least one channel</span>`;
@@ -1736,7 +1744,7 @@ function drawCapture() {
 function applyMode() {
   const chs = capChannels();
   if (!chs.length || S.applying) return;
-  S.applying = { mode: S.cap.mode, channels: chs, sent: false };
+  S.applying = { mode: S.cap.mode === "raw" && S.cap.copy ? "dump" : S.cap.mode, channels: chs, sent: false };
   S.applying.timer = setTimeout(() => {
     doneApplying();
     banner("The mode: the board did not answer in 5 s. Is the stream connected?");
@@ -1804,7 +1812,7 @@ function updateModeStatus() {
   const m = S.modeInfo, el = $("s-mode");
   if (!m) { el.textContent = ""; return; }
   const mo = modeOf(m);
-  el.innerHTML = mo.raw >= 0 ? `<b>raw 125 MS/s</b> · ${PRU_NAME[mo.raw]} · ${m.channels.length} ch` : `edge · ${m.channels.length} ch`;
+  el.innerHTML = mo.raw >= 0 ? `<b>raw 125 MS/s</b>${mo.copy ? " · every sample copied" : ""} · ${PRU_NAME[mo.raw]} · ${m.channels.length} ch` : `edge · ${m.channels.length} ch`;
   el.title = "the capture mode: the Channels tab sets it";
 }
 
@@ -2095,6 +2103,7 @@ document.querySelectorAll("#modeseg button").forEach(b => {
 });
 $("modeapply").onclick = applyMode;
 $("burstgo").onclick = startBurst;
+$("capcopy").onchange = e => { if (S.cap) { S.cap.copy = e.target.checked; drawCapture(); } };
 $("showall").onclick = () => { S.chan.hidden = []; saveChan(); buildChanList(); layout(); };
 $("showact").onclick = () => { S.chan.hidden = S.tracks.filter(t => !t.n).map(t => t.ch); saveChan(); buildChanList(); layout(); };
 $("resetch").onclick = () => { S.chan = { names: {}, colors: {}, hidden: [] }; saveChan(); buildChanList(); drawDecoderForms(); layout(); };

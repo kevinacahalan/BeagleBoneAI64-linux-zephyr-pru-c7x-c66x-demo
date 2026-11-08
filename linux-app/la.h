@@ -6,6 +6,7 @@
 #ifndef LA_H_
 #define LA_H_
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -175,8 +176,8 @@ size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2]);
 int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen);
 /* The same, and with dump, the other PRU copies the samples into the burst buffer. */
 int la_set_mode_ex(int raw, const uint32_t mask[2], int dump, char *err, size_t errlen);
-/* The mode set now, as la_set_mode() takes it; -1 if the analyzer does not run. */
-int la_get_mode(int *raw, uint32_t mask[2]);
+/* The mode set now, as la_set_mode_ex() takes it; -1 if the analyzer does not run. */
+int la_get_mode(int *raw, uint32_t mask[2], int *dump);
 /* Raw mode's lane for a PRU's pins (AI64_LA_LANE_*): 16 of them, if they fit. */
 uint32_t la_lane(uint32_t mask);
 /* A burst's: 8 of them, pins 0 - 7 or 8 - 15, if they fit, or as la_lane(). */
@@ -220,6 +221,41 @@ int la_burst(int pru, uint32_t mask, double secs, struct recording *r, struct bu
 	     char *err, size_t errlen);
 /* The longest burst, in seconds, for those pins. */
 double la_burst_max(int pru, uint32_t mask);
+/*
+ * Following the copier in dump mode, continuously (la_burst.c): every
+ * sample of the raw PRU's channels, read out of the burst buffer as it
+ * fills, as edges and holes.
+ */
+struct la_follow {
+	int open;
+	int pru;            /* the raw PRU */
+	uint32_t lane;
+	uint64_t ns;        /* a block's length */
+	int n;              /* samples a block */
+	uint32_t t0_32, first;
+	uint64_t t0;
+	const volatile uint32_t *wr; /* the copier's count, in ICSSG1's data RAM */
+	uint32_t rd;        /* blocks read, as wr counts them */
+	uint64_t last;      /* the newest block's number, from first */
+	int have;
+	uint32_t cur;       /* the pins after the newest sample */
+	uint64_t now;       /* the end of the newest block read */
+	uint64_t blocks, lost, edges, behind;
+	uint32_t *mirror;   /* the buffer, cached: the pump copies it here */
+	uint32_t pumped;    /* blocks the pump has copied, as wr counts them */
+	volatile int stop;
+	pthread_t pump;
+	uint32_t cfg_seq[2]; /* the streams' mode counts when it opened */
+};
+
+/* From now on, if the analyzer is in dump mode; 0, or -1 with why. Needs root. */
+int la_follow_open(struct la_follow *f, char *err, size_t errlen);
+/* Whether the mode changed since: the copier, if any, started again, and f is done. */
+int la_follow_stale(const struct la_follow *f);
+void la_follow_close(struct la_follow *f);
+/* The blocks since the last call, as edges of st (s the raw PRU) to fn, and holes to st->on_hole. */
+void la_follow_poll(struct la_follow *f, struct stream *st, edge_fn fn, void *ctx);
+
 /* len bytes of the analyzer's reserved memory from addr, 64-aligned, out of DDR. */
 void la_read_res(void *dst, uint32_t addr, size_t len);
 

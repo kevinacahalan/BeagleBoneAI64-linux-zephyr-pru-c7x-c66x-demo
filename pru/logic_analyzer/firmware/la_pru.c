@@ -38,7 +38,7 @@ extern void la_raw8_0(uint32_t mask, uint32_t t0);
 extern void la_raw8_8(uint32_t mask, uint32_t t0);
 extern void la_conv(uint32_t ring, uint32_t seq, uint32_t t0);
 extern void la_conv16(uint32_t ring, uint32_t seq, uint32_t t0, uint32_t shift);
-extern void la_dump(uint32_t buf, uint32_t t0);
+extern void la_dump(uint32_t buf, uint32_t t0, uint32_t wr);
 
 void main(void)
 {
@@ -91,7 +91,7 @@ void main(void)
 		/* Started before the raw PRU too. */
 		trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: PRU0's samples to the burst buffer\n" :
 					"ICSSG1 PRU0 up: PRU1's samples to the burst buffer\n");
-		la_dump(AI64_LA_BURST_ADDR, (uint32_t)&LA_CFG_OTHER->t0);
+		la_dump(AI64_LA_BURST_ADDR, (uint32_t)&LA_CFG_OTHER->t0, (uint32_t)&LA_CFG_REC->wr);
 	}
 	trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: an edge record at each change\n" :
 				"ICSSG1 PRU0 up: an edge record at each change\n");

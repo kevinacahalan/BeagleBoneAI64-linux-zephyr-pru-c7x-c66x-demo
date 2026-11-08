@@ -44,8 +44,12 @@
  *
  * The viewer sends two kinds of text message. One sets the mode
  * (la_set_mode()), with the channels to record:
- *   {"type":"mode","mode":"edge"|"raw","channels":[c,...]}
+ *   {"type":"mode","mode":"edge"|"raw"|"dump","channels":[c,...]}
  * and gets back {"type":"mode_error","error":"..."} if it cannot be set.
+ * In dump mode every viewer's thread reads the raw PRU's channels from the
+ * burst buffer, every sample, as the copier fills it (la_burst.c), and
+ * sends them as edges and holes like any; how fast it keeps up is the
+ * limit then, and falling behind is a hole.
  * That restarts both PRUs, a gap of some 50 ms in every viewer's stream.
  * The other takes a burst (la_burst.c) of channels of one PRU, seconds
  * long, 0 for as long as the buffer holds:
@@ -368,7 +372,7 @@ static void send_meta(struct viewer *v)
 /* Each PRU's mode, as its RTU has it, if it differs from what v was last told. */
 static void send_modes(struct viewer *v, int force)
 {
-	static const char *const names[] = { "edge", "raw", "conv" };
+	static const char *const names[] = { "edge", "raw", "conv", "dump" };
 	char buf[512];
 	size_t n = 0;
 	int s, c, changed = force;
@@ -387,7 +391,7 @@ static void send_modes(struct viewer *v, int force)
 		v->mode_told[s] = m;
 		v->mask_told[s] = la_hdr->s[s].cfg_mask;
 		n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s{\"mode\":\"%s\",\"lane\":%u,\"mask\":%u}",
-				      s ? "," : "", names[AI64_LA_MODE_OF(m) < 3 ? AI64_LA_MODE_OF(m) : 0],
+				      s ? "," : "", names[AI64_LA_MODE_OF(m) < 4 ? AI64_LA_MODE_OF(m) : 0],
 				      AI64_LA_LANE_OF(m), v->mask_told[s]);
 	}
 	n += (size_t)snprintf(buf + n, sizeof(buf) - n, "],\"channels\":[");
@@ -440,25 +444,26 @@ static void set_mode(struct viewer *v, const char *msg)
 	uint32_t mask[2];
 	const char *m = strstr(msg, "\"mode\":\""), *bad = parse_channels(msg, mask);
 	char err[160];
-	int raw = -1;
+	int raw = -1, dump = 0;
 
 	if (bad || !m) {
 		send_error(v, "mode_error", bad ? bad : "a mode message needs mode and channels");
 		return;
 	}
-	if (!strncmp(m + 8, "raw\"", 4)) {
+	if (!strncmp(m + 8, "raw\"", 4) || !strncmp(m + 8, "dump\"", 5)) {
 		if (!mask[0] == !mask[1]) {
 			send_error(v, "mode_error", mask[0] ? "raw mode takes the channels of one PRU" :
 				   "raw mode needs at least one channel");
 			return;
 		}
 		raw = mask[0] ? 0 : 1;
+		dump = m[8] == 'd';
 	} else if (!mask[0] && !mask[1]) {
 		send_error(v, "mode_error", "edge mode needs at least one channel");
 		return;
 	}
 	pthread_mutex_lock(&mode_lock);
-	if (la_set_mode(raw, mask, err, sizeof(err))) {
+	if (la_set_mode_ex(raw, mask, dump, err, sizeof(err))) {
 		send_error(v, "mode_error", err);
 	}
 	pthread_mutex_unlock(&mode_lock);
@@ -479,7 +484,7 @@ static void run_burst(struct viewer *v, struct stream st[2], const char *msg)
 	const char *bad = parse_channels(msg, mask), *sec = strstr(msg, "\"seconds\":");
 	char err[160], back[160], reply[400];
 	size_t j = 0, k, n;
-	int was_raw, pru, s, rc;
+	int was_raw, was_dump, pru, s, rc;
 
 	if (!bad && !mask[0] == !mask[1]) {
 		bad = "a burst takes channels of one PRU";
@@ -490,7 +495,7 @@ static void run_burst(struct viewer *v, struct stream st[2], const char *msg)
 	}
 	pru = mask[0] ? 0 : 1;
 	pthread_mutex_lock(&mode_lock);
-	if (la_get_mode(&was_raw, was_mask)) {
+	if (la_get_mode(&was_raw, was_mask, &was_dump)) {
 		pthread_mutex_unlock(&mode_lock);
 		send_error(v, "burst_error", "the logic analyzer does not run");
 		return;
@@ -532,7 +537,7 @@ static void run_burst(struct viewer *v, struct stream st[2], const char *msg)
 		snprintf(reply + n, sizeof(reply) - n, "]}");
 		send_text(v, reply);
 	}
-	if (la_set_mode(was_raw, was_mask, back, sizeof(back))) {
+	if (la_set_mode_ex(was_raw, was_mask, was_dump, back, sizeof(back))) {
 		send_error(v, "mode_error", back);
 	}
 	pthread_mutex_unlock(&mode_lock);
@@ -609,8 +614,10 @@ static void read_viewer(struct viewer *v)
 static void *viewer_main(void *arg)
 {
 	struct viewer *v = arg;
+	struct la_follow fol = { 0 };
 	struct stream st[2];
-	uint64_t gaps_told[2] = { 0, 0 };
+	char err0[80];
+	uint64_t gaps_told[2] = { 0, 0 }, fol_edges[2] = { 0, 0 }, fol_lost[2] = { 0, 0 };
 	double flush_at, stats_at;
 	int s;
 
@@ -622,7 +629,10 @@ static void *viewer_main(void *arg)
 	st[0].on_hole = st[1].on_hole = ws_hole;
 	send_meta(v);
 	send_modes(v, 1);
-	if (wait_ticks(st, ws_edge, v)) {
+	/* In dump mode the RTUs keep quiet, with no ticks: start from the copier. */
+	if (!la_follow_open(&fol, err0, sizeof(err0))) {
+		st[0].first = st[1].first = st[0].last = st[1].last = fol.now;
+	} else if (wait_ticks(st, ws_edge, v)) {
 		goto out;
 	}
 	/* Each PRU's pins at its first tick, before its first edge. */
@@ -638,8 +648,30 @@ static void *viewer_main(void *arg)
 	flush_at = now_us() + 20000;
 	stats_at = now_us() + 1e6;
 	while (!v->failed) {
-		uint32_t before[2] = { st[0].rd, st[1].rd };
+		uint32_t before[2] = { st[0].rd, st[1].rd }, fol_rd = fol.rd;
 		double now;
+		char ferr[80];
+
+		/*
+		 * Dump mode: the raw PRU's channels come from the burst buffer,
+		 * every sample, followed as it fills (la_burst.c); the streams
+		 * have nothing then, not even ticks. A new mode, or a burst,
+		 * starts the copier again, so the reader starts again too.
+		 */
+		if (fol.open && la_follow_stale(&fol)) {
+			st[0].last = st[1].last = fol.now;
+			fol_edges[fol.pru] += fol.edges;
+			fol_lost[fol.pru] += fol.lost;
+			la_follow_close(&fol);
+		}
+		if (!fol.open && (AI64_LA_MODE_OF(la_hdr->s[0].cfg_mode) == AI64_LA_MODE_DUMP ||
+				  AI64_LA_MODE_OF(la_hdr->s[1].cfg_mode) == AI64_LA_MODE_DUMP)) {
+			la_follow_open(&fol, ferr, sizeof(ferr));
+			fol_rd = fol.rd;
+		}
+		if (fol.open) {
+			la_follow_poll(&fol, &st[fol.pru], ws_edge, v);
+		}
 
 		for (s = 0; s < 2; s++) {
 			uint64_t lost;
@@ -669,7 +701,8 @@ static void *viewer_main(void *arg)
 		now = now_us();
 		if (now >= flush_at) {
 			for (s = 0; s < 2; s++) {
-				struct head h = { .kind = 5, .stream = (uint8_t)s, .base = (double)st[s].base };
+				struct head h = { .kind = 5, .stream = (uint8_t)s,
+						  .base = (double)(fol.open ? fol.now : st[s].base) };
 
 				flush(v, s);
 				send_msg(v, &h, sizeof(h));
@@ -682,19 +715,23 @@ static void *viewer_main(void *arg)
 			snprintf(buf, sizeof(buf),
 				 "{\"type\":\"stats\",\"edges\":[%llu,%llu],\"gaps\":[%llu,%llu],"
 				 "\"missed\":[%llu,%llu],\"late\":[%llu,%llu],\"sent\":%llu}",
-				 (unsigned long long)st[0].edges, (unsigned long long)st[1].edges,
-				 (unsigned long long)st[0].gaps, (unsigned long long)st[1].gaps,
-				 (unsigned long long)st[0].missed, (unsigned long long)st[1].missed,
+				 (unsigned long long)(st[0].edges + fol_edges[0] + (fol.pru == 0 ? fol.edges : 0)),
+				 (unsigned long long)(st[1].edges + fol_edges[1] + (fol.pru == 1 ? fol.edges : 0)),
+				 (unsigned long long)(st[0].gaps + fol_lost[0] + (fol.pru == 0 ? fol.lost : 0)),
+				 (unsigned long long)(st[1].gaps + fol_lost[1] + (fol.pru == 1 ? fol.lost : 0)),
+				 (unsigned long long)(st[0].missed + (fol.pru == 0 ? fol.behind : 0)),
+				 (unsigned long long)(st[1].missed + (fol.pru == 1 ? fol.behind : 0)),
 				 (unsigned long long)st[0].late, (unsigned long long)st[1].late,
 				 (unsigned long long)v->sent);
 			send_text(v, buf);
 			stats_at = now + 1e6;
 		}
-		if (st[0].rd == before[0] && st[1].rd == before[1]) {
-			usleep(2000);
+		if (st[0].rd == before[0] && st[1].rd == before[1] && fol.rd == fol_rd) {
+			usleep(fol.open ? 500 : 2000);
 		}
 	}
 out:
+	la_follow_close(&fol);
 	stream_free(&st[0]);
 	stream_free(&st[1]);
 	close(v->fd);

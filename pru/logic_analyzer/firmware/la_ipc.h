@@ -43,6 +43,7 @@ struct la_cfg {
 	uint32_t mask;   /* the PRU's pins to record */
 	uint32_t resume; /* the seq a writer starting now begins at */
 	uint32_t t0;     /* raw: IEP0's count at the first sample */
+	uint32_t wr;     /* dump: blocks copied into the burst buffer, for Linux to follow */
 };
 
 #define LA_SREC(s, rd) ((volatile struct la_srec *)(LA_SRING(s) + ((rd) & (LA_SRING_SIZE - 1u))))
