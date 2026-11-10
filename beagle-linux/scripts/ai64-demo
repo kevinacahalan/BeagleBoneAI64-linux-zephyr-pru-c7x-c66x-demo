@@ -44,8 +44,9 @@ fi
 #   PWM_SLICES ICSSG0, the PWM project (pru/pwm), as slice:PRU:RTU:Tx_PRU.
 #              In each slice the RTU talks, the Tx_PRU modulates, and the
 #              PRU makes the edges.
-#   G1_CORES   ICSSG1, as remoteproc:firmware. Which firmware set runs on
-#              it is --icssg1's to say.
+#   G1_CORES   ICSSG1, as remoteproc:firmware:label, firmware - for a core
+#              the analyzer leaves stopped. Which firmware set runs on it
+#              is --icssg1's to say.
 R5_CORES=()
 DSP_CORES=()
 G1_CORES=()
@@ -58,7 +59,7 @@ while read -r group label rproc fw _; do
 	r5) R5_CORES+=("$rproc:$fw:$label") ;;
 	dsp) DSP_CORES+=("$rproc:$fw:$label") ;;
 	g0) ICSSG_NAMES+="$rproc " ;;
-	g1) G1_CORES+=("$rproc:$fw"); ICSSG_NAMES+="$rproc " ;;
+	g1) G1_CORES+=("$rproc:$fw:$label"); ICSSG_NAMES+="$rproc " ;;
 	esac
 done < <("$BIN" cores)
 if [[ ${#R5_CORES[@]} -ne 4 || ${#DSP_CORES[@]} -ne 3 || ${#G1_CORES[@]} -ne 6 ]]; then
@@ -234,7 +235,7 @@ load_fw() {
 	case $fwname in
 	ai64_r5f[01]_[01].elf|ai64-c66x.elf|ai64-c7x.elf) ;;
 	ai64-icssg0-pru[01].elf|ai64-icssg0-rtu[01].elf|ai64-icssg0-txpru[01].elf) ;;
-	ai64-la-pru[01].elf|ai64-la-rtu[01].elf|ai64-la-txpru[01].elf) ;;
+	ai64-la-pru0.elf|ai64-la-rtu[01].elf) ;;
 	ai64-mcs-pru[01].elf|ai64-mcs-rtu[01].elf|ai64-mcs-txpru[01].elf) ;;
 	*)
 		echo "refusing to install $fwname" >&2
@@ -355,10 +356,11 @@ restart_pwm() {
 }
 
 # ICSSG1 runs the set --icssg1 names, in ai64 cores' order: the analyzer's
-# RTU0 starts IEP0 before either PRU samples. The scheduler's images have
-# the same names with ai64-mcs- for ai64-la-; its cores each arm their own
-# task manager and clear their own compare, and PRU0, which sets up IEP0,
-# goes last. With off, they stay stopped.
+# PRU0, which starts IEP0 itself, and its RTUs, fabric nodes; it leaves the
+# cores with firmware - stopped. The scheduler's images are
+# ai64-mcs-<core>.elf, for all six; its cores each arm their own task
+# manager and clear their own compare, and PRU0, which sets up IEP0, goes
+# last. With off, they stay stopped.
 restart_icssg1() {
 	local entry name fw src
 	for entry in "${G1_CORES[@]}"; do
@@ -378,7 +380,12 @@ restart_icssg1() {
 	for entry in "${G1_CORES[@]}"; do
 		name=${entry%%:*}
 		fw=${entry#*:}
-		[[ $ICSSG1 == scheduler ]] && fw=${fw/ai64-la-/ai64-mcs-}
+		fw=${fw%%:*}
+		if [[ $ICSSG1 == scheduler ]]; then
+			fw=ai64-mcs-${entry##*:g1}.elf
+		elif [[ $fw == - ]]; then
+			continue
+		fi
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
 		load_fw "$name" "$fw" "$src"
 	done

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * linker.cmd: ICSSG1 RTU1, slice 1's mover (la_rtu.c).
+ * linker.cmd: ICSSG1 RTU1, a fabric node (la_rtu.c).
  * Its part of the slice's data RAM comes from the project's memory map.
  */
 

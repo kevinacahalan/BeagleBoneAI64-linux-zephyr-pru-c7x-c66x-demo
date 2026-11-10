@@ -66,7 +66,7 @@ DEMO=$(find_artifact ai64-demo beagle-linux/scripts/ai64-demo)
 # The ICSSG images: ICSSG0 the PWM project, ICSSG1 the logic analyzer, and
 # the multicore scheduler ICSSG1 can run instead (extra-demos/).
 declare -A ICSSG
-for f in ai64-icssg0-{pru,rtu,txpru}{0,1}.elf ai64-la-{pru,rtu,txpru}{0,1}.elf \
+for f in ai64-icssg0-{pru,rtu,txpru}{0,1}.elf ai64-la-pru0.elf ai64-la-rtu{0,1}.elf \
 	ai64-mcs-{pru,rtu,txpru}{0,1}.elf; do
 	ICSSG[$f]=$(find_artifact "$f" "pru/build/$f")
 done

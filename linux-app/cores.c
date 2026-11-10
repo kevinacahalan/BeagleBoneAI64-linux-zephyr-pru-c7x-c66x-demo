@@ -21,7 +21,7 @@
 const struct ai64_group ai64_groups[] = {
 	{ "r5", "Zephyr on the main-domain R5F cores" },
 	{ "g0", "ICSSG0: the PWM slices, and the pipeline's sampler" },
-	{ "g1", "ICSSG1: a 19-channel logic analyzer (ai64 la)" },
+	{ "g1", "ICSSG1: a 10-channel logic analyzer (ai64 la)" },
 	{ "dsp", "The DSPs" },
 };
 const size_t ai64_ngroups = sizeof(ai64_groups) / sizeof(ai64_groups[0]);
@@ -33,10 +33,11 @@ const size_t ai64_ngroups = sizeof(ai64_groups) / sizeof(ai64_groups[0]);
  * the order ai64-demo starts them in. In split mode an R5F cluster's core 1
  * cannot power up before its core 0, so each cluster's core 0 comes first.
  * An ICSSG0 slice's Tx_PRU waits for its RTU's record and its PRU for the
- * Tx_PRU's, so the RTU starts first. On ICSSG1, RTU0 starts IEP0, the
- * analyzer's clock, before either PRU samples; with the multicore scheduler
- * loaded instead (ai64-demo --icssg1 scheduler), PRU0 sets up IEP0 for the
- * other five, so it starts last.
+ * Tx_PRU's, so the RTU starts first. On ICSSG1 the analyzer needs only
+ * PRU0, which starts IEP0 itself, and the RTUs, fabric nodes; firmware -
+ * is a core it leaves stopped. With the multicore scheduler loaded instead
+ * (ai64-demo --icssg1 scheduler), each core runs ai64-mcs-<core>.elf, and
+ * PRU0 sets up IEP0 for the other five, so it starts last.
  */
 const struct ai64_core ai64_cores[] = {
 	{ .label = "r5f0_0", .rproc = "5c00000.r5f", .fw = "ai64_r5f0_0.elf", .group = "r5",
@@ -72,24 +73,21 @@ const struct ai64_core ai64_cores[] = {
 	  .name = "RTU1", .role = "slice 1 talks; stamps the pipeline's windows",
 	  .start = 4, .node = AI64_FAB_G0RTU1, .icssg = 0x0b000000ull, .slice = 1 },
 
-	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-la-pru0.elf", .group = "g1",
-	  .name = "PRU0", .role = "samples 10 analyzer pins: ch0, ch3-6, ch13-16, ch18",
-	  .start = 6, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "ai64-la-pru1.elf", .group = "g1",
-	  .name = "PRU1", .role = "samples 9 analyzer pins: ch1-2, ch7-12, ch17",
-	  .start = 5, NONE, .icssg = 0x0b100000ull, .slice = 1 },
 	{ .label = "g1rtu0", .rproc = "b104000.rtu", .fw = "ai64-la-rtu0.elf", .group = "g1",
-	  .name = "RTU0", .role = "starts IEP0; moves PRU0's edges to DDR; fabric node, takes marks",
-	  .start = 1, .node = AI64_FAB_G1RTU0, .icssg = 0x0b100000ull, .slice = 0 },
+	  .name = "RTU0", .role = "fabric node", .start = 1, .node = AI64_FAB_G1RTU0,
+	  .icssg = 0x0b100000ull, .slice = 0 },
 	{ .label = "g1rtu1", .rproc = "b106000.rtu", .fw = "ai64-la-rtu1.elf", .group = "g1",
-	  .name = "RTU1", .role = "moves PRU1's edges to DDR; fabric node, takes marks",
-	  .start = 2, .node = AI64_FAB_G1RTU1, .icssg = 0x0b100000ull, .slice = 1 },
-	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "ai64-la-txpru0.elf",
-	  .group = "g1", .name = "Tx_PRU0", .role = "slice 0's watcher",
-	  .start = 3, NONE, .icssg = 0x0b100000ull, .slice = 0 },
-	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "ai64-la-txpru1.elf",
-	  .group = "g1", .name = "Tx_PRU1", .role = "slice 1's watcher",
-	  .start = 4, NONE, .icssg = 0x0b100000ull, .slice = 1 },
+	  .name = "RTU1", .role = "fabric node", .start = 2, .node = AI64_FAB_G1RTU1,
+	  .icssg = 0x0b100000ull, .slice = 1 },
+	{ .label = "g1txpru0", .rproc = "b10a000.txpru", .fw = "-", .group = "g1",
+	  .name = "Tx_PRU0", .role = "free", .start = 3, NONE, .icssg = 0x0b100000ull, .slice = 0 },
+	{ .label = "g1txpru1", .rproc = "b10c000.txpru", .fw = "-", .group = "g1",
+	  .name = "Tx_PRU1", .role = "free", .start = 4, NONE, .icssg = 0x0b100000ull, .slice = 1 },
+	{ .label = "g1pru1", .rproc = "b138000.pru", .fw = "-", .group = "g1",
+	  .name = "PRU1", .role = "free", .start = 5, NONE, .icssg = 0x0b100000ull, .slice = 1 },
+	{ .label = "g1pru0", .rproc = "b134000.pru", .fw = "ai64-la-pru0.elf", .group = "g1",
+	  .name = "PRU0", .role = "samples the 10 analyzer pins; writes them to DDR",
+	  .start = 6, NONE, .icssg = 0x0b100000ull, .slice = 0 },
 
 	{ .label = "c66x0", .rproc = "4d80800000.dsp", .fw = "ai64-c66x.elf", .group = "dsp",
 	  .name = "C66x 0", .role = "FIR jobs; the pipeline's FFT, even windows",

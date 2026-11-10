@@ -1,99 +1,94 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * ICSSG1 PRU0 and PRU1: the logic analyzer's samplers, one per slice. Each
- * watches its own GPI pins (ai64_la.h has which) in direct mode, in the
- * mode the RTU set (la_map.h): in edge mode it writes an edge record into
- * its ring in shared RAM at every change (la_sample.asm); in raw mode it
- * samples every 8 ns and passes the samples to the other PRU (la_raw.asm);
- * in conv mode it is that other PRU, and writes the records for them into
- * the raw PRU's ring (la_conv.asm); in dump mode it copies them into the
- * burst buffer in DDR (la_dump.asm). Except in dump mode it touches nothing
- * outside ICSSG1, so nothing outside can slow the loop: each slice's RTU
- * takes the records from its ring.
+ * ICSSG1 PRU0: the logic analyzer. It samples its GPI pins in direct mode
+ * at the rate and lane in its setup (ai64_la.h), which Linux writes before
+ * it starts it (ai64 la mode), and writes the samples to the ring in DDR
+ * through XFR2VBUS (la_cap.asm), on its own: no other ICSSG1 core takes
+ * part. It starts IEP0, the analyzer's clock, if nothing has: nanoseconds
+ * on the 250 MHz core clock, with no compare resetting it.
  */
 
 #include <stdint.h>
 #include "icssg.h"
 #include "ai64_la.h"
 #include "la_map.h"
-#include "la_ipc.h"
 #include "la_tm.h"
 
 #define AI64_TRACE_SIZE 256
-#if AI64_SLICE == 0
 #define AI64_TRACE_NAME "trace:la-pru0"
-#else
-#define AI64_TRACE_NAME "trace:la-pru1"
-#endif
 #include "ai64_rsc_trace.h"
 
-/* ICSSG_GPCFG0_REG and ICSSG_GPCFG1_REG: 0 is direct input and output. */
-#define CFG_GPCFG(s) (ICSSG_CFG + 0x08u + 4u * (s))
+/* ICSSG_GPCFG0_REG: 0 is direct input and output. */
+#define CFG_GPCFG0 (ICSSG_CFG + 0x08u)
+#define IEP        ICSSG_IEP0
+#define CFG        ((volatile struct ai64_la_cfg *)AI64_LA_CFG)
 
-extern void la_sample(uint32_t ring, uint32_t mask, uint32_t seq);
-extern void la_raw(uint32_t mask, uint32_t t0);
-extern void la_raw16_0(uint32_t mask, uint32_t t0);
-extern void la_raw16_8(uint32_t mask, uint32_t t0);
-extern void la_raw8_0(uint32_t mask, uint32_t t0);
-extern void la_raw8_8(uint32_t mask, uint32_t t0);
-extern void la_conv(uint32_t ring, uint32_t seq, uint32_t t0);
-extern void la_conv16(uint32_t ring, uint32_t seq, uint32_t t0, uint32_t shift);
-extern void la_dump(uint32_t buf, uint32_t t0, uint32_t wr);
+typedef void cap_fn(uint32_t mask, uint32_t key, uint32_t t0, uint32_t k);
+extern cap_fn la_cap_0all, la_cap_0lo16, la_cap_0mid16, la_cap_0b0, la_cap_0b1;
+extern cap_fn la_cap_1all, la_cap_1lo16, la_cap_1mid16, la_cap_1b0, la_cap_1b1;
+extern cap_fn la_cap_2all;
+
+static cap_fn *const fast[2][AI64_LA_LANES] = {
+	{ la_cap_0all, la_cap_0lo16, la_cap_0mid16, la_cap_0b0, la_cap_0b1 },
+	{ la_cap_1all, la_cap_1lo16, la_cap_1mid16, la_cap_1b0, la_cap_1b1 },
+};
+
+/* IEP0 counting ns from 0, unless it already does, with no compare. */
+static void iep_start(void)
+{
+	if ((ICSSG_REG(IEP_GLOBAL_CFG(IEP)) & IEP_CNT_ENABLE) && ICSSG_REG(IEP_CMP_CFG(IEP)) == 0) {
+		return;
+	}
+	ICSSG_REG(IEP_GLOBAL_CFG(IEP)) = IEP_DEFAULT_INC(ICSSG_NS_PER_CYCLE) |
+					 IEP_CMP_INC(ICSSG_NS_PER_CYCLE);
+	ICSSG_REG(IEP_CMP_CFG(IEP)) = 0;
+	ICSSG_REG(IEP_CMP_STATUS(IEP)) = 0xffffffffu;
+	ICSSG_REG(ICSSG_CFG_IEPCLK) |= ICSSG_IEPCLK_SYNC;
+	ICSSG_REG(IEP_COUNT_LO(IEP)) = 0;
+	ICSSG_REG(IEP_COUNT_HI(IEP)) = 0;
+	ICSSG_REG(IEP_GLOBAL_CFG(IEP)) |= IEP_CNT_ENABLE;
+}
+
+/* Whether the setup is one la_cap.asm has a loop for. */
+static int valid(volatile struct ai64_la_cfg *c)
+{
+	uint32_t p = c->period;
+
+	if (c->magic != AI64_LA_CFG_MAGIC || !(c->mask & AI64_LA_MASK) || c->lane >= AI64_LA_LANES) {
+		return 0;
+	}
+	if (p == 2u || p == 4u) {
+		return 1;
+	}
+	return p >= 10u && !(p & 1u) && p <= 1000u && c->lane == AI64_LA_LANE_ALL;
+}
 
 void main(void)
 {
-	uint32_t mask, mode, lane;
+	volatile struct ai64_la_cfg *c = CFG;
+	uint32_t mask;
 
-	tm_clear(AI64_SLICE ? ICSSG_TM_PRU1 : ICSSG_TM_PRU0);
+	tm_clear(ICSSG_TM_PRU0);
 	trace_init();
-	ICSSG_REG(CFG_GPCFG(AI64_SLICE)) = 0;
-	/*
-	 * The slice's RTU readies the ring (la_map.h), and RTU0 starts IEP0
-	 * counting nanoseconds, with no compare resetting it.
-	 */
-	while (LA_READY_WORD != LA_READY_MAGIC ||
-	       !(ICSSG_REG(IEP_GLOBAL_CFG(ICSSG_IEP0)) & IEP_CNT_ENABLE) ||
-	       ICSSG_REG(IEP_CMP_CFG(ICSSG_IEP0)) != 0) {
+	ICSSG_REG(CFG_GPCFG0) = 0;
+	iep_start();
+	c->run = 0;
+	if (!valid(c)) {
+		c->mask = AI64_LA_MASK;
+		c->lane = AI64_LA_LANE_ALL;
+		c->period = AI64_LA_DEFAULT_PERIOD;
+		c->key = 0;
+		c->magic = AI64_LA_CFG_MAGIC;
+		trace_puts("ICSSG1 PRU0: no setup, every pin at 25 MS/s\n");
 	}
-	mask = LA_CFG_REC->mask & AI64_LA_MASK(AI64_SLICE);
-	mode = AI64_LA_MODE_OF(LA_CFG_REC->mode);
-	if (mode == AI64_LA_MODE_RAW) {
-		trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: raw, every 8 ns, to PRU0\n" :
-					"ICSSG1 PRU0 up: raw, every 8 ns, to PRU1\n");
-		lane = AI64_LA_LANE_OF(LA_CFG_REC->mode);
-		if (lane == AI64_LA_LANE_LO16) {
-			la_raw16_0(mask, (uint32_t)&LA_CFG_REC->t0);
-		}
-		if (lane == AI64_LA_LANE_MID16) {
-			la_raw16_8(mask, (uint32_t)&LA_CFG_REC->t0);
-		}
-		/* A burst's lanes, four samples a word (la_dump.asm). */
-		if (lane == AI64_LA_LANE_B0) {
-			la_raw8_0(mask, (uint32_t)&LA_CFG_REC->t0);
-		}
-		if (lane == AI64_LA_LANE_B1) {
-			la_raw8_8(mask, (uint32_t)&LA_CFG_REC->t0);
-		}
-		la_raw(mask, (uint32_t)&LA_CFG_REC->t0);
+	mask = c->mask & AI64_LA_MASK;
+	trace_puts("ICSSG1 PRU0 up: sampling every ");
+	trace_u32(c->period);
+	trace_puts(" cycles, lane ");
+	trace_u32(c->lane);
+	trace_putc('\n');
+	if (c->period <= 4u) {
+		fast[c->period == 4u][c->lane](mask, c->key, (uint32_t)&c->t0, 0);
 	}
-	if (mode == AI64_LA_MODE_CONV) {
-		/* Started before the raw PRU, so waiting when its first block comes. */
-		trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: PRU0's samples to edge records\n" :
-					"ICSSG1 PRU0 up: PRU1's samples to edge records\n");
-		lane = AI64_LA_LANE_OF(LA_CFG_OTHER->mode);
-		if (lane != AI64_LA_LANE_ALL) {
-			la_conv16(LA_SRING(1 - AI64_SLICE), LA_CFG_OTHER->resume,
-				  (uint32_t)&LA_CFG_OTHER->t0, lane == AI64_LA_LANE_MID16 ? 8u : 0u);
-		}
-		la_conv(LA_SRING(1 - AI64_SLICE), LA_CFG_OTHER->resume, (uint32_t)&LA_CFG_OTHER->t0);
-	}
-	if (mode == AI64_LA_MODE_DUMP) {
-		/* Started before the raw PRU too. */
-		trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: PRU0's samples to the burst buffer\n" :
-					"ICSSG1 PRU0 up: PRU1's samples to the burst buffer\n");
-		la_dump(AI64_LA_BURST_ADDR, (uint32_t)&LA_CFG_OTHER->t0, (uint32_t)&LA_CFG_REC->wr);
-	}
-	trace_puts(AI64_SLICE ? "ICSSG1 PRU1 up: an edge record at each change\n" :
-				"ICSSG1 PRU0 up: an edge record at each change\n");
-	la_sample(LA_SRING(AI64_SLICE), mask, LA_CFG_REC->resume);
+	la_cap_2all(mask, c->key, (uint32_t)&c->t0, (c->period - 4u) / 2u);
 }

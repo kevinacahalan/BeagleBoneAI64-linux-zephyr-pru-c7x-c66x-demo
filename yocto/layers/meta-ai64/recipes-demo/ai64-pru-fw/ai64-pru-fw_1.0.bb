@@ -35,8 +35,7 @@ INSANE_SKIP:${PN} += "arch buildpaths"
 
 FW = "ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf \
     ai64-icssg0-pru1.elf ai64-icssg0-rtu1.elf ai64-icssg0-txpru1.elf \
-    ai64-la-pru0.elf ai64-la-rtu0.elf ai64-la-txpru0.elf \
-    ai64-la-pru1.elf ai64-la-rtu1.elf ai64-la-txpru1.elf \
+    ai64-la-pru0.elf ai64-la-rtu0.elf ai64-la-rtu1.elf \
     ai64-mcs-pru0.elf ai64-mcs-rtu0.elf ai64-mcs-txpru0.elf \
     ai64-mcs-pru1.elf ai64-mcs-rtu1.elf ai64-mcs-txpru1.elf"
 

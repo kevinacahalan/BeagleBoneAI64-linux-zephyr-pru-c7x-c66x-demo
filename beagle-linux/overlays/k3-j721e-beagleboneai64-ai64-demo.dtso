@@ -12,11 +12,13 @@
 //     PRU1  P8.31  AE29  pad 0x100  mode 1  PRG0_PRU1_GPI0, the pipeline's
 //           input (zephyr/include/ai64_pipe.h); P8.31's other ball, AJ25
 //           (pad 0x084), is held off: mode 7, transmit disabled
-//   ICSSG1, the logic analyzer (pru/logic_analyzer): 19 inputs, each mode 1,
-//     PRG1_PRU<n>_GPI<bit>, with its pull-down on (zephyr/include/ai64_la.h):
-//     PRU0  P8.03 P8.07 P8.08 P8.09 P8.10 P8.36 P8.38 P9.11 P9.13 P9.23
-//     PRU1  P8.05 P8.06 P8.21 P8.23 P8.25 P8.32 P8.33 P8.35 P9.21
-//     P8.32, P8.33, P8.35, P8.38, and P9.21 have a second ball, held off
+//   ICSSG1, the logic analyzer (pru/logic_analyzer): PRU0's 10 inputs, each
+//     mode 1, PRG1_PRU0_GPI<bit>, with its pull-down on
+//     (zephyr/include/ai64_la.h): P8.03 P8.07 P8.08 P8.09 P8.10 P8.36 P8.38
+//     P9.11 P9.13 P9.23. PRU1's nine are muxed to it too, though nothing
+//     samples them now: P8.05 P8.06 P8.21 P8.23 P8.25 P8.32 P8.33 P8.35
+//     P9.21. P8.32, P8.33, P8.35, P8.38, and P9.21 have a second ball, held
+//     off
 //   ICSSG1, the multicore scheduler (extra-demos/icssg1-multicore-scheduler):
 //     all six cores  P8.17  AF22  pad 0x00c  mode 3  PRG1_PWM2_A0
 //   The other header pins have one ball each.
@@ -51,7 +53,7 @@
 		no-map;
 	};
 
-	/* The logic analyzer's two rings (zephyr/include/ai64_la.h). */
+	/* The logic analyzer's ring (zephyr/include/ai64_la.h). */
 	ai64_la: ai64-la@ac000000 {
 		reg = <0x00 0xac000000 0x00 0x04000000>;
 		no-map;
@@ -89,33 +91,33 @@
 	ai64_la_pru0_pins: ai64-la-pru0-pins {
 		pinctrl-single,pins = <
 			J721E_IOPAD(0x054, PIN_INPUT_PULLDOWN, 1) /* (AH21) P8.03 PRG1_PRU0_GPI19, ch0 */
-			J721E_IOPAD(0x03c, PIN_INPUT_PULLDOWN, 1) /* (AD24) P8.07 PRG1_PRU0_GPI14, ch3 */
-			J721E_IOPAD(0x038, PIN_INPUT_PULLDOWN, 1) /* (AG24) P8.08 PRG1_PRU0_GPI13, ch4 */
-			J721E_IOPAD(0x044, PIN_INPUT_PULLDOWN, 1) /* (AE24) P8.09 PRG1_PRU0_GPI16, ch5 */
-			J721E_IOPAD(0x040, PIN_INPUT_PULLDOWN, 1) /* (AC24) P8.10 PRG1_PRU0_GPI15, ch6 */
-			J721E_IOPAD(0x020, PIN_INPUT_PULLDOWN, 1) /* (AE20) P8.36 PRG1_PRU0_GPI7, ch13 */
-			J721E_IOPAD(0x024, PIN_INPUT_PULLDOWN, 1) /* (AJ20) P8.38 PRG1_PRU0_GPI8, ch14 */
+			J721E_IOPAD(0x03c, PIN_INPUT_PULLDOWN, 1) /* (AD24) P8.07 PRG1_PRU0_GPI14, ch1 */
+			J721E_IOPAD(0x038, PIN_INPUT_PULLDOWN, 1) /* (AG24) P8.08 PRG1_PRU0_GPI13, ch2 */
+			J721E_IOPAD(0x044, PIN_INPUT_PULLDOWN, 1) /* (AE24) P8.09 PRG1_PRU0_GPI16, ch3 */
+			J721E_IOPAD(0x040, PIN_INPUT_PULLDOWN, 1) /* (AC24) P8.10 PRG1_PRU0_GPI15, ch4 */
+			J721E_IOPAD(0x020, PIN_INPUT_PULLDOWN, 1) /* (AE20) P8.36 PRG1_PRU0_GPI7, ch5 */
+			J721E_IOPAD(0x024, PIN_INPUT_PULLDOWN, 1) /* (AJ20) P8.38 PRG1_PRU0_GPI8, ch6 */
 			J721E_IOPAD(0x1a8, PIN_DISABLE, 7) /* (Y29) P8.38, held off */
-			J721E_IOPAD(0x004, PIN_INPUT_PULLDOWN, 1) /* (AC23) P9.11 PRG1_PRU0_GPI0, ch15 */
-			J721E_IOPAD(0x008, PIN_INPUT_PULLDOWN, 1) /* (AG22) P9.13 PRG1_PRU0_GPI1, ch16 */
-			J721E_IOPAD(0x028, PIN_INPUT_PULLDOWN, 1) /* (AG20) P9.23 PRG1_PRU0_GPI9, ch18 */
+			J721E_IOPAD(0x004, PIN_INPUT_PULLDOWN, 1) /* (AC23) P9.11 PRG1_PRU0_GPI0, ch7 */
+			J721E_IOPAD(0x008, PIN_INPUT_PULLDOWN, 1) /* (AG22) P9.13 PRG1_PRU0_GPI1, ch8 */
+			J721E_IOPAD(0x028, PIN_INPUT_PULLDOWN, 1) /* (AG20) P9.23 PRG1_PRU0_GPI9, ch9 */
 		>;
 	};
 
 	ai64_la_pru1_pins: ai64-la-pru1-pins {
 		pinctrl-single,pins = <
-			J721E_IOPAD(0x088, PIN_INPUT_PULLDOWN, 1) /* (AH25) P8.05 PRG1_PRU1_GPI12, ch1 */
-			J721E_IOPAD(0x08c, PIN_INPUT_PULLDOWN, 1) /* (AG25) P8.06 PRG1_PRU1_GPI13, ch2 */
-			J721E_IOPAD(0x07c, PIN_INPUT_PULLDOWN, 1) /* (AF21) P8.21 PRG1_PRU1_GPI9, ch7 */
-			J721E_IOPAD(0x080, PIN_INPUT_PULLDOWN, 1) /* (AB23) P8.23 PRG1_PRU1_GPI10, ch8 */
-			J721E_IOPAD(0x090, PIN_INPUT_PULLDOWN, 1) /* (AH26) P8.25 PRG1_PRU1_GPI14, ch9 */
-			J721E_IOPAD(0x06c, PIN_INPUT_PULLDOWN, 1) /* (AG21) P8.32 PRG1_PRU1_GPI5, ch10 */
+			J721E_IOPAD(0x088, PIN_INPUT_PULLDOWN, 1) /* (AH25) P8.05 PRG1_PRU1_GPI12, free */
+			J721E_IOPAD(0x08c, PIN_INPUT_PULLDOWN, 1) /* (AG25) P8.06 PRG1_PRU1_GPI13, free */
+			J721E_IOPAD(0x07c, PIN_INPUT_PULLDOWN, 1) /* (AF21) P8.21 PRG1_PRU1_GPI9, free */
+			J721E_IOPAD(0x080, PIN_INPUT_PULLDOWN, 1) /* (AB23) P8.23 PRG1_PRU1_GPI10, free */
+			J721E_IOPAD(0x090, PIN_INPUT_PULLDOWN, 1) /* (AH26) P8.25 PRG1_PRU1_GPI14, free */
+			J721E_IOPAD(0x06c, PIN_INPUT_PULLDOWN, 1) /* (AG21) P8.32 PRG1_PRU1_GPI5, free */
 			J721E_IOPAD(0x104, PIN_DISABLE, 7) /* (AD28) P8.32, held off */
-			J721E_IOPAD(0x068, PIN_INPUT_PULLDOWN, 1) /* (AH24) P8.33 PRG1_PRU1_GPI4, ch11 */
+			J721E_IOPAD(0x068, PIN_INPUT_PULLDOWN, 1) /* (AH24) P8.33 PRG1_PRU1_GPI4, free */
 			J721E_IOPAD(0x1c0, PIN_DISABLE, 7) /* (AA2) P8.33, held off */
-			J721E_IOPAD(0x064, PIN_INPUT_PULLDOWN, 1) /* (AD23) P8.35 PRG1_PRU1_GPI3, ch12 */
+			J721E_IOPAD(0x064, PIN_INPUT_PULLDOWN, 1) /* (AD23) P8.35 PRG1_PRU1_GPI3, free */
 			J721E_IOPAD(0x1d4, PIN_DISABLE, 7) /* (Y3) P8.35, held off */
-			J721E_IOPAD(0x0a0, PIN_INPUT_PULLDOWN, 1) /* (AJ22) P9.21 PRG1_PRU1_GPI18, ch17 */
+			J721E_IOPAD(0x0a0, PIN_INPUT_PULLDOWN, 1) /* (AJ22) P9.21 PRG1_PRU1_GPI18, free */
 			J721E_IOPAD(0x16c, PIN_DISABLE, 7) /* (U28) P9.21, held off */
 		>;
 	};
@@ -149,8 +151,9 @@
 };
 
 /*
- * ICSSG1's PRUs sample the analyzer's pins. With the multicore scheduler
- * loaded instead, PRU0 sets it up, and all six cores write P8.17's state.
+ * ICSSG1 PRU0 samples the analyzer's pins; PRU1's stay its inputs, unused.
+ * With the multicore scheduler loaded instead, PRU0 sets it up, and all
+ * six cores write P8.17's state.
  */
 &pru1_0 {
 	pinctrl-names = "default";

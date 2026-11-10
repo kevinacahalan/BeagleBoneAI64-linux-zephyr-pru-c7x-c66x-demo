@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * A recording of both streams (la.h): ai64 la capture and measure (la.c),
- * and the MCP server's tools (mcp.c), take one with record() and read it
- * back merged by time with rec_next().
+ * Recordings (la.h): ai64 la capture and measure (la.c), and the MCP
+ * server's tools (mcp.c), take one with record() and read it back with
+ * rec_next(). The trigger is matched here, on the changes as the reader
+ * finds them: the ring's history gives the time before the hit.
  */
 #define _GNU_SOURCE
 
@@ -15,54 +16,285 @@
 #include "ai64.h"
 #include "la.h"
 
-static void keep_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
+/* While it waits for a hit, a recording keeps only pre seconds, and this many edges more. */
+#define KEEP_MIN 65536u
+
+struct rec_ctx {
+	struct recording *r;
+	const struct la_trig *trig;
+	uint64_t armed;     /* hits from then on */
+	uint32_t was;
+	int have;
+};
+
+static void *grow(void *p, size_t *cap, size_t size, size_t first)
 {
-	struct events *ev = ((struct recording *)ctx)->ev + st->s;
+	*cap = *cap ? *cap * 2 : first;
+	p = realloc(p, *cap * size);
+	if (!p) {
+		fprintf(stderr, "out of memory\n");
+		exit(1);
+	}
+	return p;
+}
+
+static void add_event(struct recording *r, uint64_t t, uint32_t state)
+{
+	struct events *ev = &r->ev;
 
 	if (ev->n == ev->cap) {
-		ev->cap = ev->cap ? ev->cap * 2 : 65536;
-		ev->e = realloc(ev->e, ev->cap * sizeof(*ev->e));
-		if (!ev->e) {
-			fprintf(stderr, "out of memory\n");
-			exit(1);
-		}
+		ev->e = grow(ev->e, &ev->cap, sizeof(*ev->e), 65536);
 	}
 	ev->e[ev->n].t = t;
 	ev->e[ev->n].state = state;
 	ev->n++;
 }
 
-/* A hole: kept, and its end an event, with the pins there. */
-static void keep_hole(void *ctx, struct stream *st, uint64_t from, uint64_t to, uint32_t state)
+static void add_hole(struct recording *r, uint64_t from, uint64_t to)
 {
-	struct holes *h = ((struct recording *)ctx)->holes + st->s;
+	struct holes *h = &r->holes;
 
 	if (h->n == h->cap) {
-		h->cap = h->cap ? h->cap * 2 : 1024;
-		h->a = realloc(h->a, h->cap * sizeof(*h->a));
-		h->b = realloc(h->b, h->cap * sizeof(*h->b));
-		if (!h->a || !h->b) {
+		size_t cap = h->cap;
+
+		h->a = grow(h->a, &cap, sizeof(*h->a), 1024);
+		h->b = realloc(h->b, cap * sizeof(*h->b));
+		h->cap = cap;
+		if (!h->b) {
 			fprintf(stderr, "out of memory\n");
 			exit(1);
 		}
 	}
 	h->a[h->n] = from;
 	h->b[h->n++] = to;
-	keep_edge(ctx, st, to, state);
 }
 
-void rec_add_edge(struct recording *r, int s, uint64_t t, uint32_t state)
+static void keep_edge(void *arg, uint64_t t, uint32_t state)
 {
-	struct stream st = { .s = s };
+	struct rec_ctx *x = arg;
+	const struct la_trig *g = x->trig;
 
-	keep_edge(r, &st, t, state);
+	add_event(x->r, t, state);
+	if (g && g->kind && x->have && !x->r->hit && t >= x->armed) {
+		uint32_t was = x->was & g->mask, now = state & g->mask;
+
+		if (g->kind == LA_TRIG_ANY ? was != now : was != g->value && now == g->value) {
+			x->r->hit = t;
+		}
+	}
+	x->was = state;
+	x->have = 1;
 }
 
-void rec_add_hole(struct recording *r, int s, uint64_t from, uint64_t to, uint32_t state)
+/* A hole: kept, and its end an event, with the levels there; no hit across one. */
+static void keep_hole(void *arg, uint64_t from, uint64_t to, uint32_t state)
 {
-	struct stream st = { .s = s };
+	struct rec_ctx *x = arg;
 
-	keep_hole(r, &st, from, to, state);
+	add_hole(x->r, from, to);
+	add_event(x->r, to, state);
+	x->was = state;
+}
+
+/* Waiting for a hit: drop what is more than pre before the newest, keeping the levels. */
+static void trim(struct recording *r, uint64_t newest, uint64_t pre)
+{
+	size_t i = 0, j, k = 0;
+
+	if (r->ev.n < 2 * KEEP_MIN || newest < pre) {
+		return;
+	}
+	while (i + 1 < r->ev.n && r->ev.e[i + 1].t < newest - pre) {
+		i++;
+	}
+	if (i + KEEP_MIN > r->ev.n) {
+		i = r->ev.n > KEEP_MIN ? r->ev.n - KEEP_MIN : 0;
+	}
+	/* e[i] is the levels from its time on: it stays, as the first. */
+	memmove(r->ev.e, r->ev.e + i, (r->ev.n - i) * sizeof(*r->ev.e));
+	r->ev.n -= i;
+	for (j = 0; j < r->holes.n; j++) {
+		if (r->holes.b[j] >= r->ev.e[0].t) {
+			r->holes.a[k] = r->holes.a[j];
+			r->holes.b[k++] = r->holes.b[j];
+		}
+	}
+	r->holes.n = k;
+}
+
+/* After PRU0 stops, a span of the ring read again, whole, into r; 0, or -1 if the ring no longer holds it. */
+static int reread(struct recording *r, struct la_src *src)
+{
+	struct recording whole = { .mode = r->mode, .begin = r->begin, .finish = r->finish,
+				   .hit = r->hit };
+	struct rec_ctx y = { .r = &whole };
+	uint64_t stopped;
+	char e2[160];
+	int ret = -1;
+
+	if (la_src_freeze(&stopped, e2, sizeof(e2))) {
+		fprintf(stderr, "%s\n", e2);
+		return -1;
+	}
+	if (!la_src_reread(src, stopped, r->begin, r->finish, keep_edge, keep_hole, &y) && whole.ev.n) {
+		free(r->ev.e);
+		free(r->holes.a);
+		free(r->holes.b);
+		r->ev = whole.ev;
+		r->holes = whole.holes;
+		r->blocks = src->blocks;
+		r->lost = src->lost;
+		ret = 0;
+	} else {
+		free(whole.ev.e);
+		free(whole.holes.a);
+		free(whole.holes.b);
+	}
+	if (la_set_mode(src->mode.chans, src->mode.hz, e2, sizeof(e2))) {
+		fprintf(stderr, "%s\n", e2);
+	}
+	return ret;
+}
+
+/* Until IEP0 is past t, and the blocks to t are surely in DDR. */
+static void wait_until(uint64_t t)
+{
+	uint64_t now;
+
+	while ((now = la_now()) < t + 300000u) {
+		uint64_t ns = t + 300000u - now;
+
+		usleep(ns > 20000000u ? 20000u : (useconds_t)(ns / 1000u + 1u));
+	}
+}
+
+/*
+ * A setup the reader follows live is recorded as the reader finds the
+ * changes. One faster than that still has every sample in the ring, for as
+ * long as it holds (span): a recording that fits waits out its time, or,
+ * with a trigger, finds the hit live, then stops PRU0 and reads its span
+ * of the ring after, whole (reread()). One too long for the ring is taken
+ * live, with holes where the reader skipped.
+ */
+int record(struct recording *r, double secs, const struct la_trig *trig, double pre, double wait,
+	   char *err, size_t errlen)
+{
+	struct la_src src;
+	struct rec_ctx x = { .r = r, .trig = trig && trig->kind ? trig : NULL };
+	uint64_t want = (uint64_t)(secs * 1e9), back = x.trig ? (uint64_t)(pre * 1e9) : 0;
+	double start = now_us();
+	int done = 0, after;
+
+	memset(r, 0, sizeof(*r));
+	if (la_src_open(&src, back / 1e9 + 0.001, err, errlen)) {
+		return -1;
+	}
+	r->mode = src.mode;
+	after = !src.mode.live && (double)(want + back) < src.mode.span * 0.7e9;
+	x.armed = la_now();
+	if (after && !x.trig) {
+		r->begin = x.armed + 100000u;
+		r->finish = r->begin + want;
+		wait_until(r->finish);
+		if (reread(r, &src)) {
+			snprintf(err, errlen, "the ring no longer held the recording");
+			la_src_close(&src);
+			rec_free(r);
+			return -1;
+		}
+		goto done;
+	}
+	while (!done) {
+		uint64_t at = src.next;
+
+		la_src_poll(&src, keep_edge, keep_hole, &x, 50000000u);
+		if (la_src_stale(&src)) {
+			snprintf(err, errlen, "the analyzer's setup changed during the recording");
+			la_src_close(&src);
+			rec_free(r);
+			return -1;
+		}
+		if (!src.have) {
+			/* Nothing yet. */
+		} else if (!x.trig) {
+			done = src.now >= r->ev.e[0].t + want;
+		} else if (!r->hit) {
+			trim(r, src.now, back);
+			if (now_us() - start > wait * 1e6) {
+				snprintf(err, errlen, "no trigger hit in %g s", wait);
+				la_src_close(&src);
+				rec_free(r);
+				return -1;
+			}
+		} else {
+			done = after || src.now >= r->hit + want;
+		}
+		if (!done && src.next == at) {
+			usleep(2000);
+		}
+	}
+	r->blocks = src.blocks;
+	r->lost = src.lost;
+	if (x.trig) {
+		r->begin = r->hit > back && r->hit - back > r->ev.e[0].t ? r->hit - back : r->ev.e[0].t;
+		r->finish = r->hit + want;
+	} else {
+		r->begin = r->ev.e[0].t;
+		r->finish = r->begin + want;
+	}
+	if (after) {
+		/* Found live, the rest read after: from pre before the hit, as the ring holds it. */
+		r->begin = r->hit > back ? r->hit - back : r->hit;
+		wait_until(r->finish);
+		if (reread(r, &src)) {
+			snprintf(err, errlen, "the ring no longer held the recording");
+			la_src_close(&src);
+			rec_free(r);
+			return -1;
+		}
+	}
+done:
+	/* The levels are unknown from the last sample to the end, if it came short. */
+	if (src.last + src.mode.sample_ns < r->finish) {
+		add_hole(r, src.last + src.mode.sample_ns, r->finish);
+	}
+	la_src_close(&src);
+	if (r->lost) {
+		fprintf(stderr, "%llu of %llu blocks of samples lost: the recording has %zu holes, "
+			"marked\n", (unsigned long long)r->lost,
+			(unsigned long long)(r->lost + r->blocks), r->holes.n);
+	}
+	rec_rewind(r);
+	return 0;
+}
+
+void rec_rewind(struct recording *r)
+{
+	r->i = 0;
+	r->state = r->ev.n ? r->ev.e[0].state : 0;
+	while (r->i < r->ev.n && r->ev.e[r->i].t <= r->begin) {
+		r->state = r->ev.e[r->i++].state;
+	}
+	r->state0 = r->state;
+}
+
+int rec_next(struct recording *r, uint64_t *t, uint32_t *was)
+{
+	if (r->i >= r->ev.n || r->ev.e[r->i].t > r->finish) {
+		return 0;
+	}
+	*was = r->state;
+	*t = r->ev.e[r->i].t;
+	r->state = r->ev.e[r->i++].state;
+	return 1;
+}
+
+void rec_free(struct recording *r)
+{
+	free(r->ev.e);
+	free(r->holes.a);
+	free(r->holes.b);
+	memset(r, 0, sizeof(*r));
 }
 
 int holes_cross(const struct holes *h, uint64_t from, uint64_t to)
@@ -83,9 +315,32 @@ int holes_cross(const struct holes *h, uint64_t from, uint64_t to)
 	return lo < (h ? h->n : 0) && h->a[lo] < to;
 }
 
-size_t rec_holes(const struct recording *r, int s, uint64_t *ns)
+/* How much of [from, to) holes cover. */
+static uint64_t holes_in(const struct holes *h, uint64_t from, uint64_t to)
 {
-	const struct holes *h = &r->holes[s];
+	size_t lo = 0, hi = h ? h->n : 0;
+	uint64_t ns = 0;
+
+	while (lo < hi) {
+		size_t m = (lo + hi) / 2;
+
+		if (h->b[m] < from) {
+			lo = m + 1;
+		} else {
+			hi = m;
+		}
+	}
+	for (; h && lo < h->n && h->a[lo] < to; lo++) {
+		uint64_t a = h->a[lo] > from ? h->a[lo] : from, b = h->b[lo] < to ? h->b[lo] : to;
+
+		ns += b > a ? b - a : 0;
+	}
+	return ns;
+}
+
+size_t rec_holes(const struct recording *r, uint64_t *ns)
+{
+	const struct holes *h = &r->holes;
 	size_t i, n = 0;
 
 	*ns = 0;
@@ -101,181 +356,15 @@ size_t rec_holes(const struct recording *r, int s, uint64_t *ns)
 	return n;
 }
 
-
-
-/* The first trigger hit since the reader started, or 0. */
-uint64_t first_fresh_trig(struct recording *r)
-{
-	uint64_t t = 0;
-	size_t i;
-	int s;
-
-	for (s = 0; s < 2; s++) {
-		for (i = 0; i < r->st[s].nmark; i++) {
-			struct mark *m = &r->st[s].mark[i];
-
-			if (m->trig && m->fresh && (!t || m->t < t)) {
-				t = m->t;
-				break;
-			}
-		}
-	}
-	return t;
-}
-
-/*
- * secs of both streams from now; or, with trigger, around the next trigger
- * hit: a tenth of secs before it, from the ring's history, and the rest
- * after. A trigger recording starts HISTORY_BYTES back in each ring, about
- * 5 s of the demo's signals on PRU1.
- */
-#define HISTORY_BYTES (8u << 20)
-
-int record(struct recording *r, double secs, int trigger)
-{
-	double start;
-	uint64_t hit = 0;
-	int s;
-
-	memset(r, 0, sizeof(*r));
-	if (la_map(1)) {
-		return -1;
-	}
-	for (s = 0; s < 2; s++) {
-		if (stream_init(&r->st[s], s)) {
-			return -1;
-		}
-		r->st[s].keep_marks = 1;
-		r->st[s].on_hole = keep_hole;
-		if (trigger) {
-			/* Back into the ring for the time before the hit, but no further
-			 * than the RTU has written since it started (wr counts from 0). */
-			uint32_t back = r->st[s].rd < HISTORY_BYTES ? r->st[s].rd : HISTORY_BYTES;
-
-			r->st[s].rd -= back & ~(AI64_LA_REC_SIZE - 1u);
-		}
-	}
-	if (wait_ticks(r->st, keep_edge, r)) {
-		return -1;
-	}
-	start = now_us();
-	for (;;) {
-		for (s = 0; s < 2; s++) {
-			stream_poll(&r->st[s], keep_edge, r);
-		}
-		if (!trigger) {
-			if (now_us() - start >= secs * 1e6) {
-				break;
-			}
-		} else if (!hit) {
-			hit = first_fresh_trig(r);
-			if (!hit && now_us() - start > 30e6) {
-				fprintf(stderr, "no trigger hit in 30 s (ai64 la trigger sets one)\n");
-				return -1;
-			}
-		} else if (r->st[0].base >= hit + (uint64_t)(secs * 0.9e9) &&
-			   r->st[1].base >= hit + (uint64_t)(secs * 0.9e9)) {
-			break;
-		}
-		usleep(2000);
-	}
-	for (s = 0; s < 2; s++) {
-		stream_poll(&r->st[s], keep_edge, r);
-		if (r->st[s].missed || r->st[s].gaps) {
-			fprintf(stderr, "PRU%d: %llu records missed here, %llu gaps in the stream: "
-				"the recording has %zu holes, marked\n", s,
-				(unsigned long long)r->st[s].missed, (unsigned long long)r->st[s].gaps,
-				r->holes[s].n);
-		}
-		if (r->st[s].late) {
-			fprintf(stderr, "PRU%d: %llu edges came while it was busy with the one before: "
-				"their times are up to 50 ns late, and pulses that short can be missing "
-				"(raw mode has them exactly)\n", s, (unsigned long long)r->st[s].late);
-		}
-	}
-	r->begin = r->st[0].first > r->st[1].first ? r->st[0].first : r->st[1].first;
-	r->finish = r->st[0].base < r->st[1].base ? r->st[0].base : r->st[1].base;
-	if (hit) {
-		uint64_t pre = (uint64_t)(secs * 0.1e9), post = (uint64_t)(secs * 0.9e9);
-
-		if (hit - r->begin > pre) {
-			r->begin = hit - pre;
-		}
-		if (r->finish > hit + post) {
-			r->finish = hit + post;
-		}
-		r->hit = hit;
-	}
-	/* Each stream's state at begin: its first tick's, then its edges before begin. */
-	for (s = 0; s < 2; s++) {
-		r->state[s] = r->st[s].first_state;
-		while (r->i[s] < r->ev[s].n && r->ev[s].e[r->i[s]].t <= r->begin) {
-			r->state[s] = r->ev[s].e[r->i[s]++].state;
-		}
-	}
-	return 0;
-}
-
-/* The next edge in time, up to finish: its time, and the state before it in was. */
-int rec_next(struct recording *r, uint64_t *t, uint32_t was[2])
-{
-	int a = r->i[0] < r->ev[0].n && r->ev[0].e[r->i[0]].t <= r->finish;
-	int b = r->i[1] < r->ev[1].n && r->ev[1].e[r->i[1]].t <= r->finish;
-	int s;
-
-	if (!a && !b) {
-		return 0;
-	}
-	was[0] = r->state[0];
-	was[1] = r->state[1];
-	s = a && (!b || r->ev[0].e[r->i[0]].t <= r->ev[1].e[r->i[1]].t) ? 0 : 1;
-	*t = r->ev[s].e[r->i[s]].t;
-	r->state[s] = r->ev[s].e[r->i[s]++].state;
-	return 1 + s;
-}
-
-void rec_free(struct recording *r)
-{
-	free(r->ev[0].e);
-	free(r->ev[1].e);
-	free(r->holes[0].a);
-	free(r->holes[0].b);
-	free(r->holes[1].a);
-	free(r->holes[1].b);
-	stream_free(&r->st[0]);
-	stream_free(&r->st[1]);
-}
-
-/* Both streams' marks in [begin, finish], merged by time, into *out; how many. */
-size_t rec_marks(struct recording *r, struct mark **out)
-{
-	size_t n = 0, i = 0, j = 0;
-	struct mark *m = malloc((r->st[0].nmark + r->st[1].nmark + 1) * sizeof(*m));
-
-	if (!m) {
-		fprintf(stderr, "out of memory\n");
-		exit(1);
-	}
-	while (i < r->st[0].nmark || j < r->st[1].nmark) {
-		struct mark *a = i < r->st[0].nmark ? &r->st[0].mark[i] : NULL;
-		struct mark *b = j < r->st[1].nmark ? &r->st[1].mark[j] : NULL;
-		struct mark *k = a && (!b || a->t <= b->t) ? (i++, a) : (j++, b);
-
-		if (k->t >= r->begin && k->t <= r->finish) {
-			m[n++] = *k;
-		}
-	}
-	*out = m;
-	return n;
-}
-
 void changes_add(struct changes *ch, uint64_t t, int up)
 {
 	if (ch->n == ch->cap) {
-		ch->cap = ch->cap ? ch->cap * 2 : 4096;
-		ch->t = realloc(ch->t, ch->cap * sizeof(*ch->t));
-		ch->up = realloc(ch->up, ch->cap);
-		if (!ch->t || !ch->up) {
+		size_t cap = ch->cap;
+
+		ch->t = grow(ch->t, &cap, sizeof(*ch->t), 4096);
+		ch->up = realloc(ch->up, cap);
+		ch->cap = cap;
+		if (!ch->up) {
 			fprintf(stderr, "out of memory\n");
 			exit(1);
 		}
@@ -292,7 +381,7 @@ int cmp_i64(const void *a, const void *b)
 }
 
 size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t *out,
-	       const struct holes *ha, const struct holes *hb)
+	       const struct holes *h)
 {
 	size_t i, j = 0, n = 0;
 
@@ -301,6 +390,7 @@ size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t
 	}
 	for (i = 0; i < a->n; i++) {
 		int64_t best;
+		uint64_t lo, hi;
 
 		if (a->up[i] != up) {
 			continue;
@@ -312,39 +402,31 @@ size_t nearest(const struct changes *a, const struct changes *b, int up, int64_t
 		if (j + 1 < b->n && llabs((int64_t)(b->t[j + 1] - a->t[i])) < llabs(best)) {
 			best = (int64_t)(b->t[j + 1] - a->t[i]);
 		}
-		{
-			uint64_t lo = best < 0 ? a->t[i] + (uint64_t)best : a->t[i];
-			uint64_t hi = best < 0 ? a->t[i] : a->t[i] + (uint64_t)best;
-
-			if (holes_cross(ha, lo, hi) || holes_cross(hb, lo, hi)) {
-				continue;
-			}
+		lo = best < 0 ? a->t[i] + (uint64_t)best : a->t[i];
+		hi = best < 0 ? a->t[i] : a->t[i] + (uint64_t)best;
+		if (!holes_cross(h, lo, hi)) {
+			out[n++] = best;
 		}
-		out[n++] = best;
 	}
 	return n;
 }
 
-/* Each channel's changes over the recording, in ch; the recording can be read again after. */
 void rec_changes(struct recording *r, struct changes ch[AI64_LA_NCHAN])
 {
-	uint32_t start[2] = { r->state[0], r->state[1] }, was[2];
-	size_t at[2] = { r->i[0], r->i[1] };
+	uint32_t was;
 	uint64_t t;
 	int c;
 
 	memset(ch, 0, sizeof(struct changes) * AI64_LA_NCHAN);
-	while (rec_next(r, &t, was)) {
+	rec_rewind(r);
+	while (rec_next(r, &t, &was)) {
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 			if (level(r->state, c) != level(was, c)) {
 				changes_add(&ch[c], t, level(r->state, c));
 			}
 		}
 	}
-	r->state[0] = start[0];
-	r->state[1] = start[1];
-	r->i[0] = at[0];
-	r->i[1] = at[1];
+	rec_rewind(r);
 }
 
 void changes_free(struct changes ch[AI64_LA_NCHAN])
@@ -388,11 +470,13 @@ void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t fi
 	for (i = 0; i <= c->n; i++) {
 		uint64_t t = i < c->n ? c->t[i] : finish;
 
-		/* Time high, of the time known: none across a hole. */
-		if (!holes_cross(holes, last, t)) {
-			out->known_ns += t - last;
+		/* Time high, of the time known: what holes leave of each level. */
+		{
+			uint64_t known = t - last - holes_in(holes, last, t);
+
+			out->known_ns += known;
 			if (lv) {
-				out->high_ns += t - last;
+				out->high_ns += known;
 			}
 		}
 		if (i == c->n) {
@@ -415,146 +499,4 @@ void chan_stats(const struct changes *c, int level0, uint64_t begin, uint64_t fi
 		}
 	}
 	spread_of(v, n, &out->high);
-}
-
-uint32_t la_lane(uint32_t mask)
-{
-	if (!(mask & ~0xffffu)) {
-		return AI64_LA_LANE_LO16;
-	}
-	if (!(mask & ~0xffff00u)) {
-		return AI64_LA_LANE_MID16;
-	}
-	return AI64_LA_LANE_ALL;
-}
-
-uint32_t la_lane_burst(uint32_t mask)
-{
-	if (!(mask & ~0xffu)) {
-		return AI64_LA_LANE_B0;
-	}
-	if (!(mask & ~0xff00u)) {
-		return AI64_LA_LANE_B1;
-	}
-	return la_lane(mask);
-}
-
-int la_get_mode(int *raw, uint32_t mask[2], int *dump)
-{
-	volatile struct ai64_la *hdr = la_map_trigger();
-	int s;
-
-	if (!hdr) {
-		return -1;
-	}
-	*raw = -1;
-	*dump = 0;
-	for (s = 0; s < 2; s++) {
-		uint32_t m = AI64_LA_MODE_OF(hdr->s[s].cfg_mode);
-
-		mask[s] = hdr->s[s].cfg_mask;
-		if (m == AI64_LA_MODE_RAW) {
-			*raw = s;
-		}
-		if (m == AI64_LA_MODE_DUMP) {
-			*dump = 1;
-		}
-	}
-	if (*dump && *raw < 0) {
-		/* Dump mode with no raw PRU: edge mode, every channel. */
-		*dump = 0;
-		mask[0] = AI64_LA_MASK(0);
-		mask[1] = AI64_LA_MASK(1);
-	}
-	return 0;
-}
-
-int la_set_mode(int raw, const uint32_t mask[2], char *err, size_t errlen)
-{
-	return la_set_mode_ex(raw, mask, 0, err, errlen);
-}
-
-int la_set_mode_ex(int raw, const uint32_t mask[2], int dump, char *err, size_t errlen)
-{
-	static const char *const pru[2] = { "g1pru0", "g1pru1" };
-	volatile struct ai64_la *hdr = la_map_trigger();
-	const struct ai64_core *c[2];
-	double give_up;
-	int s, order[2];
-
-	if (!hdr) {
-		snprintf(err, errlen, "the logic analyzer does not run");
-		return -1;
-	}
-	if (raw > 1 || (raw >= 0 && !(mask[raw] & AI64_LA_MASK(raw)))) {
-		snprintf(err, errlen, "no such PRU, or none of its channels");
-		return -1;
-	}
-	for (s = 0; s < 2; s++) {
-		volatile struct ai64_la_stream *h = &hdr->s[s];
-
-		c[s] = core_find(pru[s]);
-		if (!c[s]) {
-			snprintf(err, errlen, "no core %s", pru[s]);
-			return -1;
-		}
-		h->cfg_mode = raw < 0 ? AI64_LA_MODE_EDGE :
-			      s != raw ? (dump ? AI64_LA_MODE_DUMP : AI64_LA_MODE_CONV) :
-			      AI64_LA_MODE_RAW | (dump ? la_lane_burst(mask[s] & AI64_LA_MASK(s)) :
-						  la_lane(mask[s] & AI64_LA_MASK(s))) << 8;
-		h->cfg_mask = raw >= 0 && s != raw ? 0 : mask[s] & AI64_LA_MASK(s);
-		__sync_synchronize();
-		h->cfg_seq++;
-	}
-	/* Each RTU passes its mode on within a tick, 1 ms. */
-	give_up = now_us() + 200000;
-	while (hdr->s[0].cfg_ack != hdr->s[0].cfg_seq || hdr->s[1].cfg_ack != hdr->s[1].cfg_seq) {
-		if (now_us() > give_up) {
-			snprintf(err, errlen, "ICSSG1's RTUs did not take the mode");
-			return -1;
-		}
-		usleep(1000);
-	}
-	/*
-	 * Stop both PRUs, let the RTUs take what is left in the rings, and
-	 * start them again: in raw mode the converter (or copier) first, so it
-	 * is waiting when the raw PRU's first block comes. The Tx_PRUs run on.
-	 */
-	for (s = 0; s < 2; s++) {
-		if (rproc_running(c[s]->rproc, NULL, 0) && rproc_write(c[s]->rproc, "state", "stop")) {
-			snprintf(err, errlen, "could not stop %s (root?)", pru[s]);
-			return -1;
-		}
-	}
-	usleep(20000);
-	order[0] = raw == 0 ? 1 : 0;
-	order[1] = 1 - order[0];
-	for (s = 0; s < 2; s++) {
-		if (rproc_write(c[order[s]]->rproc, "state", "start")) {
-			snprintf(err, errlen, "could not start %s", pru[order[s]]);
-			return -1;
-		}
-		usleep(10000);
-	}
-	return 0;
-}
-
-int la_set_trigger(int pru, uint32_t mode, uint32_t mask, uint32_t value)
-{
-	volatile struct ai64_la *hdr = la_map_trigger();
-	int s;
-
-	if (!hdr) {
-		return -1;
-	}
-	for (s = 0; s < 2; s++) {
-		volatile struct ai64_la_stream *h = &hdr->s[s];
-
-		h->trig_mode = s == pru ? mode : AI64_LA_TRIG_OFF;
-		h->trig_mask = s == pru ? mask : 0;
-		h->trig_value = s == pru ? value : 0;
-		__sync_synchronize();
-		h->trig_seq++;
-	}
-	return 0;
 }

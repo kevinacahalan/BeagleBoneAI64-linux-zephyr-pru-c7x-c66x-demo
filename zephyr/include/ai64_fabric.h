@@ -72,8 +72,8 @@
 #define AI64_FAB_C7X       7u
 #define AI64_FAB_G0RTU0    8u /* ICSSG0 RTU0: slice 0, the software PWM */
 #define AI64_FAB_G0RTU1    9u /* ICSSG0 RTU1: slice 1, the ICSSG PWM */
-#define AI64_FAB_G1RTU0    10u /* ICSSG1 RTU0: the logic analyzer's slice 0 */
-#define AI64_FAB_G1RTU1    11u /* ICSSG1 RTU1: its slice 1 */
+#define AI64_FAB_G1RTU0    10u /* ICSSG1 RTU0 */
+#define AI64_FAB_G1RTU1    11u /* ICSSG1 RTU1 */
 
 #define AI64_FAB_REQ       0u
 #define AI64_FAB_REPLY     1u
@@ -110,7 +110,8 @@
 /*
  * What a route does at action_node on its way. Each PWM generator's
  * talking core takes the first four: ICSSG0 RTU0 and RTU1 all four,
- * R5F0_1 (its EHRPWM) pwm and steps. The logic analyzer's RTUs take mark.
+ * R5F0_1 (its EHRPWM) pwm and steps. mark no node takes now: the logic
+ * analyzer's RTUs did, before PRU0 alone took over its samples.
  */
 #define AI64_FAB_ACT_NONE  0u
 #define AI64_FAB_ACT_PWM   1u /* arg0 period ns, arg1 duty ns, as "pwm" */

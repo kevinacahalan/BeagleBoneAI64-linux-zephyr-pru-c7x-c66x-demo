@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * linker.cmd: ICSSG1 PRU0, slice 0's sampler (la_pru.c, la_sample.asm).
+ * linker.cmd: ICSSG1 PRU0, the logic analyzer's sampler (la_pru.c, la_cap.asm).
  * Its part of the slice's data RAM comes from the project's memory map.
  */
 

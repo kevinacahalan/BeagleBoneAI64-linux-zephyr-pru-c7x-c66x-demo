@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MIT
-# The logic analyzer: ICSSG1, both slices. Builds each core's image with the
+# The logic analyzer: ICSSG1 PRU0, and the two RTUs as fabric nodes. Builds each
 # makefile in its firmware/beaglebone-ai64/<core>/ti-pru-cgt directory.
 
 BOARD := beaglebone-ai64
-CORES := icss_g1_rtu_pru0_fw icss_g1_tx_pru0_fw icss_g1_pru0_fw \
-	icss_g1_rtu_pru1_fw icss_g1_tx_pru1_fw icss_g1_pru1_fw
+CORES := icss_g1_rtu_pru0_fw icss_g1_pru0_fw icss_g1_rtu_pru1_fw
 
 .PHONY: all clean $(CORES)
 all: $(CORES)

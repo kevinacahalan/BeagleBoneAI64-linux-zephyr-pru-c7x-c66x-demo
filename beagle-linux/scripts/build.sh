@@ -274,10 +274,7 @@ bundle() {
 		pru/build/ai64-icssg0-txpru1.elf
 		pru/build/ai64-la-pru0.elf
 		pru/build/ai64-la-rtu0.elf
-		pru/build/ai64-la-txpru0.elf
-		pru/build/ai64-la-pru1.elf
 		pru/build/ai64-la-rtu1.elf
-		pru/build/ai64-la-txpru1.elf
 		pru/build/ai64-mcs-pru0.elf
 		pru/build/ai64-mcs-rtu0.elf
 		pru/build/ai64-mcs-txpru0.elf

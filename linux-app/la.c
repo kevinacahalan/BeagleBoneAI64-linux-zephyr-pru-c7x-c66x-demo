@@ -3,59 +3,33 @@
  * ai64 la [seconds|once|lines]
  *   The logic analyzer on ICSSG1 (pru/logic_analyzer/), the la window:
  *   every channel's level, edges, frequency, and duty over the last
- *   interval (1 s), and each PRU's totals. lines prints one line every
+ *   interval (1 s), and the reader's totals. lines prints one line every
  *   10 s, for the merged console.
  *
- * ai64 la capture <seconds> <file.vcd|-> [--trigger]
- *   Records all 19 channels for that long and writes a VCD file, for
- *   PulseView or GTKWave, in nanoseconds from the start. With --trigger,
- *   waits for the next trigger hit and records around it, a tenth of the
- *   time before it, read back from the ring, and the rest after.
+ * ai64 la mode [<rate> [<ch> ... | all]]
+ *   The rate and the channels PRU0 samples, what that writes to the ring
+ *   a second, and how long the ring holds; or sets them: a rate from the
+ *   menu (125, 62.5, 25, 12.5, 6.25, 2.5, 1.25 MS/s) and the channels, all
+ *   10 if none are given. Restarts PRU0, a gap of some 30 ms.
  *
- * ai64 la burst <seconds|max> <file.vcd|-> <ch> ...
- *   Channels of one PRU every 8 ns with no gap, whatever the signal, for
- *   that long, at most what the burst buffer holds (la_burst.c): 134 ms
- *   for channels within 16 pins, 67 ms otherwise. The other PRU copies the
- *   samples as they are, and they are read after, so a signal too fast to
- *   stream in raw mode comes out whole. Writes a VCD file, as capture, the
- *   other PRU's channels unknown, and puts the mode back.
- *
- * ai64 la trigger off | <ch> rise|fall|any | <ch>=0|1 ...
- *   Sets the trigger the Tx_PRUs match (ai64_la.h): an edge on a channel,
- *   or the channels coming to a pattern. A trigger takes the channels of
- *   one PRU.
+ * ai64 la capture <seconds> <file.vcd|-> [<ch> rise|fall|any | <ch>=0|1 ...]
+ *         [pre <seconds>] [wait <seconds>]
+ *   Records every channel for that long and writes a VCD file, for
+ *   PulseView or GTKWave, in nanoseconds from the start. With a trigger,
+ *   an edge on a channel or the channels coming to a pattern, waits for
+ *   its next hit (30 s at most, or wait) and records from pre (a tenth of
+ *   the time, unless given) before it, out of the ring, to seconds after.
  *
  * ai64 la measure [seconds] [a:b ...]
  *   Records for that long (1 s) and prints each channel's edges, frequency,
  *   and the spread of its periods and high times; then, for each pair a:b
- *   (the demo's A/B pairs and the two PRUs' copy of one signal if none is
- *   given), the time from each change of a to b's nearest one.
+ *   (the demo's SPI7 if none is given), the time from each change of a to
+ *   b's nearest one.
  *
  * ai64 la rate [seconds]
- *   How fast the analyzer goes, end to end: each PRU's records a second as
- *   its RTU copies them to DDR, and as a reader here takes them out and
- *   does nothing else with them, with any it missed, and the gaps it met
- *   (the RTU's, or raw mode's converter's); and the closest two records came, which is the PRU's time to write one when its pins keep
- *   changing. Run against a fast test signal, it says which stage keeps up
- *   (pru/logic_analyzer/README.md, tests/board/stress.sh).
- *
- * ai64 la mode [edge [ch ...] | raw <ch> ... | dump <ch> ...]
- *   Each PRU's mode and the channels it records; or sets them. Edge mode
- *   (all 19 channels, or those given) writes a record at each change, and
- *   can be up to 48 ns late after one. Raw mode takes channels of one PRU:
- *   it samples them every 8 ns with no gap, and the other PRU finds the
- *   changes, so its own channels are not recorded
- *   (pru/logic_analyzer/firmware/la_map.h). Dump mode samples them so too,
- *   and the other PRU copies every sample, as it is, into the burst buffer,
- *   which a reader here follows as it fills (la_burst.c): no limit on the
- *   changes in the PRUs, only on how fast Linux takes them. Channels not
- *   recorded read low. Restarts both PRUs, a gap of some 50 ms.
- *
- * ai64 la mark <value>
- *   Puts a mark with that 16-bit value in the analyzer's stream, through a
- *   fabric route to ICSSG1 RTU0 (ai64 fabric route g1rtu0 mark <value>);
- *   any fabric node can send one. A capture shows the marks as a 16-bit
- *   signal, mark, each value held until the next.
+ *   How fast the reader here keeps up: PRU0's blocks a second, the blocks
+ *   it read, those lost (dropped by PRU0, or skipped by the reader), and
+ *   the edges it found.
  *
  * ai64 la quiet
  *   Before ICSSG1's cores stop: stops IEP0, zeroes its count, and maps no
@@ -63,12 +37,9 @@
  *   starts and each core stops outside one (pru/logic_analyzer/firmware/
  *   la_tm.h has why). ai64-demo runs it between firmware sets.
  *
- * Each PRU's RTU keeps a stream in DDR (ai64_la.h): edge records stamped
- * with IEP0's low 32 bits, and a tick every millisecond with IEP0's high
- * bits and the GTC. A reader here follows one stream, unwraps each edge's
- * time against the stream's last tick, and hands the edges on; the two
- * streams are merged by time. A reader starts at a stream's first tick,
- * which also says every pin's state then.
+ * PRU0 samples every channel at once, at the rate set, with no gap, and
+ * writes the samples to a ring in DDR (ai64_la.h). The reader here
+ * (la_src.c) finds the changes, and a recording (la_rec.c) keeps them.
  */
 #define _GNU_SOURCE
 
@@ -83,44 +54,6 @@
 #include "ai64_la.h"
 #include "la.h"
 
-/* ---- the la window ---- */
-
-struct meter {
-	uint32_t state[2];
-	uint64_t last[AI64_LA_NCHAN];  /* the newest change, or the interval's start */
-	uint64_t high[AI64_LA_NCHAN];  /* ns high this interval */
-	uint32_t edges[AI64_LA_NCHAN];
-	uint32_t rises[AI64_LA_NCHAN];
-	int started[2];
-};
-
-static void meter_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
-{
-	struct meter *m = ctx;
-	uint32_t was = m->state[st->s];
-	int c;
-
-	if (!m->started[st->s]) {
-		m->started[st->s] = 1;
-		was = st->first_state;
-	}
-	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		uint32_t b = 1u << la_chans[c].bit;
-
-		if (la_chans[c].pru != st->s || !((was ^ state) & b)) {
-			continue;
-		}
-		if (was & b) {
-			m->high[c] += t > m->last[c] ? t - m->last[c] : 0;
-		} else {
-			m->rises[c]++;
-		}
-		m->last[c] = t;
-		m->edges[c]++;
-	}
-	m->state[st->s] = state;
-}
-
 static void fmt_hz(char *buf, size_t len, double hz)
 {
 	if (hz >= 1e6) {
@@ -132,114 +65,169 @@ static void fmt_hz(char *buf, size_t len, double hz)
 	}
 }
 
+static void print_mode(const struct la_mode *m)
+{
+	char rate[24];
+	int c;
+
+	printf("%s, channels", la_rate_name(m->hz, rate, sizeof(rate)));
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (m->chans >> c & 1u) {
+			printf(" %d", c);
+		}
+	}
+	printf("; %u samples a word, %.1f MB/s into the ring, which holds %.3f s; %s\n",
+	       AI64_LA_PER_WORD(m->lane), m->bps / 1e6, m->span,
+	       m->live ? "the reader keeps up" : "more than the reader keeps up with live: holes");
+}
+
+/* ---- the la window ---- */
+
+struct meter {
+	uint32_t state;
+	int have;
+	uint64_t last[AI64_LA_NCHAN];  /* the newest change, or the interval's start */
+	uint64_t high[AI64_LA_NCHAN];  /* ns high this interval */
+	uint32_t edges[AI64_LA_NCHAN];
+	uint32_t rises[AI64_LA_NCHAN];
+};
+
+static void meter_edge(void *ctx, uint64_t t, uint32_t state)
+{
+	struct meter *m = ctx;
+	uint32_t x = m->have ? m->state ^ state : 0;
+	int c;
+
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (!(x >> c & 1u)) {
+			continue;
+		}
+		if (level(m->state, c)) {
+			m->high[c] += t > m->last[c] ? t - m->last[c] : 0;
+		} else {
+			m->rises[c]++;
+		}
+		m->last[c] = t;
+		m->edges[c]++;
+	}
+	m->state = state;
+	m->have = 1;
+}
+
+static void meter_hole(void *ctx, uint64_t from, uint64_t to, uint32_t state)
+{
+	struct meter *m = ctx;
+	int c;
+
+	(void)from;
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		m->last[c] = to;
+	}
+	m->state = state;
+}
+
 static int view_main(int argc, char **argv)
 {
 	int once = argc > 2 && !strcmp(argv[2], "once");
 	int lines = argc > 2 && !strcmp(argv[2], "lines");
 	int every = argc > 2 && !once && !lines ? atoi(argv[2]) : (lines ? 10 : 1);
-	struct stream st[2];
+	struct la_src src;
 	struct meter m;
-	uint64_t t0 = 0, prev_edges[2] = { 0, 0 };
-	int s, c;
+	uint64_t t0, blocks0 = 0, lost0 = 0, edges0 = 0;
+	char err[160], rate[24];
+	int c;
 
 	if (argc > 3 || every < 1) {
-		fprintf(stderr, "usage: %s la [seconds|once|lines] | capture <seconds> <file.vcd|->\n",
-			argv[0]);
+		fprintf(stderr, "usage: %s la [seconds|once|lines]\n", argv[0]);
 		return 2;
 	}
-	if (la_map(1)) {
-		return 1;
-	}
-	memset(&m, 0, sizeof(m));
-	for (s = 0; s < 2; s++) {
-		if (stream_init(&st[s], s)) {
-			return 1;
-		}
-	}
 	if (!once) {
-		printf("la window ready: ICSSG1's 19 channels every %d s\n", every);
+		printf("la window ready: ICSSG1 PRU0's 10 channels every %d s\n", every);
 	}
-	/* Start where both streams have ticked, so every pin's state is known. */
-	if (wait_ticks(st, meter_edge, &m)) {
-		return 1;
-	}
-	/* The edges one stream passed on while waiting for the other count for nothing. */
-	t0 = st[0].base > st[1].base ? st[0].base : st[1].base;
-	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		m.last[c] = t0;
-		m.high[c] = 0;
-		m.edges[c] = 0;
-		m.rises[c] = 0;
-	}
-	for (s = 0; s < 2; s++) {
-		m.state[s] = st[s].state;
-		m.started[s] = 1;
-		prev_edges[s] = st[s].edges;
-	}
-
 	for (;;) {
-		double end = now_us() + every * 1e6;
-		uint64_t t1, span;
-
-		while (now_us() < end) {
-			for (s = 0; s < 2; s++) {
-				stream_poll(&st[s], meter_edge, &m);
+		while (la_src_open(&src, 0, err, sizeof(err))) {
+			if (once) {
+				fprintf(stderr, "%s\n", err);
+				return 1;
 			}
-			usleep(5000);
+			printf("la: %s\n", err);
+			fflush(stdout);
+			sleep(5);
 		}
-		t1 = st[0].base < st[1].base ? st[0].base : st[1].base;
-		span = t1 > t0 ? t1 - t0 : 1;
+		memset(&m, 0, sizeof(m));
+		t0 = src.now;
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			if (level(m.state, c)) {
-				m.high[c] += t1 > m.last[c] ? t1 - m.last[c] : 0;
-			}
+			m.last[c] = t0;
 		}
-		if (lines) {
-			printf("la: PRU0 %.0f edges/s, PRU1 %.0f edges/s; gaps %llu, missed %llu, late %llu\n",
-			       (st[0].edges - prev_edges[0]) * 1e9 / span,
-			       (st[1].edges - prev_edges[1]) * 1e9 / span,
-			       (unsigned long long)(st[0].gaps + st[1].gaps),
-			       (unsigned long long)(st[0].missed + st[1].missed),
-			       (unsigned long long)(st[0].late + st[1].late));
-		} else {
-			printf("\033[2J\033[H");
-			printf("ICSSG1 logic analyzer, the last %.3f s; IEP0 at %.3f s\n", span / 1e9,
-			       t1 / 1e9);
-			for (s = 0; s < 2; s++) {
-				printf("  PRU%d %9.0f edges/s, %llu in all; RTU%d gaps %u (%u records), "
-				       "reader missed %llu, late %llu, marks %llu, trigger hits %llu\n",
-				       s, (st[s].edges - prev_edges[s]) * 1e9 / span,
-				       (unsigned long long)st[s].edges, s, st[s].h->gaps, st[s].h->lost,
-				       (unsigned long long)st[s].missed, (unsigned long long)st[s].late,
-				       (unsigned long long)st[s].marks, (unsigned long long)st[s].trigs);
+		blocks0 = lost0 = edges0 = 0;
+		while (!la_src_stale(&src)) {
+			double end = now_us() + every * 1e6;
+			uint64_t t1, span;
+
+			while (now_us() < end) {
+				la_src_poll(&src, meter_edge, meter_hole, &m, 100000000u);
+				usleep(5000);
 			}
-			printf("\n  ch  pin    PRU/GPI  wired to          level  edges/s     frequency   duty\n");
+			t1 = src.now;
+			span = t1 > t0 ? t1 - t0 : 1;
 			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-				char hz[24], from[24];
-
-				fmt_hz(hz, sizeof(hz), m.rises[c] * 1e9 / span);
-				snprintf(from, sizeof(from), "%s%s%s", la_wired[c].name ? la_wired[c].name : "-",
-					 la_wired[c].from ? " " : "", la_wired[c].from ? la_wired[c].from : "");
-				printf("  %2d  %-5s  %d/%-2d     %-16s  %-5s  %9.0f  %s  %5.1f%%\n", c,
-				       la_chans[c].pin, la_chans[c].pru, la_chans[c].bit, from,
-				       level(m.state, c) ? "high" : "low", m.edges[c] * 1e9 / span, hz,
-				       100.0 * m.high[c] / span);
+				if (level(m.state, c)) {
+					m.high[c] += t1 > m.last[c] ? t1 - m.last[c] : 0;
+				}
 			}
+			if (lines) {
+				printf("la: %s, %.0f edges/s; %llu blocks lost\n",
+				       la_rate_name(src.mode.hz, rate, sizeof(rate)),
+				       (src.edges - edges0) * 1e9 / span, (unsigned long long)src.lost);
+			} else {
+				printf("\033[2J\033[H");
+				printf("ICSSG1 logic analyzer, the last %.3f s; IEP0 at %.3f s\n  ", span / 1e9,
+				       t1 / 1e9);
+				print_mode(&src.mode);
+				printf("  read %.0f blocks/s, %.0f edges/s; lost %llu blocks this interval, "
+				       "%llu in all\n", (src.blocks - blocks0) * 1e9 / span,
+				       (src.edges - edges0) * 1e9 / span,
+				       (unsigned long long)(src.lost - lost0), (unsigned long long)src.lost);
+				printf("\n  ch  pin    GPI  wired to          level  edges/s     frequency   duty\n");
+				for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+					char hz[24], from[24];
+					int on = src.mode.chans >> c & 1u;
+
+					fmt_hz(hz, sizeof(hz), m.rises[c] * 1e9 / span);
+					snprintf(from, sizeof(from), "%s%s%s",
+						 la_wired[c].name ? la_wired[c].name : "-",
+						 la_wired[c].from ? " " : "", la_wired[c].from ? la_wired[c].from : "");
+					if (!on) {
+						printf("  %2d  %-5s  %-3d  %-16s  not recorded\n", c, la_chans[c].pin,
+						       la_chans[c].bit, from);
+						continue;
+					}
+					printf("  %2d  %-5s  %-3d  %-16s  %-5s  %9.0f  %s  %5.1f%%\n", c,
+					       la_chans[c].pin, la_chans[c].bit, from,
+					       level(m.state, c) ? "high" : "low", m.edges[c] * 1e9 / span, hz,
+					       100.0 * m.high[c] / span);
+				}
+			}
+			fflush(stdout);
+			if (once) {
+				la_src_close(&src);
+				return 0;
+			}
+			blocks0 = src.blocks;
+			lost0 = src.lost;
+			edges0 = src.edges;
+			for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+				m.last[c] = t1;
+				m.high[c] = 0;
+				m.edges[c] = 0;
+				m.rises[c] = 0;
+			}
+			t0 = t1;
 		}
-		fflush(stdout);
-		if (once) {
-			return 0;
+		la_src_close(&src);
+		if (!lines) {
+			printf("la: the setup changed; following the new one\n");
 		}
-		for (s = 0; s < 2; s++) {
-			prev_edges[s] = st[s].edges;
-		}
-		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			m.last[c] = t1;
-			m.high[c] = 0;
-			m.edges[c] = 0;
-			m.rises[c] = 0;
-		}
-		t0 = t1;
 	}
 }
 
@@ -261,191 +249,165 @@ static void vcd_name(char *buf, size_t len, int c)
 }
 
 /*
- * The recording r as a VCD file on f: every channel, the marks as a 16-bit
- * signal, and trig changing at each trigger hit. A hole, where the stream
- * lost records, takes its PRU's channels to x, unknown, until its end,
- * which gives them all again. Reads r to its end; nedge gets each PRU's
- * edges, and the return is the marks and hits.
+ * The recording r as a VCD file on f: the channels recorded, and trig,
+ * which goes high at the trigger hit. A hole, where samples were lost,
+ * takes every channel to x, unknown, until its end, which gives them all
+ * again. Returns the edges.
  */
-size_t rec_write_vcd(struct recording *r, FILE *f, size_t nedge[2])
+size_t rec_write_vcd(struct recording *r, FILE *f)
 {
-	struct mark *mk;
-	size_t nmk, im = 0;
-	int ntrig = 0, unknown[2] = { 0, 0 };
-	size_t ih[2] = { 0, 0 };
-	uint32_t was[2];
-	uint64_t t;
 	time_t now = time(NULL);
-	int c, s;
+	size_t ih = 0, nedge = 0;
+	int unknown = 0, hit = !r->hit;
+	uint32_t was;
+	uint64_t t;
+	char rate[24];
+	int c;
 
-	nedge[0] = nedge[1] = 0;
-	fprintf(f, "$date %s$end\n$version ai64 la, ICSSG1 IEP0 at %llu ns $end\n"
+	fprintf(f, "$date %s$end\n$version ai64 la, %s, ICSSG1 IEP0 at %llu ns $end\n"
 		"$timescale 1 ns $end\n$scope module la $end\n", ctime(&now),
-		(unsigned long long)r->begin);
+		la_rate_name(r->mode.hz, rate, sizeof(rate)), (unsigned long long)r->begin);
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		char name[48];
 
-		vcd_name(name, sizeof(name), c);
-		fprintf(f, "$var wire 1 %c %s $end\n", '!' + c, name);
+		if (r->mode.chans >> c & 1u) {
+			vcd_name(name, sizeof(name), c);
+			fprintf(f, "$var wire 1 %c %s $end\n", '!' + c, name);
+		}
 	}
-	/* The marks (ai64 la mark): each holds its value until the next; trig
-	 * changes at each trigger hit. */
-	fprintf(f, "$var wire 16 ~ mark $end\n$var wire 1 } trig $end\n");
+	if (r->hit) {
+		fprintf(f, "$var wire 1 } trig $end\n");
+	}
 	fprintf(f, "$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n");
+	rec_rewind(r);
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		fprintf(f, "%d%c\n", level(r->state, c), '!' + c);
+		if (r->mode.chans >> c & 1u) {
+			fprintf(f, "%d%c\n", level(r->state, c), '!' + c);
+		}
 	}
-	fprintf(f, "b0 ~\n0}\n$end\n");
-	nmk = rec_marks(r, &mk);
+	if (r->hit) {
+		fprintf(f, "0}\n");
+	}
+	fprintf(f, "$end\n");
 	for (;;) {
-		int edge = rec_next(r, &t, was);
+		int edge = rec_next(r, &t, &was);
 
-		/* The marks and holes up to this edge, or all that are left after the
-		 * last, in time order. */
+		/* The holes, and the hit, up to this edge, or all that are left after the last. */
 		for (;;) {
-			uint64_t th = UINT64_MAX;
-			int hs = -1;
-
-			for (s = 0; s < 2; s++) {
-				const struct holes *h = &r->holes[s];
-
-				while (ih[s] < h->n && h->b[ih[s]] <= r->begin) {
-					ih[s]++;
-				}
-				if (ih[s] < h->n && h->a[ih[s]] <= r->finish) {
-					uint64_t a = h->a[ih[s]] > r->begin ? h->a[ih[s]] : r->begin;
-
-					if (a < th) {
-						th = a;
-						hs = s;
-					}
-				}
+			while (ih < r->holes.n && r->holes.b[ih] <= r->begin) {
+				ih++;
 			}
-			if (hs >= 0 && (!edge || th <= t) && (im >= nmk || th <= mk[im].t)) {
-				fprintf(f, "#%llu\n$comment a hole in PRU%d's stream: records lost $end\n",
-					(unsigned long long)(th - r->begin), hs);
+			if (!hit && (!edge || r->hit <= t) &&
+			    (ih >= r->holes.n || r->hit <= r->holes.a[ih])) {
+				fprintf(f, "#%llu\n$comment the trigger hit $end\n1}\n",
+					(unsigned long long)(r->hit - r->begin));
+				hit = 1;
+				continue;
+			}
+			if (ih < r->holes.n && r->holes.a[ih] <= r->finish && (!edge || r->holes.a[ih] <= t)) {
+				uint64_t a = r->holes.a[ih] > r->begin ? r->holes.a[ih] : r->begin;
+
+				fprintf(f, "#%llu\n$comment a hole: samples lost $end\n",
+					(unsigned long long)(a - r->begin));
 				for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-					if (la_chans[c].pru == hs) {
+					if (r->mode.chans >> c & 1u) {
 						fprintf(f, "x%c\n", '!' + c);
 					}
 				}
-				unknown[hs] = 1;
-				ih[hs]++;
+				unknown = 1;
+				ih++;
 				continue;
 			}
-			if (im >= nmk || (edge && mk[im].t > t)) {
-				break;
-			}
-			if (mk[im].trig) {
-				ntrig++;
-				fprintf(f, "#%llu\n$comment trigger hit%s $end\n%d}\n",
-					(unsigned long long)(mk[im].t - r->begin),
-					mk[im].t == r->hit ? ", the one the capture is around" : "",
-					ntrig & 1);
-				im++;
-				continue;
-			}
-			fprintf(f, "#%llu\n$comment mark %u from fabric node %u $end\nb",
-				(unsigned long long)(mk[im].t - r->begin), mk[im].value, mk[im].from);
-			for (c = 15; c >= 0; c--) {
-				fputc('0' + (mk[im].value >> c & 1u), f);
-			}
-			fprintf(f, " ~\n");
-			im++;
+			break;
 		}
 		if (!edge) {
 			break;
 		}
-		s = edge - 1;
-		if (r->state[s] == was[s] && !unknown[s]) {
+		if (r->state == was && !unknown) {
 			continue;
 		}
 		fprintf(f, "#%llu\n", (unsigned long long)(t - r->begin));
-		if (r->state[s] != was[s]) {
-			nedge[s]++;
+		if (r->state != was) {
+			nedge++;
 		}
 		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			if (level(r->state, c) != level(was, c) || (unknown[s] && la_chans[c].pru == s)) {
+			if ((r->mode.chans >> c & 1u) && (level(r->state, c) != level(was, c) || unknown)) {
 				fprintf(f, "%d%c\n", level(r->state, c), '!' + c);
 			}
 		}
-		unknown[s] = 0;
+		unknown = 0;
 	}
 	fprintf(f, "#%llu\n", (unsigned long long)(r->finish - r->begin));
-	free(mk);
-	return nmk;
+	return nedge;
+}
+
+/*
+ * A trigger from argv[i...]: <ch> rise|fall|any, or <ch>=0|1 ...; the
+ * arguments it took, 0 if none is there, -1 if it is wrong.
+ */
+static int parse_trigger(int argc, char **argv, int i, struct la_trig *g)
+{
+	int c, lv, n = 0;
+
+	memset(g, 0, sizeof(*g));
+	if (i + 1 < argc && strspn(argv[i], "0123456789") == strlen(argv[i]) &&
+	    (!strcmp(argv[i + 1], "rise") || !strcmp(argv[i + 1], "fall") ||
+	     !strcmp(argv[i + 1], "any"))) {
+		c = atoi(argv[i]);
+		if (c >= (int)AI64_LA_NCHAN) {
+			return -1;
+		}
+		g->mask = 1u << c;
+		g->kind = argv[i + 1][0] == 'a' ? LA_TRIG_ANY : LA_TRIG_ENTER;
+		g->value = argv[i + 1][0] == 'r' ? g->mask : 0;
+		return 2;
+	}
+	while (i + n < argc && sscanf(argv[i + n], "%d=%d", &c, &lv) == 2) {
+		if (c < 0 || c >= (int)AI64_LA_NCHAN || (lv != 0 && lv != 1)) {
+			return -1;
+		}
+		g->kind = LA_TRIG_ENTER;
+		g->mask |= 1u << c;
+		g->value |= (uint32_t)lv << c;
+		n++;
+	}
+	return n;
 }
 
 static int capture_main(int argc, char **argv)
 {
 	static struct recording r;
-	size_t nedge[2], nmk;
-	double secs;
+	struct la_trig g = { 0 };
+	double secs, pre = -1, wait = 30;
+	char err[160], rate[24];
+	size_t nedge;
 	FILE *f;
+	int i = 5, n;
 
-	if ((argc != 5 && (argc != 6 || strcmp(argv[5], "--trigger"))) ||
-	    (secs = atof(argv[3])) <= 0) {
-		fprintf(stderr, "usage: %s la capture <seconds> <file.vcd|-> [--trigger]\n", argv[0]);
-		return 2;
+	if (argc < 5 || (secs = atof(argv[3])) <= 0) {
+		goto usage;
 	}
-	if (record(&r, secs, argc == 6)) {
-		return 1;
+	n = parse_trigger(argc, argv, i, &g);
+	if (n < 0) {
+		goto usage;
 	}
-	f = strcmp(argv[4], "-") ? fopen(argv[4], "w") : stdout;
-	if (!f) {
-		perror(argv[4]);
-		return 1;
-	}
-	nmk = rec_write_vcd(&r, f, nedge);
-	if (f != stdout) {
-		fclose(f);
-	}
-	fprintf(stderr, "%.6f s of 19 channels%s: PRU0 %zu edges, PRU1 %zu edges, %zu marks "
-		"and trigger hits%s%s\n", (r.finish - r.begin) / 1e9,
-		r.hit ? ", from a tenth before the trigger hit" : "", nedge[0], nedge[1], nmk,
-		f != stdout ? ", in " : "", f != stdout ? argv[4] : "");
-	rec_free(&r);
-	return 0;
-}
-
-static int burst_main(int argc, char **argv)
-{
-	static struct recording r;
-	struct burst_info bi;
-	uint32_t mask[2] = { 0, 0 }, was_mask[2];
-	char err[160];
-	double secs;
-	size_t nedge[2];
-	int was_raw, was_dump, pru = -1, i, rc;
-	FILE *f;
-
-	secs = argc > 3 && !strcmp(argv[3], "max") ? 0 : argc > 3 ? atof(argv[3]) : -1;
-	for (i = 5; i < argc; i++) {
-		int c = atoi(argv[i]);
-
-		if (c < 0 || c >= (int)AI64_LA_NCHAN || (pru >= 0 && la_chans[c].pru != pru)) {
-			pru = -2;
-			break;
+	for (i += n; i + 1 < argc; i += 2) {
+		if (!strcmp(argv[i], "pre")) {
+			pre = atof(argv[i + 1]);
+		} else if (!strcmp(argv[i], "wait")) {
+			wait = atof(argv[i + 1]);
+		} else {
+			goto usage;
 		}
-		pru = la_chans[c].pru;
-		mask[pru] |= 1u << la_chans[c].bit;
 	}
-	if (argc < 6 || secs < 0 || pru < 0) {
-		fprintf(stderr, "usage: %s la burst <seconds|max> <file.vcd|-> <ch> ...  (channels of one PRU)\n",
-			argv[0]);
-		return 2;
+	if (i != argc) {
+		goto usage;
 	}
-	if (la_get_mode(&was_raw, was_mask, &was_dump)) {
-		fprintf(stderr, "the logic analyzer does not run\n");
-		return 1;
+	if (pre < 0) {
+		pre = secs / 10;
 	}
-	rc = la_burst(pru, mask[pru], secs, &r, &bi, err, sizeof(err));
-	if (la_set_mode_ex(was_raw, was_mask, was_dump, err, sizeof(err))) {
-		fprintf(stderr, "putting the mode back: %s\n", err);
-	}
-	if (rc) {
-		fprintf(stderr, "la burst: %s\n", err);
-		rec_free(&r);
+	if (record(&r, secs, &g, pre, wait, err, sizeof(err))) {
+		fprintf(stderr, "%s\n", err);
 		return 1;
 	}
 	f = strcmp(argv[4], "-") ? fopen(argv[4], "w") : stdout;
@@ -454,23 +416,23 @@ static int burst_main(int argc, char **argv)
 		rec_free(&r);
 		return 1;
 	}
-	rec_write_vcd(&r, f, nedge);
+	nedge = rec_write_vcd(&r, f);
 	if (f != stdout) {
 		fclose(f);
 	}
-	fprintf(stderr, "%.6f s of PRU%d every 8 ns, %s: %llu blocks, %llu lost; %llu edges%s%s\n",
-		(r.finish - r.begin) / 1e9, pru,
-		bi.lane == AI64_LA_LANE_ALL ? "a sample a word" :
-		bi.lane <= AI64_LA_LANE_MID16 ? "two samples a word" : "four samples a word",
-		(unsigned long long)bi.blocks, (unsigned long long)bi.lost,
-		(unsigned long long)bi.edges, f != stdout ? ", in " : "", f != stdout ? argv[4] : "");
+	fprintf(stderr, "%.6f s at %s%s: %zu edges, %zu holes%s%s\n", (r.finish - r.begin) / 1e9,
+		la_rate_name(r.mode.hz, rate, sizeof(rate)), r.hit ? ", around the trigger hit" : "",
+		nedge, r.holes.n, f != stdout ? ", in " : "", f != stdout ? argv[4] : "");
 	rec_free(&r);
 	return 0;
+usage:
+	fprintf(stderr, "usage: %s la capture <seconds> <file.vcd|-> [<ch> rise|fall|any | <ch>=0|1 ...] "
+		"[pre <seconds>] [wait <seconds>]\n", argv[0]);
+	return 2;
 }
 
 /* ---- measure ---- */
 
-/* A spread as "min med max", or a dash for none. */
 static void spread(char *buf, size_t len, const struct spread *sp)
 {
 	if (!sp->n) {
@@ -489,14 +451,16 @@ static const char *chan_name(int c)
 static int measure_main(int argc, char **argv)
 {
 	static struct recording r;
-	static const int demo_pairs[][2] = { { 7, 8 }, { 8, 7 }, { 9, 10 }, { 10, 9 }, { 7, 13 } };
+	/* The demo's SPI7: chip select to clock, clock to data. */
+	static const int demo_pairs[][2] = { { 1, 2 }, { 2, 3 } };
 	struct changes ch[AI64_LA_NCHAN];
 	int pairs[16][2], npairs = 0;
-	uint64_t span;
+	uint64_t span, hole_ns;
 	double secs = 1;
+	char err[160];
 	int64_t *v;
-	size_t vcap = 0;
-	int c, k, s, argi = 3;
+	size_t vcap = 0, nholes;
+	int c, k, argi = 3;
 
 	if (argc > 3 && strchr(argv[3], ':') == NULL) {
 		secs = atof(argv[3]);
@@ -521,7 +485,8 @@ static int measure_main(int argc, char **argv)
 			pairs[npairs++][1] = demo_pairs[k][1];
 		}
 	}
-	if (record(&r, secs, 0)) {
+	if (record(&r, secs, NULL, 0, 0, err, sizeof(err))) {
+		fprintf(stderr, "%s\n", err);
 		return 1;
 	}
 	rec_changes(&r, ch);
@@ -537,15 +502,12 @@ static int measure_main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("ICSSG1 logic analyzer, %.6f s measured; times in ns\n", span / 1e9);
-	for (s = 0; s < 2; s++) {
-		uint64_t ns;
-		size_t n = rec_holes(&r, s, &ns);
-
-		if (n) {
-			printf("PRU%d: %zu holes, %.6f s in all, where records were lost: no period or "
-			       "time below spans one\n", s, n, ns / 1e9);
-		}
+	printf("ICSSG1 logic analyzer, %.6f s measured; times in ns\n  ", span / 1e9);
+	print_mode(&r.mode);
+	nholes = rec_holes(&r, &hole_ns);
+	if (nholes) {
+		printf("%zu holes, %.6f s in all, where samples were lost: no period or time below "
+		       "spans one\n", nholes, hole_ns / 1e9);
 	}
 	printf("\n  ch  pin    wired to          edges   frequency    period  min      med      max"
 	       "    high  min      med      max    duty\n");
@@ -553,15 +515,18 @@ static int measure_main(int argc, char **argv)
 		struct chan_stats cs;
 		char hz[24], per[40], high[40], from[24];
 
-		chan_stats(&ch[c], level(r.state, c), r.begin, r.finish, v, &cs,
-			   &r.holes[la_chans[c].pru]);
+		snprintf(from, sizeof(from), "%s%s%s", la_wired[c].name ? la_wired[c].name : "-",
+			 la_wired[c].from ? " " : "", la_wired[c].from ? la_wired[c].from : "");
+		if (!(r.mode.chans >> c & 1u)) {
+			printf("  %2d  %-5s  %-16s  not recorded\n", c, la_chans[c].pin, from);
+			continue;
+		}
+		chan_stats(&ch[c], level(r.state0, c), r.begin, r.finish, v, &cs, &r.holes);
 		spread(per, sizeof(per), &cs.period);
 		spread(high, sizeof(high), &cs.high);
 		/* With holes, the median period's: rises over the span would count them. */
-		fmt_hz(hz, sizeof(hz), cs.period.n && rec_holes(&r, la_chans[c].pru, &(uint64_t){ 0 }) ?
-		       1e9 / (double)cs.period.med : cs.rises * 1e9 / span);
-		snprintf(from, sizeof(from), "%s%s%s", la_wired[c].name ? la_wired[c].name : "-",
-			 la_wired[c].from ? " " : "", la_wired[c].from ? la_wired[c].from : "");
+		fmt_hz(hz, sizeof(hz), cs.period.n && nholes ? 1e9 / (double)cs.period.med :
+		       cs.rises * 1e9 / span);
 		printf("  %2d  %-5s  %-16s %7zu  %s  %s  %s  %5.1f%%\n", c, la_chans[c].pin, from,
 		       ch[c].n, hz, per, high, cs.known_ns ? 100.0 * cs.high_ns / cs.known_ns : 0.0);
 	}
@@ -570,13 +535,12 @@ static int measure_main(int argc, char **argv)
 	       "      a falls:  min      med      max\n");
 	for (k = 0; k < npairs; k++) {
 		int a = pairs[k][0], b = pairs[k][1];
-		const struct holes *ha = &r.holes[la_chans[a].pru], *hb = &r.holes[la_chans[b].pru];
 		char up[40], down[40], label[48];
 		struct spread sp;
 
-		spread_of(v, nearest(&ch[a], &ch[b], 1, v, ha, hb), &sp);
+		spread_of(v, nearest(&ch[a], &ch[b], 1, v, &r.holes), &sp);
 		spread(up, sizeof(up), &sp);
-		spread_of(v, nearest(&ch[a], &ch[b], 0, v, ha, hb), &sp);
+		spread_of(v, nearest(&ch[a], &ch[b], 0, v, &r.holes), &sp);
 		spread(down, sizeof(down), &sp);
 		snprintf(label, sizeof(label), "ch%d %s -> ch%d %s", a, chan_name(a), b, chan_name(b));
 		printf("  %-54s %s        %s\n", label, up, down);
@@ -587,9 +551,7 @@ static int measure_main(int argc, char **argv)
 	return 0;
 }
 
-/* ICSSG1's task managers and IEP0, at their SoC addresses (pru/common/icssg.h). */
-#define ICSSG1_TM   0x0b12a000
-#define ICSSG1_IEP0 0x0b12e000
+/* ---- the rest ---- */
 
 static int quiet_main(void)
 {
@@ -612,279 +574,108 @@ static int quiet_main(void)
 	return 0;
 }
 
-/*
- * ai64 la trigger off | <ch> rise|fall|any | <ch>=0|1 ...: the trigger, on
- * the PRU those channels belong to, set in that stream's header for its
- * RTU to pass to the Tx_PRU; the other PRU's goes off.
- */
-static int trigger_main(int argc, char **argv)
-{
-	uint32_t mode = AI64_LA_TRIG_OFF, mask = 0, value = 0;
-	int pru = -1, i;
-
-	if (argc < 4) {
-		goto usage;
-	}
-	if (strcmp(argv[3], "off")) {
-		int c;
-		char edge[8];
-
-		if (argc == 5 && sscanf(argv[3], "%d", &c) == 1 && !strchr(argv[3], '=')) {
-			snprintf(edge, sizeof(edge), "%s", argv[4]);
-			if (c < 0 || c >= (int)AI64_LA_NCHAN) {
-				goto usage;
-			}
-			pru = la_chans[c].pru;
-			mask = 1u << la_chans[c].bit;
-			if (!strcmp(edge, "rise")) {
-				mode = AI64_LA_TRIG_ENTER;
-				value = mask;
-			} else if (!strcmp(edge, "fall")) {
-				mode = AI64_LA_TRIG_ENTER;
-			} else if (!strcmp(edge, "any")) {
-				mode = AI64_LA_TRIG_ANY;
-			} else {
-				goto usage;
-			}
-		} else {
-			mode = AI64_LA_TRIG_ENTER;
-			for (i = 3; i < argc; i++) {
-				int lv;
-
-				if (sscanf(argv[i], "%d=%d", &c, &lv) != 2 || c < 0 ||
-				    c >= (int)AI64_LA_NCHAN || (lv != 0 && lv != 1)) {
-					goto usage;
-				}
-				if (pru >= 0 && la_chans[c].pru != pru) {
-					fprintf(stderr, "ch%d is on PRU%d, the others on PRU%d: a trigger "
-						"takes one PRU's channels (pru/logic_analyzer/README.md)\n",
-						c, la_chans[c].pru, pru);
-					return 2;
-				}
-				pru = la_chans[c].pru;
-				mask |= 1u << la_chans[c].bit;
-				value |= (uint32_t)lv << la_chans[c].bit;
-			}
-		}
-	} else if (argc != 4) {
-		goto usage;
-	}
-	if (la_set_trigger(pru, mode, mask, value)) {
-		return 1;
-	}
-	if (mode == AI64_LA_TRIG_OFF) {
-		printf("trigger off\n");
-	} else {
-		printf("trigger on PRU%d: %s, pins mask 0x%05x value 0x%05x; Tx_PRU%d matches it\n",
-		       pru, mode == AI64_LA_TRIG_ANY ? "any change" : "the pins come to value",
-		       mask, value, pru);
-	}
-	return 0;
-usage:
-	fprintf(stderr, "usage: %s la trigger off | <ch> rise|fall|any | <ch>=0|1 ...\n", argv[0]);
-	return 2;
-}
-
-/* A mark in the analyzer's stream: a fabric route from Linux to ICSSG1 RTU0. */
-/* Each stream's last edge, and the closest two edges came. */
+/* Each edge's time, for the closest two. */
 struct closest {
-	uint64_t last[2];
-	uint64_t min[2];
+	uint64_t last, min;
+	int have;
 };
 
-static void count_edge(void *ctx, struct stream *st, uint64_t t, uint32_t state)
+static void count_edge(void *ctx, uint64_t t, uint32_t state)
 {
 	struct closest *c = ctx;
 
 	(void)state;
-	if (c) {
-		if (c->last[st->s] && t - c->last[st->s] < c->min[st->s]) {
-			c->min[st->s] = t - c->last[st->s];
-		}
-		c->last[st->s] = t;
+	if (c->have && t - c->last < c->min) {
+		c->min = t - c->last;
 	}
+	c->last = t;
+	c->have = 1;
 }
 
-/*
- * In dump mode: the copier's blocks a second, and how fast a reader here
- * follows them, finding every change, with any it missed.
- */
-static int follow_rate(double secs)
+static void count_hole(void *ctx, uint64_t from, uint64_t to, uint32_t state)
 {
-	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
-	struct la_follow f;
-	struct stream st;
-	char err[128];
-	double t0, t1;
-	uint32_t wr0;
+	struct closest *c = ctx;
 
-	if (la_follow_open(&f, err, sizeof(err))) {
-		fprintf(stderr, "%s\n", err);
-		return 1;
-	}
-	memset(&st, 0, sizeof(st));
-	st.s = f.pru;
-	wr0 = *f.wr;
-	t0 = now_us();
-	do {
-		la_follow_poll(&f, &st, count_edge, &c);
-	} while (now_us() < t0 + secs * 1e6);
-	t1 = now_us();
-	printf("PRU%d, dump mode: the copier copied %.0f blocks/s (%.0f MS/s); the reader read %.0f "
-	       "blocks/s and found %.0f edges/s; blocks the copier missed %llu, times the reader fell "
-	       "a buffer behind %llu; closest edges %lld ns apart\n", f.pru,
-	       (uint32_t)(*f.wr - wr0) * 1e6 / (t1 - t0), (uint32_t)(*f.wr - wr0) * f.n / (t1 - t0),
-	       f.blocks * 1e6 / (t1 - t0), f.edges * 1e6 / (t1 - t0), (unsigned long long)f.lost,
-	       (unsigned long long)f.behind,
-	       c.min[f.pru] == UINT64_MAX ? -1LL : (long long)c.min[f.pru]);
-	la_follow_close(&f);
-	return 0;
+	(void)from;
+	(void)to;
+	(void)state;
+	c->have = 0;
 }
 
 static int rate_main(int argc, char **argv)
 {
 	double secs = argc > 3 ? atof(argv[3]) : 1.0, t0, t1;
-	struct closest c = { { 0, 0 }, { UINT64_MAX, UINT64_MAX } };
-	struct stream st[2];
-	uint32_t copied0[2];
-	uint64_t read0[2], missed0[2], gaps0[2], late0[2];
-	int s;
+	struct closest c = { 0, UINT64_MAX, 0 };
+	struct la_src src;
+	char err[160];
 
 	if (argc > 4 || secs <= 0) {
 		fprintf(stderr, "usage: %s la rate [seconds]\n", argv[0]);
 		return 2;
 	}
-	if (la_map(1)) {
-		return 1;
-	}
-	for (s = 0; s < 2; s++) {
-		if (AI64_LA_MODE_OF(la_hdr->s[s].cfg_mode) == AI64_LA_MODE_DUMP) {
-			return follow_rate(secs);
-		}
-	}
-	for (s = 0; s < 2; s++) {
-		if (stream_init(&st[s], s)) {
-			return 1;
-		}
-	}
-	if (wait_ticks(st, count_edge, NULL)) {
+	if (la_src_open(&src, 0, err, sizeof(err))) {
+		fprintf(stderr, "%s\n", err);
 		return 1;
 	}
 	t0 = now_us();
-	for (s = 0; s < 2; s++) {
-		copied0[s] = st[s].h->edges;
-		read0[s] = st[s].edges;
-		missed0[s] = st[s].missed;
-		gaps0[s] = st[s].gaps;
-		late0[s] = st[s].late;
-	}
 	do {
-		for (s = 0; s < 2; s++) {
-			stream_poll(&st[s], count_edge, &c);
-		}
+		la_src_poll(&src, count_edge, count_hole, &c, 100000000u);
+		usleep(500);
 	} while (now_us() < t0 + secs * 1e6);
 	t1 = now_us();
-	for (s = 0; s < 2; s++) {
-		printf("PRU%d: RTU%d copied %.0f records/s, the reader read %.0f/s and missed %.0f/s; "
-		       "RTU gaps %u (%u records) since it started; gaps in the stream %llu; "
-		       "closest records %lld ns apart; late %.0f/s\n",
-		       s, s, (uint32_t)(st[s].h->edges - copied0[s]) * 1e6 / (t1 - t0),
-		       (st[s].edges - read0[s]) * 1e6 / (t1 - t0),
-		       (st[s].missed - missed0[s]) * 1e6 / (t1 - t0), st[s].h->gaps, st[s].h->lost,
-		       (unsigned long long)(st[s].gaps - gaps0[s]),
-		       c.min[s] == UINT64_MAX ? -1LL : (long long)c.min[s],
-		       (st[s].late - late0[s]) * 1e6 / (t1 - t0));
-		stream_free(&st[s]);
-	}
+	print_mode(&src.mode);
+	printf("PRU0 wrote %.0f blocks/s (%.0f MS/s); the reader read %.0f blocks/s and found %.0f "
+	       "edges/s; blocks lost %llu (dropped by PRU0, or skipped by the reader), times it fell a "
+	       "ring behind %llu; closest edges %lld ns apart\n",
+	       1e9 / (double)src.mode.block_ns, src.mode.hz / 1e6,
+	       src.blocks * 1e6 / (t1 - t0), src.edges * 1e6 / (t1 - t0),
+	       (unsigned long long)src.lost, (unsigned long long)src.behind,
+	       c.min == UINT64_MAX ? -1LL : (long long)c.min);
+	la_src_close(&src);
 	return 0;
-}
-
-static void print_modes(void)
-{
-	int s, c;
-
-	for (s = 0; s < 2; s++) {
-		const volatile struct ai64_la_stream *h = &la_hdr->s[s];
-
-		printf("PRU%d: %s", s,
-		       AI64_LA_MODE_OF(h->cfg_mode) == AI64_LA_MODE_CONV ?
-		       "converting the other's samples, no channels" :
-		       AI64_LA_MODE_OF(h->cfg_mode) == AI64_LA_MODE_DUMP ?
-		       "copying the other's samples to the burst buffer, no channels" :
-		       AI64_LA_MODE_OF(h->cfg_mode) != AI64_LA_MODE_RAW ?
-		       "edge, a record at each change, channels" :
-		       AI64_LA_LANE_OF(h->cfg_mode) == AI64_LA_LANE_ALL ?
-		       "raw, every 8 ns with no gap, a sample a word, channels" :
-		       AI64_LA_LANE_OF(h->cfg_mode) <= AI64_LA_LANE_MID16 ?
-		       "raw, every 8 ns with no gap, two samples a word, channels" :
-		       "raw, every 8 ns with no gap, four samples a word, channels");
-		for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-			if (la_chans[c].pru == s && (h->cfg_mask >> la_chans[c].bit & 1u)) {
-				printf(" %d", c);
-			}
-		}
-		printf("\n");
-	}
 }
 
 static int mode_main(int argc, char **argv)
 {
-	uint32_t mask[2] = { 0, 0 };
-	char err[128];
-	int raw, i, c;
+	struct la_mode m;
+	uint32_t hz, chans = 0;
+	char err[160];
+	int i, c;
 
-	if (la_map(1)) {
-		return 1;
-	}
 	if (argc == 3) {
-		print_modes();
+		if (la_get_mode(&m, err, sizeof(err))) {
+			fprintf(stderr, "%s\n", err);
+			return 1;
+		}
+		print_mode(&m);
 		return 0;
 	}
-	if (strcmp(argv[3], "edge") && strcmp(argv[3], "raw") && strcmp(argv[3], "dump")) {
-		fprintf(stderr, "usage: %s la mode [edge [ch ...] | raw <ch> ... | dump <ch> ...]\n", argv[0]);
+	if (la_parse_rate(argv[3], &hz)) {
+		fprintf(stderr, "usage: %s la mode [<rate> [<ch> ... | all]]: rate 125, 62.5, 25, 12.5, "
+			"6.25, 2.5, or 1.25 (MS/s)\n", argv[0]);
 		return 2;
 	}
 	for (i = 4; i < argc; i++) {
+		if (!strcmp(argv[i], "all")) {
+			chans = (1u << AI64_LA_NCHAN) - 1u;
+			continue;
+		}
 		c = atoi(argv[i]);
 		if (c < 0 || c >= (int)AI64_LA_NCHAN || strspn(argv[i], "0123456789") != strlen(argv[i])) {
-			fprintf(stderr, "no channel %s\n", argv[i]);
+			fprintf(stderr, "no channel %s: 0 to %u\n", argv[i], AI64_LA_NCHAN - 1);
 			return 2;
 		}
-		mask[la_chans[c].pru] |= 1u << la_chans[c].bit;
+		chans |= 1u << c;
 	}
-	if (!strcmp(argv[3], "edge")) {
-		raw = -1;
-		if (!mask[0] && !mask[1]) {
-			mask[0] = AI64_LA_MASK(0);
-			mask[1] = AI64_LA_MASK(1);
-		}
-	} else if (mask[0] && mask[1]) {
-		fprintf(stderr, "raw mode takes channels of one PRU: PRU0 has 0 3 4 5 6 13 14 15 16 18, "
-			"PRU1 1 2 7 8 9 10 11 12 17\n");
-		return 2;
-	} else if (!mask[0] && !mask[1]) {
-		fprintf(stderr, "raw mode needs its channels\n");
-		return 2;
-	} else {
-		raw = mask[0] ? 0 : 1;
+	if (!chans) {
+		chans = (1u << AI64_LA_NCHAN) - 1u;
 	}
-	if (la_set_mode_ex(raw, mask, !strcmp(argv[3], "dump"), err, sizeof(err))) {
+	if (la_set_mode(chans, hz, err, sizeof(err)) || la_get_mode(&m, err, sizeof(err))) {
 		fprintf(stderr, "%s\n", err);
 		return 1;
 	}
-	print_modes();
+	print_mode(&m);
 	return 0;
-}
-
-static int mark_main(int argc, char **argv)
-{
-	char *av[] = { argv[0], "fabric", "route", "g1rtu0", "mark", argv[3], NULL };
-
-	if (argc != 4) {
-		fprintf(stderr, "usage: %s la mark <value>\n", argv[0]);
-		return 2;
-	}
-	return fabric_main(6, av);
 }
 
 int la_main(int argc, char **argv)
@@ -894,15 +685,6 @@ int la_main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "capture")) {
 		return capture_main(argc, argv);
-	}
-	if (argc > 2 && !strcmp(argv[2], "burst")) {
-		return burst_main(argc, argv);
-	}
-	if (argc > 2 && !strcmp(argv[2], "trigger")) {
-		return trigger_main(argc, argv);
-	}
-	if (argc > 2 && !strcmp(argv[2], "mark")) {
-		return mark_main(argc, argv);
 	}
 	if (argc > 2 && !strcmp(argv[2], "mode")) {
 		return mode_main(argc, argv);

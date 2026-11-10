@@ -65,9 +65,6 @@ static const char *const node_name[AI64_FAB_NODES] = {
 static int acts(uint32_t node, uint32_t action)
 {
 	if (node == AI64_FAB_G1RTU0 || node == AI64_FAB_G1RTU1) {
-		return action == AI64_FAB_ACT_MARK;
-	}
-	if (action == AI64_FAB_ACT_MARK) {
 		return 0;
 	}
 	if (node == AI64_FAB_G0RTU0 || node == AI64_FAB_G0RTU1) {
@@ -428,14 +425,12 @@ static int route_main(int argc, char **argv)
 			i = argc;
 			break;
 		}
-		if (!strcmp(argv[i], "dead") || !strcmp(argv[i], "sweep") || !strcmp(argv[i], "steps") ||
-		    !strcmp(argv[i], "mark")) {
+		if (!strcmp(argv[i], "dead") || !strcmp(argv[i], "sweep") || !strcmp(argv[i], "steps")) {
 			if (i + 2 != argc) {
 				break;
 			}
 			action = !strcmp(argv[i], "dead") ? AI64_FAB_ACT_DEAD :
-				 !strcmp(argv[i], "sweep") ? AI64_FAB_ACT_SWEEP :
-				 !strcmp(argv[i], "mark") ? AI64_FAB_ACT_MARK : AI64_FAB_ACT_STEPS;
+				 !strcmp(argv[i], "sweep") ? AI64_FAB_ACT_SWEEP : AI64_FAB_ACT_STEPS;
 			a0 = strtoul(argv[i + 1], NULL, 0);
 			i = argc;
 			break;
@@ -449,7 +444,7 @@ static int route_main(int argc, char **argv)
 	}
 	if (n == 0 || i != argc) {
 		fprintf(stderr, "usage: ai64 fabric route <node>... "
-			"[pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns> | mark <value>]\n"
+			"[pwm <period_ns> <duty_ns> | steps <ms> | sweep <ms> | dead <ns>]\n"
 			"nodes:");
 		for (h = 1; h < AI64_FAB_NODES; h++) {
 			fprintf(stderr, " %s", node_name[h]);
@@ -463,10 +458,6 @@ static int route_main(int argc, char **argv)
 	}
 	if (action != AI64_FAB_ACT_NONE) {
 		for (h = 0; h < n && !acts(route[h], action); h++) {
-		}
-		if (h == n && action == AI64_FAB_ACT_MARK) {
-			fprintf(stderr, "mark goes to the logic analyzer: the route has to pass g1rtu0 or g1rtu1\n");
-			return 2;
 		}
 		if (h == n) {
 			fprintf(stderr, "%s runs on a PWM generator: the route has to pass g0rtu0 or g0rtu1%s\n",
@@ -553,8 +544,7 @@ static int route_main(int argc, char **argv)
 			       m.status ? "did not run the action" :
 			       action == AI64_FAB_ACT_PWM ? "set its PWM" :
 			       action == AI64_FAB_ACT_DEAD ? "set its dead band" :
-			       action == AI64_FAB_ACT_SWEEP ? "set its sweep" :
-			       action == AI64_FAB_ACT_MARK ? "marked its stream" : "set its steps");
+			       action == AI64_FAB_ACT_SWEEP ? "set its sweep" : "set its steps");
 		}
 		printf("\n");
 		prev = stamp[h];

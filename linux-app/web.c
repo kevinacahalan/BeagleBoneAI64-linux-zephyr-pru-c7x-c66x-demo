@@ -57,6 +57,7 @@ static volatile uint32_t *g_gtc;
 static volatile uint8_t *g_fab;
 static volatile struct ai64_fab_tally *g_tally;
 static volatile struct ai64_pipe *g_pipe;
+static volatile struct ai64_la_cfg *g_la;
 
 static void *map_ro(off_t addr, size_t len)
 {
@@ -243,17 +244,14 @@ static void status_json(void)
 		out("],");
 	}
 
-	/* The logic analyzer's two streams, from its RTUs' fabric pages (ai64_la.h). */
-	out("\"la\":[");
-	for (n = 0; n < 2; n++) {
-		volatile struct ai64_la_status *s =
-			(volatile struct ai64_la_status *)page(AI64_FAB_G1RTU0 + n)->app;
+	/* The logic analyzer's setup, in ICSSG1 PRU0's data RAM (ai64_la.h). */
+	{
+		volatile struct ai64_la_cfg *la = g_la;
 
-		out("%s{\"ok\":%u,\"edges\":%u,\"gaps\":%u,\"lost\":%u,\"marks\":%u,"
-		    "\"state\":%u,\"mask\":%u}", n ? "," : "", s->magic == AI64_LA_MAGIC, s->edges,
-		    s->gaps, s->lost, s->marks, s->state, s->mask);
+		out("\"la\":{\"ok\":%u,\"mask\":%u,\"lane\":%u,\"period\":%u},",
+		    la && la->run == AI64_LA_RUN_MAGIC, la ? la->mask : 0, la ? la->lane : 0,
+		    la ? la->period : 0);
 	}
-	out("],");
 
 	/*
 	 * The pipeline: each stage's
@@ -396,6 +394,12 @@ int web_main(int argc, char **argv)
 	g_gtc = map_ro(AI64_GTC_ADDR, 4096);
 	g_fab = map_ro(AI64_FAB_ADDR, AI64_FAB_SIZE);
 	g_pipe = map_ro(AI64_PIPE_ADDR, AI64_PIPE_SIZE);
+	/* ICSSG1 PRU0's data RAM, from the page that holds the analyzer's setup. */
+	{
+		volatile uint8_t *dram = map_ro(0x0b101000, 4096);
+
+		g_la = dram ? (volatile struct ai64_la_cfg *)(dram + (AI64_LA_CFG & 0xfffu)) : NULL;
+	}
 	if (!g_gtc || !g_fab || !g_pipe) {
 		return 1;
 	}

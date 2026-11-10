@@ -254,18 +254,17 @@ const SHOW = {
   c66x0: s => stageLine(s, ST.FFT0, "FFTs"),
   c66x1: s => stageLine(s, ST.FFT1, "FFTs"),
   c7x: s => stageLine(s, ST.MMA, "windows classified"),
-  g1pru0: s => laLine(s, 0, "edges stamped"),
-  g1pru1: s => laLine(s, 1, "edges stamped"),
-  g1rtu0: s => laLine(s, 0, "edges to DDR"),
-  g1rtu1: s => laLine(s, 1, "edges to DDR"),
+  g1pru0: s => laLine(s),
 };
 
-// A logic analyzer stream's edges a second, from its RTU's fabric page.
-function laLine(s, i, what) {
-  const c = s.cur.la && s.cur.la[i], o = s.ref.la && s.ref.la[i];
+// The logic analyzer's setup: PRU0's rate and channels, and what it writes to DDR.
+function laLine(s) {
+  const c = s.cur.la;
   if (!c || !c.ok) return "not running";
-  const r = o && o.ok && c.edges >= o.edges ? (c.edges - o.edges) / s.dt : NaN;
-  return `${fmt(r)} ${what}/s; ${c.gaps ? c.gaps + " gaps" : "nothing lost"}` + (c.marks ? `; ${c.marks} marks` : "");
+  const ns = c.period * 4, per = c.lane === 0 ? 1 : c.lane <= 2 ? 2 : 4;
+  let n = 0;
+  for (let m = c.mask; m; m &= m - 1) n++;
+  return `${+(1e3 / ns).toPrecision(3)} MS/s on ${n} channels; ${(64e3 / (15 * per * ns)).toFixed(1)} MB/s to DDR`;
 }
 
 const PIPE_STAGES = [

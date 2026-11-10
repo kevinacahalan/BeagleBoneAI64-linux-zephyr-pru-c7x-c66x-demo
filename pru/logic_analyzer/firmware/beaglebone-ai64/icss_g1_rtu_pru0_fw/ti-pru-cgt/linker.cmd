@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * linker.cmd: ICSSG1 RTU0, slice 0's mover; sets up IEP0 (la_rtu.c).
+ * linker.cmd: ICSSG1 RTU0, a fabric node (la_rtu.c).
  * Its part of the slice's data RAM comes from the project's memory map.
  */
 

@@ -62,8 +62,7 @@ ai64_root_demo() {
     install -m 0755 -o 0 -g 0 ${IMAGE_ROOTFS}${bindir}/ai64-demo ${home}/ai64-demo
     for f in ai64-icssg0-pru0.elf ai64-icssg0-rtu0.elf ai64-icssg0-txpru0.elf \
         ai64-icssg0-pru1.elf ai64-icssg0-rtu1.elf ai64-icssg0-txpru1.elf \
-        ai64-la-pru0.elf ai64-la-rtu0.elf ai64-la-txpru0.elf \
-        ai64-la-pru1.elf ai64-la-rtu1.elf ai64-la-txpru1.elf \
+        ai64-la-pru0.elf ai64-la-rtu0.elf ai64-la-rtu1.elf \
         ai64-mcs-pru0.elf ai64-mcs-rtu0.elf ai64-mcs-txpru0.elf \
         ai64-mcs-pru1.elf ai64-mcs-rtu1.elf ai64-mcs-txpru1.elf \
         ai64_r5f0_0.elf ai64_r5f0_1.elf ai64_r5f1_0.elf ai64_r5f1_1.elf \
@@ -76,8 +75,9 @@ ai64 is the Linux program it runs.
 ai64_r5f0_0.elf, ai64_r5f0_1.elf, ai64_r5f1_0.elf, and ai64_r5f1_1.elf are
 the Zephyr firmwares for the four main-domain R5F cores.
 The six ai64-icssg0-*.elf files are ICSSG0's PWM project: software PWM on
-slice 0, the ICSSG's PWM module on slice 1. The six ai64-la-*.elf files
-are ICSSG1's logic analyzer (ai64 la). The six ai64-mcs-*.elf files are
+slice 0, the ICSSG's PWM module on slice 1. ai64-la-pru0.elf is ICSSG1's
+logic analyzer (ai64 la), and ai64-la-rtu0.elf and ai64-la-rtu1.elf make
+ICSSG1's RTUs fabric nodes. The six ai64-mcs-*.elf files are
 TI's multicore scheduler, which ai64-demo --icssg1 scheduler runs instead.
 ai64-c66x.elf and ai64-c7x.elf are the C66x and C7x images.
 

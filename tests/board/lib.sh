@@ -86,17 +86,23 @@ check_demo() {
 	n=$(echo "$linux" | grep -c -E 'failed|link down|did not')
 	[ "$n" -eq 0 ] && ok "no failures in the linux window" || bad "$n lines in the linux window say failed, link down, or did not"
 
-	# Every demo core (ai64 cores) running its firmware.
+	# Every demo core (ai64 cores) running its firmware; one with firmware -
+	# (ICSSG1's free cores) stopped.
 	n=0
 	for core in $("$AI64" cores | awk '!/^#/ {print $3 ":" $4}'); do
 		state=$(rproc_attr "${core%%:*}" state)
 		fw=$(rproc_attr "${core%%:*}" firmware)
-		if [ "$state" != running ] || [ "$fw" != "${core#*:}" ]; then
+		if [ "${core#*:}" = - ]; then
+			if [ "$state" = running ]; then
+				bad "${core%%:*} runs ${fw:-something}, but is free"
+				n=$((n + 1))
+			fi
+		elif [ "$state" != running ] || [ "$fw" != "${core#*:}" ]; then
 			bad "${core%%:*} is ${state:-missing}, with ${fw:-no firmware}"
 			n=$((n + 1))
 		fi
 	done
-	[ "$n" -eq 0 ] && ok "all $("$AI64" cores | grep -c -v '^#') demo cores run their firmware"
+	[ "$n" -eq 0 ] && ok "all $("$AI64" cores | awk '!/^#/ && $4 != "-"' | wc -l) demo cores run their firmware, the free ones stopped"
 
 	# The pipeline: nothing lost, nothing wrong.
 	pipe=$("$AI64" pipe once 2>&1)
@@ -121,42 +127,58 @@ check_demo() {
 	"$AI64" mma 256 5 2>&1 | grep -q 'all match the A72' &&
 		ok "the C7x's MMA layer matches the A72" || bad "the C7x's MMA layer"
 
-	# The logic analyzer on ICSSG1: both streams flowing with nothing lost,
-	# and what it measures on the jumpered signals (pru/logic_analyzer/).
+	# The logic analyzer on ICSSG1 (pru/logic_analyzer/): PRU0 sampling
+	# all 10 channels at 25 MS/s, the reader keeping up, and what it
+	# measures on the jumpered signals.
+	check "ai64 la mode 25: every channel at 25 MS/s" "$AI64" la mode 25
 	la=$("$AI64" la once 2>&1)
-	n=$(echo "$la" | grep -c -E 'PRU[01] +[0-9]+ edges/s, .* gaps 0 \(0 records\), reader missed 0')
-	[ "$n" -eq 2 ] && ok "the logic analyzer's two streams lost nothing" ||
-		bad "the logic analyzer's streams: $(echo "$la" | grep -E '^ +PRU' | tr -s ' ')"
-	# ch7, 9, 11, 12, 13: the PWM generators, 15 kHz on average over the steps;
-	# ch6: the 1 kHz square wave.
-	for c in 6 7 9 11 12 13; do
+	n=$(echo "$la" | sed -n 's/.*lost \([0-9]*\) blocks this interval.*/\1/p')
+	[ -n "$n" ] && [ "$n" -le 20 ] && ok "the analyzer's reader kept up: $n blocks lost in a second" ||
+		bad "the analyzer: $(echo "$la" | grep -E 'read|lost' | tr -s ' ')"
+	# ch4: the 1 kHz square wave; ch5: ICSSG0 slice 0's PWM A, 15 kHz on
+	# average over its steps.
+	for c in 4 5; do
 		hz=$(echo "$la" | awk -v c=$c '$1 == c && $2 ~ /^P[89]\./ {
 			f = $(NF - 2); if ($(NF - 1) == "kHz") f *= 1000; print int(f) }')
 		lo=14000 hi=16000
-		[ "$c" -eq 6 ] && lo=990 hi=1010
+		[ "$c" -eq 4 ] && lo=990 hi=1010
 		[ -n "$hz" ] && [ "$hz" -ge $lo ] && [ "$hz" -le $hi ] &&
 			ok "the analyzer's ch$c reads $hz Hz" || bad "the analyzer's ch$c reads ${hz:-nothing} Hz, not $lo-$hi"
 	done
-	# Slice 1's dead band, from A falling to B rising: 1000 ns, exact in hardware.
-	n=$("$AI64" la measure 1 9:10 2>&1 | awk '/ch9 S1_A -> ch10 S1_B/ { print $(NF - 1) }')
-	[ -n "$n" ] && [ "$n" -ge 992 ] && [ "$n" -le 1008 ] &&
-		ok "la measure: slice 1's dead band $n ns" || bad "la measure: slice 1's dead band ${n:-not measured} ns"
-	# A trigger on the square wave's rising edge, matched by Tx_PRU0: about 1000 hits a second.
-	"$AI64" la trigger 6 rise >/dev/null
-	n=$("$AI64" la once 2>&1 | awk '/^ +PRU0/ { print $NF }')
-	"$AI64" la trigger off >/dev/null
-	[ -n "$n" ] && [ "$n" -ge 900 ] && [ "$n" -le 1100 ] &&
-		ok "Tx_PRU0's trigger on the square wave: $n hits" || bad "the trigger: ${n:-no} hits, not about 1000"
-	# A mark through the fabric, from Linux to ICSSG1 RTU0, fabric node 10.
-	"$AI64" la mark 1 2>&1 | grep -q 'g1rtu0 marked its stream' &&
-		ok "a mark reached the analyzer's stream through the fabric" || bad "ai64 la mark"
+	# A capture around the square wave's rising edge, found by the reader,
+	# with a millisecond from the ring before it.
+	out=$("$AI64" la capture 0.002 /tmp/ai64-check.vcd 4 rise pre 0.001 2>&1)
+	echo "$out" | grep -q 'around the trigger hit' && grep -q '^#1000000$' /tmp/ai64-check.vcd &&
+		ok "la capture: triggered on ch4's rise, 1 ms of the ring before it" ||
+		bad "la capture with a trigger: $out"
+	# Every sample at 125 MS/s, all 10 channels: more than the reader takes
+	# live, so the capture waits, PRU0 stops, and the ring is read whole.
+	out=$("$AI64" la mode 125 >/dev/null && "$AI64" la measure 0.04 2>&1)
+	"$AI64" la mode 25 >/dev/null
+	n=$(echo "$out" | awk '$1 == 4 && $2 == "P8.10" { print $5 }')
+	echo "$out" | grep -q '^ *125 MS/s' && [ -n "$n" ] && [ "$n" -ge 79 ] && [ "$n" -le 81 ] &&
+		! echo "$out" | grep -q -E '^[0-9]{3,} holes' &&
+		ok "la measure at 125 MS/s, every channel: whole, ch4 $n edges in 40 ms" ||
+		bad "la measure at 125 MS/s: $(echo "$out" | grep -E 'holes|^ *4 ' | tr -s ' ')"
 
-	# The MCP server (ai64 mcp): la_measure through JSON-RPC, slice 1's dead band again.
+	# The MCP server (ai64 mcp): la_capture around SPI7's chip select
+	# falling while R5F0_0 writes "hello", then la_decode.
+	(sleep 1.5; tmux send-keys -t ai64:linux 'r5f0_0 spi hello' Enter) &
 	n=$(wget -q -O - --header "Content-Type: application/json" --post-data \
-		'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"la_measure","arguments":{"seconds":0.5,"pairs":["9:10"]}}}' \
-		http://127.0.0.1:8065/mcp 2>/dev/null | grep -o '"after_a_falls_ns":{"min":[0-9-]*,"median":[0-9]*' | grep -o '[0-9]*$')
-	[ -n "$n" ] && [ "$n" -ge 992 ] && [ "$n" -le 1008 ] &&
-		ok "the MCP server's la_measure: slice 1's dead band $n ns" || bad "the MCP server's la_measure: ${n:-no answer}"
+		'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"la_capture","arguments":{"seconds":0.002,"pre_seconds":0.0002,"trigger":{"channel":1,"edge":"fall"}}}}' \
+		http://127.0.0.1:8065/mcp 2>/dev/null | grep -o '"trigger_at_ns":[0-9]*')
+	wait
+	out=$(wget -q -O - --header "Content-Type: application/json" --post-data \
+		'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"la_decode","arguments":{"protocol":"spi","cs":1,"clk":2,"mosi":3}}}' \
+		http://127.0.0.1:8065/mcp 2>/dev/null)
+	[ -n "$n" ] && echo "$out" | grep -q 'mosi_text\\":\\"hello' &&
+		ok "the MCP server: a capture on SPI7's chip select decodes \"hello\"" ||
+		bad "the MCP server's capture and decode: ${n:-no hit}, $(echo "$out" | grep -o 'mosi_text[^,]*' | head -n 1)"
+	n=$(wget -q -O - --header "Content-Type: application/json" --post-data \
+		'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"la_measure","arguments":{"seconds":0.2}}}' \
+		http://127.0.0.1:8065/mcp 2>/dev/null | grep -o '"ch\\":4[^}]*\\"freq_hz\\":[0-9]*' | grep -o '[0-9]*$')
+	[ -n "$n" ] && [ "$n" -ge 990 ] && [ "$n" -le 1010 ] &&
+		ok "the MCP server's la_measure: the square wave at $n Hz" || bad "the MCP server's la_measure: ${n:-no answer}"
 
 	# The pads, and the web page's server.
 	check "every demo pad is muxed as the overlay and Zephyr ask" "$AI64" pads

@@ -268,7 +268,6 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
       <h3>Time zero</h3>
       <select id="tzero">
         <option value="start">the capture's start</option>
-        <option value="trig">the first trigger hit</option>
         <option value="a">marker A</option>
       </select>
       <h3 id="mtitle">The time in view</h3>
@@ -290,35 +289,21 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
       <table id="dectab"></table>
     </div>
     <div class="pane" id="p-events">
-      <h3>Marks, trigger hits, and gaps</h3>
-      <div class="hint">Newest first. Click one to center it. <code>ai64 la mark</code>, <code>ai64 la trigger</code>, and the MCP server make them.</div>
+      <h3>Samples lost</h3>
+      <div class="hint">Newest first. Click one to center it. Each is where blocks of samples were lost: the board's reader fell behind, or PRU0 dropped a block while the SoC held DDR.</div>
       <table id="evtab"></table>
     </div>
     <div class="pane" id="p-chans">
       <h3>Capture</h3>
-      <div class="seg" id="modeseg">
-        <button data-mode="edge" title="Every channel, a record at each change">Edge · all channels</button>
-        <button data-mode="raw" title="One PRU's channels, every 8 ns with no gap">Raw · 125 MS/s, no gaps</button>
+      <div class="capfoot" style="margin:2px 0 6px">
+        <label for="caprate">Sample rate</label>
+        <select id="caprate" title="How often PRU0 samples every channel"></select>
       </div>
       <div class="hint" id="modehint"></div>
-      <label id="copybox" class="hint" style="display:none; gap:6px; align-items:center; margin:4px 0"><input type="checkbox" id="capcopy"> Copy every sample: no limit in the PRUs</label>
       <div id="caplist"></div>
       <div class="capfoot">
         <button id="modeapply" class="primary">Apply</button>
         <span class="hint" id="modestate"></span>
-      </div>
-      <div id="burstbox" style="display:none">
-        <div class="hint" id="bursthint"></div>
-        <div class="capfoot">
-          <select id="burstlen" title="How long a burst">
-            <option value="0">as long as it holds</option>
-            <option value="0.1">100 ms</option>
-            <option value="0.01">10 ms</option>
-            <option value="0.001">1 ms</option>
-          </select>
-          <button id="burstgo">Burst</button>
-          <span class="hint" id="burststate"></span>
-        </div>
       </div>
       <h3>Channels</h3>
       <div class="hint">Show, name, and color each channel. This browser remembers them.</div>
@@ -562,8 +547,8 @@ class Holes {
   crosses(a, b) { const k = this.find(a); return k < this.n && this.a[k] < b; }
 }
 
-// A channel's holes: its PRU's, and its own, where a burst of its PRU's
-// other channels left it out. at(t) gives the hole t is in, [a, b], or null.
+// A channel's holes: the stream's, and its own, from a capture file that
+// left it out. at(t) gives the hole t is in, [a, b], or null.
 class ChanHoles {
   constructor(pru, own) { this.lists = [pru, own]; }
   at(t) { for (const h of this.lists) { const k = h.at(t); if (k >= 0) return [h.a[k], h.b[k]]; } return null; }
@@ -615,15 +600,6 @@ function onBinary(buf) {
   if (kind === 4) { const t = rel(base); startState(s, dv.getUint32(16, true)); S.now[s] = Math.max(S.now[s], t); return; }
   if (kind === 5) { if (S.t0 !== null) S.now[s] = Math.max(S.now[s], base - S.t0); return; }
   if (kind === 3) { S.events.push({ t: rel(base), kind: "gap", s, value: count }); S.dirty = true; return; }
-  if (kind === 2) {
-    for (let i = 0; i < count; i++) {
-      const o = 16 + 12 * i, t = rel(base + dv.getUint32(o, true));
-      const trig = dv.getUint8(o + 4), from = dv.getUint8(o + 5), value = dv.getUint32(o + 8, true);
-      S.events.push(trig ? { t, kind: "trig", s, value } : { t, kind: "mark", s, from, value });
-    }
-    S.dirty = true;
-    return;
-  }
   if (kind !== 1) return;
   // Packed edges (la_ws.c): the pins before, then a varint each of the
   // time step in 4 ns << 5 | the pin that changed, or 31 and the pins, or
@@ -682,14 +658,11 @@ function onText(text) {
   if (m.type === "meta") setMeta(m);
   else if (m.type === "mode") setModeInfo(m);
   else if (m.type === "mode_error") { doneApplying(); banner("The mode: " + m.error); drawCapture(); }
-  else if (m.type === "burst") burstDone(m);
-  else if (m.type === "burst_error") { S.bursting = false; banner("The burst: " + m.error); drawCapture(); }
   else if (m.type === "stats") {
     const now = performance.now();
     if (S.lastStats) {
       const dt = (now - S.statsAt) / 1000;
-      S.rate = (m.edges[0] + m.edges[1] - S.lastStats.edges[0] - S.lastStats.edges[1]) / dt;
-      S.lateRate = m.late && S.lastStats.late ? (m.late[0] + m.late[1] - S.lastStats.late[0] - S.lastStats.late[1]) / dt : 0;
+      S.rate = (m.edges - S.lastStats.edges) / dt;
     }
     S.lastStats = m; S.statsAt = now; S.stats = m;
   }
@@ -952,7 +925,7 @@ function layout() {
   S.dirty = true; S.overlayDirty = true;
 }
 
-function dataEnd() { return Math.min(S.now[0], S.now[1]); }
+function dataEnd() { return S.now[0]; }
 function plotW() { return Math.max(50, W - LABEL - 6); }
 function xOf(t) { return LABEL + (t - S.view.a) / (S.view.b - S.view.a) * plotW(); }
 function tOf(x) { return S.view.a + (x - LABEL) / plotW() * (S.view.b - S.view.a); }
@@ -1150,7 +1123,7 @@ function draw() {
     if (r.kind === "ch") {
       const c = S.meta.channels[r.ch], name = chName(r.ch);
       const off = S.recorded && !S.recorded.has(r.ch);
-      drawLabel(i, y, "ch" + r.ch, name || c.pin, off ? colors["ink-3"] : chColor(r.ch), name ? c.pin + (c.from ? " · from " + c.from : "") : "PRU" + c.pru + " GPI" + c.bit);
+      drawLabel(i, y, "ch" + r.ch, name || c.pin, off ? colors["ink-3"] : chColor(r.ch), name ? c.pin + (c.from ? " · from " + c.from : "") : "GPI" + c.gpi);
       ctx.save(); ctx.beginPath(); ctx.rect(LABEL, y, plotW(), rowH); ctx.clip();
       if (off) ctx.globalAlpha = 0.35;
       drawTrack(S.tracks[r.ch], y, chColor(r.ch), S.now[c.pru]);
@@ -1182,13 +1155,13 @@ function draw() {
     const e = S.events[k];
     if (e.t > S.view.b) break;
     shown++;
-    const x = Math.round(xOf(e.t)) + 0.5, col = e.kind === "mark" || e.kind === "burst" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
-    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash(e.kind === "gap" ? [3, 3] : [1, 0]);
+    const x = Math.round(xOf(e.t)) + 0.5, col = colors.critical;
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(x, RULER); ctx.lineTo(x, H); ctx.stroke(); ctx.globalAlpha = 1;
     ctx.fillStyle = col;
     ctx.beginPath(); ctx.moveTo(x - 4, RULER - 8); ctx.lineTo(x + 4, RULER - 8); ctx.lineTo(x, RULER - 2); ctx.fill();
     if (x - lastLabel > 52) {
-      ctx.fillText(e.kind === "mark" ? "M" + e.value : e.kind === "trig" ? "T" : e.kind === "burst" ? "burst" : "gap", x + 5, RULER - 7);
+      ctx.fillText("lost", x + 5, RULER - 7);
       lastLabel = x;
     }
   }
@@ -1248,7 +1221,7 @@ function pulseAt(tr, t) {
 
 // Changes within 40 pixels of t, for a view too zoomed out to see one pulse:
 // how many, and the frequency from the median time between rising edges,
-// so a burst reads at its own rate, not diluted by the gaps around it.
+// so a run of edges reads at its own rate, not diluted by the gaps around it.
 function densityAt(tr, t) {
   const w = 40 * nsPerPx(), i0 = tr.upper(t - w), i1 = tr.upper(t + w), n = i1 - i0;
   const first = tr.levelAt(i0 + 1) === 1 ? i0 : i0 + 1;
@@ -1311,7 +1284,7 @@ function tipHTML(info) {
   if (info.kind === "hole") {
     return `<div class="t">ch${c.ch} ${esc(name)}: no data</div><div class="g">` +
       `<span>from</span><span class="num">${fmtAt(info.a)}</span><span>for</span><span class="num">${fmtTime(info.b - info.a)}</span></div>` +
-      `<div style="opacity:.7;margin-top:3px">not recorded here: a hole where PRU${c.pru}'s stream lost records, or a burst without this channel</div>`;
+      `<div style="opacity:.7;margin-top:3px">not recorded here: a hole where samples were lost</div>`;
   }
   if (info.kind === "dense") {
     return `<div class="t">ch${c.ch} ${esc(name)}</div><div class="g">` +
@@ -1482,11 +1455,6 @@ function drawMini(force) {
     mctx.fillRect(k * bw, h - 4 - bh, Math.max(1, bw - 0.5), bh);
   }
   mctx.globalAlpha = 1;
-  for (const e of S.events) {
-    if (e.kind === "gap") continue;
-    mctx.fillStyle = e.kind === "mark" || e.kind === "burst" ? colors.mark : colors.trig;
-    mctx.fillRect(e.t / end * w, 0, 1, 6);
-  }
   const x0 = Math.max(0, S.view.a / end * w), x1 = Math.min(w, S.view.b / end * w);
   mctx.fillStyle = colors.sel; mctx.fillRect(x0, 0, Math.max(2, x1 - x0), h);
   mctx.strokeStyle = colors.accent; mctx.lineWidth = 1.5; mctx.strokeRect(x0 + 0.75, 0.75, Math.max(2, x1 - x0) - 1.5, h - 1.5);
@@ -1596,13 +1564,9 @@ function updateDecoded() {
 
 function updateEvents() {
   const ev = S.events.slice(-300).reverse();
-  let h = `<tr><th>at</th><th>what</th><th>from</th><th class="r">value</th></tr>`;
+  let h = `<tr><th>at</th><th class="r">blocks lost</th></tr>`;
   ev.forEach(e => {
-    const what = e.kind === "mark" ? "mark" : e.kind === "trig" ? "trigger hit" : "gap";
-    const col = e.kind === "mark" ? colors.mark : e.kind === "trig" ? colors.trig : colors.critical;
-    const from = e.kind === "mark" ? "node " + e.from : "PRU" + e.s;
-    const value = e.kind === "trig" ? "0x" + e.value.toString(16) : e.kind === "gap" ? e.value + " lost" : e.value;
-    h += `<tr class="go" data-t="${e.t}"><td class="num">${fmtAt(e.t)}</td><td><span class="sw" style="background:${col}"></span>${what}</td><td>${from}</td><td class="r num">${value}</td></tr>`;
+    h += `<tr class="go" data-t="${e.t}"><td class="num"><span class="sw" style="background:${colors.critical}"></span>${fmtAt(e.t)}</td><td class="r num">${fmtCount(e.value)}</td></tr>`;
   });
   $("evtab").innerHTML = ev.length ? h : `<tr><td class="hint">none yet</td></tr>`;
 }
@@ -1616,7 +1580,7 @@ function buildChanList() {
     row.className = "chrow";
     row.innerHTML = `<input type="checkbox" ${chHidden(c.ch) ? "" : "checked"} title="show">` +
       `<span><button class="color" title="color" style="background:${chColor(c.ch)}"></button> ch${c.ch}</span>` +
-      `<span><input type="text" placeholder="${esc(c.name || "name")}" value="${esc(S.chan.names[c.ch] || "")}"><div class="pin">${esc(c.pin)}${c.from ? " · jumpered from " + esc(c.from) : ""} · PRU${c.pru} GPI${c.bit}</div></span>` +
+      `<span><input type="text" placeholder="${esc(c.name || "name")}" value="${esc(S.chan.names[c.ch] || "")}"><div class="pin">${esc(c.pin)}${c.from ? " · jumpered from " + esc(c.from) : ""} · PRU0 GPI${c.gpi}</div></span>` +
       `<span class="pin num" title="edges">${fmtCount(S.tracks[c.ch] ? S.tracks[c.ch].n : 0)}</span>`;
     const [vis, name] = row.querySelectorAll("input"), color = row.querySelector(".color");
     vis.onchange = () => {
@@ -1634,120 +1598,103 @@ function buildChanList() {
   });
 }
 
-// ---- the capture mode: edge, or raw on one PRU ----
+// ---- the capture setup: the sample rate and the channels ----
 
-const PRU_NAME = ["PRU0", "PRU1"];
-
-// The mode the board runs: which PRU is raw (or -1), and its lane.
-function modeOf(info) {
-  if (!info) return { raw: -1, lane: 0, copy: false };
-  const raw = info.prus.findIndex(p => p.mode === "raw");
-  return { raw, lane: raw >= 0 ? info.prus[raw].lane : 0, copy: info.prus.some(p => p.mode === "dump") };
+// What a setup costs, as the board works it out (la_src.c): the fewest
+// bytes a sample the channels' GPI bits fit, at 125 and 62.5 MS/s; then
+// what that writes into the ring, how long the ring holds, and whether the
+// board's reader keeps up live.
+function costOf(hz, chs) {
+  const M = S.meta, period = Math.round(250e6 / hz);
+  let per = 1;
+  if (period <= 4) {
+    const g = chs.reduce((a, c) => a | (1 << M.channels[c].gpi), 0) >>> 0;
+    per = !(g & ~0xff) || !(g & ~0xff00) ? 4 : !(g & ~0xffff) || !(g & ~0xffff00) ? 2 : 1;
+  }
+  const blockNs = M.words * per * period * 4, bps = M.slot * 1e9 / blockNs;
+  return { per, bps, span: M.ring / M.slot * blockNs / 1e9, live: bps <= M.live_bps };
 }
 
 function setModeInfo(m) {
+  if (m.error) {
+    S.modeInfo = null;
+    $("modestate").textContent = m.error;
+    updateModeStatus();
+    return;
+  }
   const was = S.modeInfo;
   S.modeInfo = m;
   S.recorded = new Set(m.channels);
-  // Applying, the board's mode before the one asked for changes nothing;
+  // Applying, the board's setup before the one asked for changes nothing;
   // the one asked for ends it. A change from anywhere else resets the
   // section to what runs now.
   const want = S.applying;
-  if (want && (modeOf(m).raw >= 0) === (want.mode !== "edge") && modeOf(m).copy === (want.mode === "dump") &&
-      m.channels.join(",") === want.channels.join(",")) doneApplying();
+  if (want && m.hz === want.hz && m.channels.join(",") === want.channels.join(",")) doneApplying();
   if (!S.applying && (!S.cap || !was || JSON.stringify(was) !== JSON.stringify(m))) {
-    // Each mode keeps its own choice of channels: the ones running, or all.
-    const mo = modeOf(m), mode = mo.raw >= 0 ? "raw" : "edge", all = S.meta.channels.map(c => c.ch);
-    const sels = { edge: new Set(all), raw: new Set(all) };
-    sels[mode] = new Set(m.channels);
-    S.cap = { mode, pru: mo.raw >= 0 ? mo.raw : 1, sels, sel: sels[mode], copy: mo.copy };
+    S.cap = { hz: m.hz, sel: new Set(m.channels) };
   }
   if (was && JSON.stringify(was.channels) !== JSON.stringify(m.channels)) buildChanList();
   drawCapture();
   S.dirty = true;
 }
 
-// The 16 pins raw mode takes two samples a word of, if the channels fit in them.
-function laneFits(chs) {
-  const bits = chs.map(c => S.meta.channels[c].bit);
-  if (bits.every(b => b < 16)) return "0 to 15";
-  if (bits.every(b => b >= 8 && b < 24)) return "8 to 23";
-  return null;
-}
-
 function capChannels() {
   if (!S.meta || !S.cap) return [];
-  return S.meta.channels.filter(c => S.cap.sel.has(c.ch) && (S.cap.mode === "edge" || c.pru === S.cap.pru)).map(c => c.ch);
+  return S.meta.channels.filter(c => S.cap.sel.has(c.ch)).map(c => c.ch);
 }
+
+function fmtRate(hz) { return `${+(hz / 1e6).toPrecision(3)} MS/s`; }
 
 function drawCapture() {
   if (!S.meta || !S.cap) return;
-  const cap = S.cap;
-  document.querySelectorAll("#modeseg button").forEach(b => b.classList.toggle("on", b.dataset.mode === cap.mode));
-  const chs = capChannels();
-  let hint;
-  if (cap.mode === "edge") {
-    hint = "Both PRUs record each change on their channels, stamped to within 8 ns. A change less than 48 ns after another on the same PRU waits for it. About 15 million edges a second stream to this page. A channel left out costs nothing.";
-  } else if (cap.copy) {
-    const bits = chs.map(c => S.meta.channels[c].bit), byte = bits.every(b => b < 8) || bits.every(b => b >= 8 && b < 16);
-    hint = `${PRU_NAME[cap.pru]} samples its channels every 8 ns with no gap, and ${PRU_NAME[1 - cap.pru]} copies every sample into memory as it is, so the PRUs keep up with any signal; the board finds the changes, about 15 million a second for this page, and more makes holes. Its own channels are not recorded, and while it runs there is no trigger, no marks, and the analyzer's RTUs leave the fabric. ` +
-      (byte ? "These fit a byte of pins, four samples a word: 132 MB/s to copy." : "Channels within pins 0 to 7, or 8 to 15, copy a quarter as much; these copy " + (laneFits(chs) ? "250" : "500") + " MB/s, and blocks may be lost.");
+  const cap = S.cap, chs = capChannels(), sel = $("caprate");
+  // The rates, each with what it costs for the channels chosen.
+  sel.innerHTML = S.meta.rates.map(hz => {
+    const c = costOf(hz, chs.length ? chs : [0]);
+    return `<option value="${hz}" ${hz === cap.hz ? "selected" : ""}>${fmtRate(hz)} · ${(c.bps / 1e6).toFixed(c.bps < 1e7 ? 1 : 0)} MB/s` +
+      `${c.live ? "" : " · faster than live"}</option>`;
+  }).join("");
+  if (chs.length) {
+    const c = costOf(cap.hz, chs), ns = 1e9 / cap.hz;
+    $("modehint").innerHTML = `PRU0 samples ${chs.length === 1 ? "the channel" : "every channel chosen"} every <b>${fmtTime(ns)}</b>, with no gap, so every pulse ${fmtTime(ns)} or longer shows, timed to ${fmtTime(ns)}. ` +
+      `${c.per === 1 ? "A sample a word" : c.per + " samples a word"}: <b>${(c.bps / 1e6).toFixed(1)} MB/s</b> into the board's ring, which holds the last <b>${fmtTime(c.span * 1e9)}</b>. ` +
+      (c.live ? "The board reads it out as fast as it fills, so this page gets every sample." :
+       `<span class="capwarn">That is more than the board reads out live (${(S.meta.live_bps / 1e6).toFixed(0)} MB/s), so this page has holes;</span> a capture from the MCP server or <code>ai64 la capture</code> that fits in the ring comes whole. ` +
+       (c.per < 4 && cap.hz >= 62.5e6 ? "Channels within GPI bits 0 to 7 or 8 to 15 take a quarter of the bytes." : ""));
   } else {
-    const lane = laneFits(chs);
-    hint = `${PRU_NAME[cap.pru]} samples its channels every 8 ns with no gap, so pulses and gaps down to 8 ns show exactly; ${PRU_NAME[1 - cap.pru]} finds the changes, so its own channels are not recorded. ` +
-      (lane ? `These fit pins ${lane}, two samples a word: up to 10 million edges a second with none lost.` :
-       "These take every pin, a sample a word: up to 6.7 million edges a second with none lost. Channels within pins 0 to 15, or 8 to 23, take 10 million.");
+    $("modehint").textContent = "";
   }
-  $("copybox").style.display = cap.mode === "raw" ? "flex" : "none";
-  $("capcopy").checked = !!cap.copy;
-  $("modehint").textContent = hint;
-  let h = "";
-  for (const pru of [0, 1]) {
-    const pc = S.meta.channels.filter(c => c.pru === pru);
-    const active = cap.mode === "edge" || cap.pru === pru;
-    if (cap.mode === "raw") {
-      h += `<div class="caphead"><input type="radio" name="cappru" value="${pru}" ${cap.pru === pru ? "checked" : ""}>` +
-        `<span>${PRU_NAME[pru]}: ${pc.map(c => c.ch).join(" ")}</span></div>`;
-    } else {
-      h += `<div class="caphead"><span>${PRU_NAME[pru]}</span></div>`;
-    }
-    h += `<div class="capgrid">` + pc.map(c => {
-      const name = chName(c.ch) || c.pin;
-      return `<label class="${active ? "" : "dim"}"><input type="checkbox" data-ch="${c.ch}" ${cap.sel.has(c.ch) ? "checked" : ""} ${active ? "" : "disabled"}>` +
-        `<span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</label>`;
-    }).join("") + `</div>`;
-  }
-  $("caplist").innerHTML = h;
+  $("caplist").innerHTML = `<div class="capgrid">` + S.meta.channels.map(c => {
+    const name = chName(c.ch) || c.pin;
+    return `<label><input type="checkbox" data-ch="${c.ch}" ${cap.sel.has(c.ch) ? "checked" : ""}>` +
+      `<span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</label>`;
+  }).join("") + `</div>`;
   $("caplist").querySelectorAll("input[type=checkbox]").forEach(el => {
     el.onchange = () => { const c = Number(el.dataset.ch); if (el.checked) cap.sel.add(c); else cap.sel.delete(c); drawCapture(); };
   });
-  $("caplist").querySelectorAll("input[type=radio]").forEach(el => {
-    el.onchange = () => { cap.pru = Number(el.value); drawCapture(); };
-  });
-  const run = modeOf(S.modeInfo), now = S.modeInfo ? S.modeInfo.channels.join(",") : "";
-  const same = S.modeInfo && (cap.mode === "raw") === (run.raw >= 0) && (cap.mode === "edge" || (cap.pru === run.raw && !!cap.copy === run.copy)) && chs.join(",") === now;
+  const run = S.modeInfo;
+  const same = run && run.hz === cap.hz && run.channels.join(",") === chs.join(",");
   const st = $("modestate");
-  if (!S.modeInfo) st.textContent = "connecting";
+  if (!run) st.textContent = st.textContent || "connecting";
   else if (!chs.length) st.innerHTML = `<span class="capwarn">choose at least one channel</span>`;
-  else if (S.applying) st.textContent = S.applying.sent ? "restarting the PRUs" : "connecting";
+  else if (S.applying) st.textContent = S.applying.sent ? "restarting PRU0" : "connecting";
   else if (same) st.textContent = S.running ? "running now" : "set on the board; the capture is stopped";
   else st.textContent = S.running ? "not applied yet" : "not applied yet: the capture is stopped, so Apply starts it";
-  drawBurst(chs);
   const ap = $("modeapply");
   ap.textContent = S.running || S.applying ? "Apply" : "Apply and start";
   ap.disabled = !chs.length || (same && S.running) || !!S.applying;
   updateModeStatus();
 }
 
-// Apply: ask the board for the mode, starting the capture if it is
+// Apply: ask the board for the setup, starting the capture if it is
 // stopped; S.applying holds what was asked until the board runs it.
 function applyMode() {
   const chs = capChannels();
   if (!chs.length || S.applying) return;
-  S.applying = { mode: S.cap.mode === "raw" && S.cap.copy ? "dump" : S.cap.mode, channels: chs, sent: false };
+  S.applying = { hz: S.cap.hz, channels: chs, sent: false };
   S.applying.timer = setTimeout(() => {
     doneApplying();
-    banner("The mode: the board did not answer in 5 s. Is the stream connected?");
+    banner("The setup: the board did not answer in 5 s. Is the stream connected?");
     drawCapture();
   }, 5000);
   if (S.running && S.ws && S.ws.readyState === 1) sendMode();
@@ -1757,7 +1704,7 @@ function applyMode() {
 
 function sendMode() {
   const a = S.applying;
-  S.ws.send(JSON.stringify({ type: "mode", mode: a.mode, channels: a.channels }));
+  S.ws.send(JSON.stringify({ type: "mode", hz: a.hz, channels: a.channels }));
   a.sent = true;
 }
 
@@ -1766,54 +1713,11 @@ function doneApplying() {
   S.applying = null;
 }
 
-// ---- a burst (la_burst.c) ----
-
-// The longest burst for these channels, in ms: their pins in a byte, four
-// samples a word; in 16, two; else one, of the buffer's 419,429 blocks of 19 words.
-function burstMax(chs) {
-  const bits = chs.map(c => S.meta.channels[c].bit);
-  const perWord = bits.every(b => b < 8) || bits.every(b => b >= 8 && b < 16) ? 4 : laneFits(chs) ? 2 : 1;
-  return 419429 * 152 * perWord / 1e6;
-}
-
-function drawBurst(chs) {
-  const box = $("burstbox"), raw = S.cap.mode === "raw";
-  box.style.display = raw ? "" : "none";
-  if (!raw) return;
-  const max = chs.length ? burstMax(chs) : 0;
-  $("bursthint").textContent = `A burst: ${PRU_NAME[1 - S.cap.pru]} copies every sample to memory as it is, instead of finding the changes, so no signal is too fast: ` +
-    `up to ${max.toFixed(0)} ms with no gap for these channels (pins 0 to 7 or 8 to 15 hold the longest), added to the timeline here. The mode goes back after.`;
-  $("burstgo").disabled = !chs.length || S.bursting || !S.running || !!S.applying;
-  $("burststate").textContent = S.bursting ? "taking a burst" : S.lastBurst || "";
-}
-
-function startBurst() {
-  const chs = capChannels();
-  if (!S.ws || S.ws.readyState !== 1 || !chs.length || S.cap.mode !== "raw") return;
-  S.bursting = true;
-  S.ws.send(JSON.stringify({ type: "burst", channels: chs, seconds: Number($("burstlen").value) }));
-  drawCapture();
-}
-
-// The burst is in the stream now: show it whole.
-function burstDone(m) {
-  S.bursting = false;
-  const a = rel(m.from), b = rel(m.to), chs = new Set(m.channels || []);
-  S.events.push({ t: a, kind: "burst", s: m.pru, value: fmtTime(b - a) });
-  // Its PRU's channels it left out were not recorded in it.
-  S.meta.channels.forEach(c => { if (c.pru === m.pru && !chs.has(c.ch)) S.chHoles[c.ch].push(a, b); });
-  S.lastBurst = `${fmtTime(b - a)}, ${fmtCount(m.edges)} edges` + (m.lost ? `, ${fmtCount(m.lost)} of ${fmtCount(m.blocks)} blocks lost` : ", none lost");
-  setFollow(false);
-  setView(a - (b - a) * 0.02, b + (b - a) * 0.02);
-  drawCapture();
-}
-
 function updateModeStatus() {
   const m = S.modeInfo, el = $("s-mode");
   if (!m) { el.textContent = ""; return; }
-  const mo = modeOf(m);
-  el.innerHTML = mo.raw >= 0 ? `<b>raw 125 MS/s</b>${mo.copy ? " · every sample copied" : ""} · ${PRU_NAME[mo.raw]} · ${m.channels.length} ch` : `edge · ${m.channels.length} ch`;
-  el.title = "the capture mode: the Channels tab sets it";
+  el.innerHTML = `<b>${fmtRate(m.hz)}</b> · ${m.channels.length} ch` + (m.live ? "" : ` · <span class="capwarn">faster than live</span>`);
+  el.title = `${(m.bps / 1e6).toFixed(1)} MB/s into the board's ring, which holds ${fmtTime(m.span * 1e9)}: the Channels tab sets it`;
 }
 
 // ---- saving, opening, exporting ----
@@ -2098,12 +2002,8 @@ $("spill").onchange = e => {
   if (!Spill.supported()) { e.target.checked = false; banner("This browser has no IndexedDB, so the capture cannot spill to disk."); return; }
   Spill.enable().catch(err => { e.target.checked = false; banner("Spill to disk: " + err.message); });
 };
-document.querySelectorAll("#modeseg button").forEach(b => {
-  b.onclick = () => { if (S.cap) { S.cap.mode = b.dataset.mode; S.cap.sel = S.cap.sels[S.cap.mode]; drawCapture(); } };
-});
 $("modeapply").onclick = applyMode;
-$("burstgo").onclick = startBurst;
-$("capcopy").onchange = e => { if (S.cap) { S.cap.copy = e.target.checked; drawCapture(); } };
+$("caprate").onchange = e => { if (S.cap) { S.cap.hz = Number(e.target.value); drawCapture(); } };
 $("showall").onclick = () => { S.chan.hidden = []; saveChan(); buildChanList(); layout(); };
 $("showact").onclick = () => { S.chan.hidden = S.tracks.filter(t => !t.n).map(t => t.ch); saveChan(); buildChanList(); layout(); };
 $("resetch").onclick = () => { S.chan = { names: {}, colors: {}, hidden: [] }; saveChan(); buildChanList(); drawDecoderForms(); layout(); };
@@ -2138,9 +2038,9 @@ function frame(now) {
     if (dt >= 1) { S.rxRate = S.rx / dt; S.rx = 0; S.rxAt = now; }
     let edges = 0;
     S.tracks.forEach(t => { edges += t.n; });
-    const st = S.stats, lost = st ? st.gaps[0] + st.gaps[1] + st.missed[0] + st.missed[1] : 0;
-    $("s-stream").innerHTML = S.running ? `<b>${fmtCount(S.rate)}</b> edges/s · ${fmtBytes(S.rxRate)}/s` + (lost ? ` · <span style="color:var(--critical)">${lost} lost</span>` : "") +
-      (S.lateRate >= 1 ? ` · <span style="${S.lateRate >= 0.01 * S.rate ? "color:var(--trig)" : ""}" title="Edges that came while a PRU was busy writing the one before: their times are up to 50 ns late, and pulses that short can be missing without a hole. The signal is faster than edge mode keeps up with; raw mode, in the Channels tab, has it exactly.">${fmtCount(S.lateRate)} late/s</span>` : "") : "";
+    const st = S.stats, lost = st ? st.lost : 0;
+    $("s-stream").innerHTML = S.running ? `<b>${fmtCount(S.rate)}</b> edges/s · ${fmtBytes(S.rxRate)}/s` +
+      (lost ? ` · <span style="color:var(--critical)" title="Blocks of samples lost: the board's reader fell behind, or PRU0 dropped a block while the SoC held DDR. Each is a hole, marked.">${fmtCount(lost)} blocks lost</span>` : "") : "";
     $("s-mem").innerHTML = `${fmtTime(Math.max(0, dataEnd()))} held · ${fmtCount(edges)} changes · ${fmtBytes(Spill.ram)} of ${fmtBytes(S.limit)}` + (Spill.disk ? ` + ${fmtBytes(Spill.disk)} on disk` : "");
     const m = S.markers;
     $("s-markers").innerHTML = m[0] !== null && m[1] !== null ? `A→B <b>${fmtTime(Math.abs(m[1] - m[0]))}</b> · ${fmtHz(1e9 / Math.abs(m[1] - m[0]))}` : "";

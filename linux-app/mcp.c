@@ -7,23 +7,23 @@
  *   (claude mcp add --transport http ai64-la http://<board>:8065/mcp),
  *   can then capture and measure the board's pins:
  *
- *     la_channels  the 19 channels, their pins, and what the demo wires to them
- *     la_status    each PRU's edges a second, every channel's level, the trigger
+ *     la_channels  the 10 channels, their pins, and what the demo wires to them
+ *     la_status    the setup, every channel's level and edges a second
+ *     la_mode      the sample rate and channels, and what each rate costs; or sets them
  *     la_measure   each channel's frequency, period, high time, and duty, and
  *                  the timing between channel pairs, over a recording
- *     la_capture   a recording, plain or around the next trigger hit, kept
+ *     la_capture   a recording, plain or around a trigger's next hit, kept
  *                  here for la_edges and la_decode, and as a VCD file
  *     la_edges     the last capture's changes on some channels, in a window
  *     la_decode    SPI or UART in the last capture
- *     la_trigger   sets the Tx_PRUs' trigger
- *     la_mark      a mark in the stream, through the fabric
  *
- *   Unlike ai64 web it can change something: the trigger, and the marks.
- *   ai64-demo starts it; nothing starts it at boot. With AI64_MCP_TOKEN set,
- *   it asks for "Authorization: Bearer <token>"; it refuses a request whose
- *   Origin is not the address it was sent to, so a web page elsewhere
- *   cannot reach it through a browser. Tools answer with JSON, sized for a
- *   model to read: summaries and windows, not whole captures.
+ *   Unlike ai64 web it can change something: the setup, which every viewer
+ *   follows. ai64-demo starts it; nothing starts it at boot. With
+ *   AI64_MCP_TOKEN set, it asks for "Authorization: Bearer <token>"; it
+ *   refuses a request whose Origin is not the address it was sent to, so a
+ *   web page elsewhere cannot reach it through a browser. Tools answer with
+ *   JSON, sized for a model to read: summaries and windows, not whole
+ *   captures.
  *
  * It needs root or CAP_SYS_RAWIO, for /dev/mem.
  */
@@ -387,9 +387,55 @@ static int chan_arg(const struct jv *args, const char *key, int dflt)
 	       (int)v->num : -2;
 }
 
+/* args[key], an array of channels, as a mask: 0 if not given, -1 if wrong. */
+static int64_t chans_arg(const struct jv *args, const char *key)
+{
+	const struct jv *chs = jget(args, key);
+	uint32_t m = 0;
+	size_t i;
+
+	if (!chs) {
+		return 0;
+	}
+	if (chs->t != J_ARR || !chs->n) {
+		return -1;
+	}
+	for (i = 0; i < chs->n; i++) {
+		const struct jv *c = &chs->kid[i];
+
+		if (c->t != J_NUM || c->num < 0 || c->num >= AI64_LA_NCHAN || c->num != (int)c->num) {
+			return -1;
+		}
+		m |= 1u << (int)c->num;
+	}
+	return m;
+}
+
+/* args.rate, samples a second or MS/s: 0 if not given, -1 if not one of the menu. */
+static int64_t rate_arg(const struct jv *args)
+{
+	const struct jv *v = jget(args, "rate");
+	char buf[32];
+	uint32_t hz;
+
+	if (!v) {
+		return 0;
+	}
+	if (v->t == J_NUM) {
+		snprintf(buf, sizeof(buf), "%.9g", v->num);
+	} else if (v->t == J_STR) {
+		snprintf(buf, sizeof(buf), "%s", v->str);
+	} else {
+		return -1;
+	}
+	return la_parse_rate(buf, &hz) ? -1 : (int64_t)hz;
+}
+
 /* ---- the tools ---- */
 
 typedef const char *(*tool_fn)(const struct jv *args, struct sb *out);
+
+#define RATES_TEXT "125, 62.5, 25, 12.5, 6.25, 2.5, or 1.25 MS/s"
 
 static void chan_json(struct sb *o, int c)
 {
@@ -397,6 +443,22 @@ static void chan_json(struct sb *o, int c)
 	if (la_wired[c].name) {
 		sb_add(o, ",\"wired_to\":\"%s\",\"from\":\"%s\"", la_wired[c].name, la_wired[c].from);
 	}
+}
+
+static void mode_json(struct sb *o, const struct la_mode *m)
+{
+	int c, n = 0;
+
+	sb_add(o, "{\"rate_hz\":%u,\"sample_ns\":%llu,\"channels\":[", m->hz,
+	       (unsigned long long)m->sample_ns);
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (m->chans >> c & 1u) {
+			sb_add(o, "%s%d", n++ ? "," : "", c);
+		}
+	}
+	sb_add(o, "],\"samples_per_word\":%u,\"mb_per_s\":%.1f,\"ring_holds_s\":%.4f,"
+		  "\"reader_keeps_up\":%s}", AI64_LA_PER_WORD(m->lane), m->bps / 1e6, m->span,
+	       m->live ? "true" : "false");
 }
 
 static const char *t_channels(const struct jv *args, struct sb *o)
@@ -408,69 +470,93 @@ static const char *t_channels(const struct jv *args, struct sb *o)
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		sb_add(o, "%s{", c ? "," : "");
 		chan_json(o, c);
-		sb_add(o, ",\"ball\":\"%s\",\"pru\":%d,\"gpi\":%d}", la_chans[c].ball, la_chans[c].pru,
-		       la_chans[c].bit);
+		sb_add(o, ",\"ball\":\"%s\",\"gpi\":%d}", la_chans[c].ball, la_chans[c].bit);
 	}
-	sb_add(o, "],\"note\":\"Each channel is an ICSSG1 PRU GPI pin, 3.3 V only. In edge mode "
-		  "each PRU stamps every change on its pins with IEP0, to within 8 ns, and a change "
-		  "less than 48 ns after another on the same PRU waits for it; in raw mode (la_mode) "
-		  "one PRU's channels are sampled every 8 ns with no gap. wired_to is what the demo's "
+	sb_add(o, "],\"note\":\"Each channel is an ICSSG1 PRU0 GPI pin, 3.3 V only, no protection. "
+		  "PRU0 samples every channel at once at the rate set (la_mode), with no gap, so every "
+		  "pulse a sample long or more is there, timed to a sample. wired_to is what the demo's "
 		  "jumpers bring; the others are spare.\"}");
 	return NULL;
 }
 
+struct look {
+	uint32_t state;
+	int have;
+	uint32_t edges[AI64_LA_NCHAN];
+};
+
+static void look_edge(void *ctx, uint64_t t, uint32_t state)
+{
+	struct look *k = ctx;
+	uint32_t x = k->have ? k->state ^ state : 0;
+	int c;
+
+	(void)t;
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		k->edges[c] += x >> c & 1u;
+	}
+	k->state = state;
+	k->have = 1;
+}
+
+static void look_hole(void *ctx, uint64_t from, uint64_t to, uint32_t state)
+{
+	(void)from;
+	(void)to;
+	((struct look *)ctx)->state = state;
+}
+
 static const char *t_status(const struct jv *args, struct sb *o)
 {
-	uint32_t e0[2], e1[2];
-	double t0, t1;
-	int s, c;
+	static char err[200];
+	struct look k = { 0 };
+	struct la_src src;
+	uint64_t t0;
+	double end;
+	int c;
 
 	(void)args;
-	if (la_map(0)) {
-		return "the logic analyzer is not running on ICSSG1 (ai64-demo starts it)";
+	if (la_src_open(&src, 0, err, sizeof(err))) {
+		return err;
 	}
-	for (s = 0; s < 2; s++) {
-		e0[s] = la_hdr->s[s].edges;
+	end = now_us() + 250000;
+	t0 = 0;
+	while (now_us() < end || !k.have) {
+		la_src_poll(&src, look_edge, look_hole, &k, 50000000u);
+		if (!t0 && k.have) {
+			t0 = src.now;
+		}
+		usleep(2000);
 	}
-	t0 = now_us();
-	usleep(250000);
-	t1 = now_us();
-	for (s = 0; s < 2; s++) {
-		e1[s] = la_hdr->s[s].edges;
-	}
-	sb_add(o, "{\"prus\":[");
-	for (s = 0; s < 2; s++) {
-		volatile struct ai64_la_stream *h = &la_hdr->s[s];
-		static const char *const mode[] = { "off", "pattern", "any change" };
-
-		sb_add(o, "%s{\"pru\":%d,\"edges_per_s\":%.0f,\"edges\":%u,\"gaps\":%u,\"lost_records\":%u,"
-		       "\"marks\":%u,\"trigger_hits\":%u,\"trigger\":{\"mode\":\"%s\",\"mask\":%u,"
-		       "\"value\":%u}}", s ? "," : "", s, (e1[s] - e0[s]) * 1e6 / (t1 - t0), h->edges,
-		       h->gaps, h->lost, h->marks, h->trigs,
-		       h->trig_mode < 3 ? mode[h->trig_mode] : "?", h->trig_mask, h->trig_value);
-	}
-	sb_add(o, "],\"levels\":[");
+	sb_add(o, "{\"setup\":");
+	mode_json(o, &src.mode);
+	sb_add(o, ",\"looked_ns\":%llu,\"blocks_lost\":%llu,\"channels\":[",
+	       (unsigned long long)(src.now - t0), (unsigned long long)src.lost);
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		uint32_t st = la_hdr->s[la_chans[c].pru].state;
-
 		sb_add(o, "%s{", c ? "," : "");
 		chan_json(o, c);
-		sb_add(o, ",\"level\":%u}", st >> la_chans[c].bit & 1u);
+		if (src.mode.chans >> c & 1u) {
+			sb_add(o, ",\"level\":%d,\"edges_per_s\":%.0f}", level(k.state, c),
+			       src.now > t0 ? k.edges[c] * 1e9 / (double)(src.now - t0) : 0.0);
+		} else {
+			sb_add(o, ",\"recorded\":false}");
+		}
 	}
 	sb_add(o, "]}");
+	la_src_close(&src);
 	return NULL;
 }
 
-/* "a:b" pairs from args.pairs, or the demo's. */
+/* "a:b" pairs from args.pairs, or the demo's SPI7. */
 static int pairs_arg(const struct jv *args, int pairs[16][2])
 {
-	static const int demo[][2] = { { 7, 8 }, { 8, 7 }, { 9, 10 }, { 10, 9 }, { 7, 13 } };
+	static const int demo[][2] = { { 1, 2 }, { 2, 3 } };
 	const struct jv *p = jget(args, "pairs");
 	int n = 0;
 	size_t i;
 
 	if (!p || p->t != J_ARR) {
-		for (n = 0; n < 5; n++) {
+		for (n = 0; n < 2; n++) {
 			pairs[n][0] = demo[n][0];
 			pairs[n][1] = demo[n][1];
 		}
@@ -490,7 +576,8 @@ static int pairs_arg(const struct jv *args, int pairs[16][2])
 /* Every channel of r (changes in ch) as JSON: the active ones in full, the idle by level. */
 static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 {
-	size_t most = 1;
+	size_t most = 1, nh;
+	uint64_t hole_ns;
 	int64_t *v;
 	int c, first = 1;
 
@@ -498,15 +585,16 @@ static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 		most = ch[c].n > most ? ch[c].n : most;
 	}
 	v = malloc(most * sizeof(*v));
-	sb_add(o, "\"duration_ns\":%llu,\"active\":[", (unsigned long long)(r->finish - r->begin));
+	sb_add(o, "\"setup\":");
+	mode_json(o, &r->mode);
+	sb_add(o, ",\"duration_ns\":%llu,\"active\":[", (unsigned long long)(r->finish - r->begin));
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
 		struct chan_stats cs;
 
 		if (!ch[c].n) {
 			continue;
 		}
-		chan_stats(&ch[c], level(r->state, c), r->begin, r->finish, v, &cs,
-			   &r->holes[la_chans[c].pru]);
+		chan_stats(&ch[c], level(r->state0, c), r->begin, r->finish, v, &cs, &r->holes);
 		sb_add(o, "%s{", first ? "" : ",");
 		chan_json(o, c);
 		sb_add(o, ",\"edges\":%zu,\"freq_hz\":", cs.edges);
@@ -525,45 +613,77 @@ static void stats_json(struct sb *o, struct recording *r, struct changes *ch)
 	sb_add(o, "],\"idle\":[");
 	first = 1;
 	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		if (ch[c].n) {
+		if (ch[c].n || !(r->mode.chans >> c & 1u)) {
 			continue;
 		}
 		sb_add(o, "%s{", first ? "" : ",");
 		chan_json(o, c);
-		sb_add(o, ",\"level\":%d}", level(r->state, c));
+		sb_add(o, ",\"level\":%d}", level(r->state0, c));
 		first = 0;
 	}
-	sb_add(o, "]");
-	/* Holes, where the stream lost records: no period or time spans one. */
-	sb_add(o, ",\"holes\":[");
-	for (c = 0; c < 2; c++) {
-		uint64_t ns;
-		size_t n = rec_holes(r, c, &ns);
-
-		sb_add(o, "%s{\"pru\":%d,\"holes\":%zu,\"ns\":%llu,\"late_edges\":%llu}", c ? "," : "",
-		       c, n, (unsigned long long)ns, (unsigned long long)r->st[c].late);
+	sb_add(o, "],\"not_recorded\":[");
+	first = 1;
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		if (!(r->mode.chans >> c & 1u)) {
+			sb_add(o, "%s%d", first ? "" : ",", c);
+			first = 0;
+		}
 	}
-	sb_add(o, "]");
+	/* Holes, where samples were lost: no period or time spans one. */
+	nh = rec_holes(r, &hole_ns);
+	sb_add(o, "],\"holes\":{\"count\":%zu,\"ns\":%llu,\"blocks_lost\":%llu,\"blocks\":%llu}", nh,
+	       (unsigned long long)hole_ns, (unsigned long long)r->lost,
+	       (unsigned long long)(r->blocks + r->lost));
 	free(v);
+}
+
+/* The setup args ask for, set if it differs; NULL, or why not. */
+static const char *setup_args(const struct jv *args, struct la_mode *now)
+{
+	static char err[200];
+	int64_t hz = rate_arg(args), chans = chans_arg(args, "channels");
+
+	if (hz < 0) {
+		return "rate: one of " RATES_TEXT;
+	}
+	if (chans < 0) {
+		return "channels: an array of channel numbers, 0 to 9";
+	}
+	if (la_get_mode(now, err, sizeof(err))) {
+		return err;
+	}
+	if ((hz && hz != now->hz) || (chans && chans != now->chans)) {
+		if (la_set_mode(chans ? (uint32_t)chans : now->chans, hz ? (uint32_t)hz : now->hz, err,
+				sizeof(err)) || la_get_mode(now, err, sizeof(err))) {
+			return err;
+		}
+	}
+	return NULL;
 }
 
 static const char *t_measure(const struct jv *args, struct sb *o)
 {
 	static struct recording r;
+	static char err[200];
 	struct changes ch[AI64_LA_NCHAN];
+	struct la_mode m;
 	double secs = jnum(args, "seconds", 1);
 	int pairs[16][2], np = pairs_arg(args, pairs), k;
+	const char *bad;
 	size_t most = 1;
 	int64_t *v;
 
 	if (np < 0) {
-		return "pairs: each an \"a:b\" of two channels, 0 to 18";
+		return "pairs: each an \"a:b\" of two channels, 0 to 9";
 	}
 	if (secs <= 0 || secs > 10) {
 		return "seconds: more than 0, at most 10";
 	}
-	if (record(&r, secs, 0)) {
-		return "the logic analyzer is not running on ICSSG1 (ai64-demo starts it)";
+	if ((bad = setup_args(args, &m))) {
+		return bad;
+	}
+	if (record(&r, secs, NULL, 0, 0, err, sizeof(err))) {
+		return err;
 	}
 	rec_changes(&r, ch);
 	sb_add(o, "{");
@@ -576,11 +696,8 @@ static const char *t_measure(const struct jv *args, struct sb *o)
 	for (k = 0; k < np; k++) {
 		struct spread up, down;
 
-		const struct holes *ha = &r.holes[la_chans[pairs[k][0]].pru];
-		const struct holes *hb = &r.holes[la_chans[pairs[k][1]].pru];
-
-		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 1, v, ha, hb), &up);
-		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 0, v, ha, hb), &down);
+		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 1, v, &r.holes), &up);
+		spread_of(v, nearest(&ch[pairs[k][0]], &ch[pairs[k][1]], 0, v, &r.holes), &down);
 		sb_add(o, "%s{\"a\":%d,\"b\":%d,\"after_a_rises_ns\":", k ? "," : "", pairs[k][0],
 		       pairs[k][1]);
 		sb_spread(o, &up);
@@ -589,111 +706,111 @@ static const char *t_measure(const struct jv *args, struct sb *o)
 		sb_add(o, "}");
 	}
 	sb_add(o, "],\"note\":\"Pairs: the signed time from each change of a to b's nearest change. "
-		  "freq_hz is from the median period, rise to rise.\"}");
+		  "freq_hz is from the median period, rise to rise. Times are to a sample: sample_ns.\"}");
 	free(v);
 	changes_free(ch);
 	rec_free(&r);
 	return NULL;
 }
 
-/*
- * A burst instead of a recording (la_burst.c): channels of one PRU every
- * 8 ns, secs or as long as the buffer holds; then the mode put back.
- */
-static const char *burst_capture(const struct jv *burst, double secs, struct burst_info *bi)
+/* args.trigger: none, {channel, edge rise|fall|any}, or {pattern: {"3": 0, ...}}. */
+static const char *trigger_arg(const struct jv *args, struct la_trig *g)
 {
-	static char err[200];
-	uint32_t mask[2] = { 0, 0 }, was_mask[2];
-	char back[160];
-	int was_raw, was_dump, pru = -1, rc;
+	const struct jv *t = jget(args, "trigger"), *pat;
+	const char *edge;
 	size_t i;
 
-	for (i = 0; burst->t == J_ARR && i < burst->n; i++) {
-		const struct jv *c = &burst->kid[i];
-
-		if (c->t != J_NUM || c->num < 0 || c->num >= AI64_LA_NCHAN ||
-		    (pru >= 0 && la_chans[(int)c->num].pru != pru)) {
-			return "burst: channels of one PRU";
+	memset(g, 0, sizeof(*g));
+	if (!t) {
+		return NULL;
+	}
+	if (t->t != J_OBJ) {
+		return "trigger: {\"channel\": c, \"edge\": \"rise\"|\"fall\"|\"any\"} or "
+		       "{\"pattern\": {\"3\": 0, \"4\": 1}}";
+	}
+	pat = jget(t, "pattern");
+	if (pat) {
+		if (pat->t != J_OBJ || !pat->n) {
+			return "trigger.pattern: an object of channel to level, such as {\"3\": 0, \"4\": 1}";
 		}
-		pru = la_chans[(int)c->num].pru;
-		mask[pru] |= 1u << la_chans[(int)c->num].bit;
+		g->kind = LA_TRIG_ENTER;
+		for (i = 0; i < pat->n; i++) {
+			int ch = atoi(pat->key[i]);
+
+			if (ch < 0 || ch >= (int)AI64_LA_NCHAN || pat->kid[i].t != J_NUM) {
+				return "trigger.pattern: channels 0 to 9, levels 0 or 1";
+			}
+			g->mask |= 1u << ch;
+			g->value |= (uint32_t)(pat->kid[i].num != 0) << ch;
+		}
+		return NULL;
 	}
-	if (pru < 0) {
-		return "burst: channels of one PRU";
+	i = (size_t)chan_arg(t, "channel", -1);
+	edge = jstr(t, "edge");
+	if ((int)i < 0 || !edge || (strcmp(edge, "rise") && strcmp(edge, "fall") && strcmp(edge, "any"))) {
+		return "trigger: {\"channel\": 0 to 9, \"edge\": \"rise\"|\"fall\"|\"any\"}";
 	}
-	if (la_get_mode(&was_raw, was_mask, &was_dump)) {
-		return "the analyzer is not running";
-	}
-	rc = la_burst(pru, mask[pru], secs, &cap, bi, err, sizeof(err));
-	la_set_mode_ex(was_raw, was_mask, was_dump, back, sizeof(back));
-	return rc ? err : NULL;
+	g->mask = 1u << i;
+	g->kind = edge[0] == 'a' ? LA_TRIG_ANY : LA_TRIG_ENTER;
+	g->value = edge[0] == 'r' ? g->mask : 0;
+	return NULL;
 }
 
 static const char *t_capture(const struct jv *args, struct sb *o)
 {
-	double secs = jnum(args, "seconds", 0.1);
-	const struct jv *trig = jget(args, "trigger"), *burst = jget(args, "burst");
-	struct burst_info bi;
-	size_t nedge[2], nmk, i, shown = 0;
-	struct mark *mk;
+	static char err[200];
+	double secs = jnum(args, "seconds", 0.1), wait = jnum(args, "wait_seconds", 10);
+	double pre;
+	struct la_trig g;
+	struct la_mode m;
+	const char *bad;
 	FILE *f;
 	int c;
 
 	if (secs <= 0 || secs > 10) {
 		return "seconds: more than 0, at most 10";
 	}
+	if (wait <= 0 || wait > 60) {
+		return "wait_seconds: more than 0, at most 60";
+	}
+	if ((bad = trigger_arg(args, &g))) {
+		return bad;
+	}
+	pre = jnum(args, "pre_seconds", secs / 10);
+	if (pre < 0 || pre > 10) {
+		return "pre_seconds: 0 to 10";
+	}
+	if ((bad = setup_args(args, &m))) {
+		return bad;
+	}
 	if (have_cap) {
 		changes_free(cap_ch);
 		rec_free(&cap);
 		have_cap = 0;
 	}
-	if (burst) {
-		const char *bad = burst_capture(burst, secs, &bi);
-
-		if (bad) {
-			rec_free(&cap);
-			return bad;
-		}
-	} else if (record(&cap, secs, trig && trig->t == J_BOOL && trig->b)) {
-		return "no recording: the analyzer is not running, or no trigger hit came in 30 s "
-		       "(la_trigger sets one)";
-	}
-	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		cap_level0[c] = level(cap.state, c);
+	if (record(&cap, secs, &g, pre, wait, err, sizeof(err))) {
+		return err;
 	}
 	rec_changes(&cap, cap_ch);
+	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
+		cap_level0[c] = level(cap.state0, c);
+	}
 	have_cap = 1;
 	sb_add(o, "{");
 	stats_json(o, &cap, cap_ch);
-	if (burst) {
-		sb_add(o, ",\"burst\":{\"pru\":%d,\"blocks\":%llu,\"lost_blocks\":%llu,\"edges\":%llu}",
-		       bi.pru, (unsigned long long)bi.blocks, (unsigned long long)bi.lost,
-		       (unsigned long long)bi.edges);
-	}
 	if (cap.hit) {
 		sb_add(o, ",\"trigger_at_ns\":%llu", (unsigned long long)(cap.hit - cap.begin));
 	}
-	nmk = rec_marks(&cap, &mk);
-	sb_add(o, ",\"marks_and_hits\":%zu,\"first_marks\":[", nmk);
-	for (i = 0; i < nmk && shown < 50; i++, shown++) {
-		sb_add(o, "%s{\"t_ns\":%llu,\"kind\":\"%s\",\"value\":%u", i ? "," : "",
-		       (unsigned long long)(mk[i].t - cap.begin), mk[i].trig ? "trigger" : "mark",
-		       mk[i].value);
-		if (!mk[i].trig) {
-			sb_add(o, ",\"from_node\":%u", mk[i].from);
-		}
-		sb_add(o, "}");
-	}
-	free(mk);
-	sb_add(o, "]");
 	f = fopen(VCD_PATH, "w");
 	if (f) {
-		rec_write_vcd(&cap, f, nedge);
+		rec_write_vcd(&cap, f);
 		fclose(f);
 		sb_add(o, ",\"vcd_on_board\":\"%s\"", VCD_PATH);
 	}
-	sb_add(o, ",\"note\":\"Times are ns from the capture's start. la_edges and la_decode read "
-		  "this capture.\"}");
+	sb_add(o, ",\"note\":\"Times are ns from the capture's start, to a sample (sample_ns). "
+		  "la_edges and la_decode read this capture.%s\"}",
+	       cap.mode.live ? "" : " This setup writes more than the reader keeps up with live: "
+	       "expect holes; a slower rate or fewer channels has none.");
 	return NULL;
 }
 
@@ -717,7 +834,7 @@ static const char *t_edges(const struct jv *args, struct sb *o)
 
 		for (i = 0; i < chs->n && nw < (int)AI64_LA_NCHAN; i++) {
 			if (chs->kid[i].t != J_NUM || chs->kid[i].num < 0 || chs->kid[i].num >= AI64_LA_NCHAN) {
-				return "channels: numbers, 0 to 18";
+				return "channels: numbers, 0 to 9";
 			}
 			want[nw++] = (int)chs->kid[i].num;
 		}
@@ -750,7 +867,23 @@ static const char *t_edges(const struct jv *args, struct sb *o)
 		}
 		sb_add(o, "],\"in_window\":%zu,\"truncated\":%s}", total, total > shown ? "true" : "false");
 	}
-	sb_add(o, "],\"note\":\"Each change is [t_ns, level after it], ns from the capture's start.\"}");
+	sb_add(o, "]");
+	if (cap.holes.n) {
+		size_t i, n = 0;
+
+		sb_add(o, ",\"holes_in_window\":[");
+		for (i = 0; i < cap.holes.n && n < 50; i++) {
+			if (cap.holes.b[i] > from && cap.holes.a[i] < to) {
+				uint64_t a = cap.holes.a[i] > cap.begin ? cap.holes.a[i] : cap.begin;
+
+				sb_add(o, "%s[%llu,%llu]", n++ ? "," : "", (unsigned long long)(a - cap.begin),
+				       (unsigned long long)(cap.holes.b[i] - cap.begin));
+			}
+		}
+		sb_add(o, "]");
+	}
+	sb_add(o, ",\"note\":\"Each change is [t_ns, level after it], ns from the capture's start. "
+		  "A hole [from, to] is where samples were lost: the levels are unknown there.\"}");
 	return NULL;
 }
 
@@ -926,153 +1059,31 @@ static const char *t_decode(const struct jv *args, struct sb *o)
 	return "protocol: spi or uart";
 }
 
-/* The analyzer's mode, as the RTUs have it. */
-static void mode_json(struct sb *o)
-{
-	static const char *const names[] = { "edge", "raw", "conv", "dump" };
-	int s, c, n = 0;
-
-	sb_add(o, "{\"prus\":[");
-	for (s = 0; s < 2; s++) {
-		uint32_t m = la_hdr->s[s].cfg_mode;
-
-		sb_add(o, "%s{\"pru\":%d,\"mode\":\"%s\",\"two_samples_a_word\":%s}", s ? "," : "", s,
-		       names[AI64_LA_MODE_OF(m) < 4 ? AI64_LA_MODE_OF(m) : 0],
-		       AI64_LA_LANE_OF(m) ? "true" : "false");
-	}
-	sb_add(o, "],\"channels_recorded\":[");
-	for (c = 0; c < (int)AI64_LA_NCHAN; c++) {
-		if (la_hdr->s[la_chans[c].pru].cfg_mask >> la_chans[c].bit & 1u) {
-			sb_add(o, "%s%d", n++ ? "," : "", c);
-		}
-	}
-	sb_add(o, "],\"note\":\"edge: both PRUs record each change of their channels, up to about "
-		  "15 million edges a second streamed; a change less than 48 ns after another on the "
-		  "same PRU waits. raw: one PRU's channels sampled every 8 ns with no gap, and the "
-		  "other PRU (conv) finds the changes and records none of its own; up to 10 million "
-		  "edges a second with none lost when the channels fit 16 pins (two samples a word), "
-		  "6.7 million otherwise. Channels not recorded read low.\"}");
-}
 
 static const char *t_mode(const struct jv *args, struct sb *o)
 {
-	const char *mode = jstr(args, "mode");
-	const struct jv *chs = jget(args, "channels");
-	uint32_t mask[2] = { 0, 0 };
-	char err[160];
-	int raw = -1;
+	struct la_mode m, alt;
+	const char *bad = setup_args(args, &m);
 	size_t i;
 
-	if (la_map(0)) {
-		return "the logic analyzer is not running on ICSSG1";
+	if (bad) {
+		return bad;
 	}
-	if (!mode) {
-		mode_json(o);
-		return NULL;
+	sb_add(o, "{\"setup\":");
+	mode_json(o, &m);
+	sb_add(o, ",\"rates_for_these_channels\":[");
+	for (i = 0; i < la_nrates; i++) {
+		la_mode_of(&alt, m.chans, la_rates[i].hz);
+		sb_add(o, "%s", i ? "," : "");
+		mode_json(o, &alt);
 	}
-	if (chs && chs->t != J_ARR) {
-		return "channels: an array of channel numbers, 0 to 18";
-	}
-	for (i = 0; chs && i < chs->n; i++) {
-		const struct jv *c = &chs->kid[i];
-
-		if (c->t != J_NUM || c->num < 0 || c->num >= AI64_LA_NCHAN || c->num != (int)c->num) {
-			return "channels: an array of channel numbers, 0 to 18";
-		}
-		mask[la_chans[(int)c->num].pru] |= 1u << la_chans[(int)c->num].bit;
-	}
-	if (!strcmp(mode, "edge")) {
-		if (!mask[0] && !mask[1]) {
-			mask[0] = AI64_LA_MASK(0);
-			mask[1] = AI64_LA_MASK(1);
-		}
-	} else if (!strcmp(mode, "raw") || !strcmp(mode, "dump")) {
-		if (!mask[0] == !mask[1]) {
-			return mask[0] ? "raw mode takes the channels of one PRU (la_channels has which)" :
-			       "raw mode needs its channels";
-		}
-		raw = mask[0] ? 0 : 1;
-	} else {
-		return "mode: edge, raw, or dump";
-	}
-	if (la_set_mode_ex(raw, mask, !strcmp(mode, "dump"), err, sizeof(err))) {
-		sb_add(o, "{\"error\":\"%s\"}", err);
-		return NULL;
-	}
-	mode_json(o);
-	return NULL;
-}
-
-static const char *t_trigger(const struct jv *args, struct sb *o)
-{
-	const char *mode = jstr(args, "mode");
-	const struct jv *pat = jget(args, "pattern");
-	uint32_t m = AI64_LA_TRIG_OFF, mask = 0, value = 0;
-	int pru = -1, c = chan_arg(args, "channel", -1);
-
-	if (!mode) {
-		return "mode: off, rise, fall, any, or pattern";
-	}
-	if (!strcmp(mode, "rise") || !strcmp(mode, "fall") || !strcmp(mode, "any")) {
-		if (c < 0) {
-			return "channel: 0 to 18";
-		}
-		pru = la_chans[c].pru;
-		mask = 1u << la_chans[c].bit;
-		m = !strcmp(mode, "any") ? AI64_LA_TRIG_ANY : AI64_LA_TRIG_ENTER;
-		value = !strcmp(mode, "rise") ? mask : 0;
-	} else if (!strcmp(mode, "pattern")) {
-		size_t i;
-
-		if (!pat || pat->t != J_OBJ || !pat->n) {
-			return "pattern: an object of channel to level, such as {\"3\": 0, \"4\": 1}";
-		}
-		m = AI64_LA_TRIG_ENTER;
-		for (i = 0; i < pat->n; i++) {
-			int ch = atoi(pat->key[i]);
-
-			if (ch < 0 || ch >= (int)AI64_LA_NCHAN || pat->kid[i].t != J_NUM) {
-				return "pattern: channels 0 to 18, levels 0 or 1";
-			}
-			if (pru >= 0 && la_chans[ch].pru != pru) {
-				return "pattern: a trigger takes one PRU's channels (la_channels has which)";
-			}
-			pru = la_chans[ch].pru;
-			mask |= 1u << la_chans[ch].bit;
-			value |= (pat->kid[i].num != 0) << la_chans[ch].bit;
-		}
-	} else if (strcmp(mode, "off")) {
-		return "mode: off, rise, fall, any, or pattern";
-	}
-	if (la_set_trigger(pru, m, mask, value)) {
-		return "the logic analyzer is not running on ICSSG1";
-	}
-	if (pru < 0) {
-		sb_add(o, "{\"trigger\":\"off\"}");
-	} else {
-		sb_add(o, "{\"trigger\":\"%s\",\"pru\":%d,\"mask\":%u,\"value\":%u,\"note\":\"Tx_PRU%d "
-			  "matches it; la_capture with trigger true records around the next hit.\"}",
-		       mode, pru, mask, value, pru);
-	}
-	return NULL;
-}
-
-static const char *t_mark(const struct jv *args, struct sb *o)
-{
-	double v = jnum(args, "value", -1);
-	char val[16];
-	char *av[] = { "ai64", "fabric", "route", "g1rtu0", "mark", val, NULL };
-
-	if (v < 0 || v > 65535 || v != (int)v) {
-		return "value: 0 to 65535";
-	}
-	snprintf(val, sizeof(val), "%d", (int)v);
-	if (fabric_main(6, av)) {
-		return "the route to ICSSG1 RTU0 failed: is the demo running?";
-	}
-	fflush(stdout);
-	sb_add(o, "{\"marked\":%d,\"note\":\"The mark went through the fabric to ICSSG1 RTU0, which "
-		  "put it in PRU0's stream.\"}", (int)v);
+	sb_add(o, "],\"note\":\"PRU0 samples the channels at the rate with no gap and writes them to a "
+		  "ring in DDR, which holds ring_holds_s. reader_keeps_up says whether the board reads "
+		  "it out as fast as it fills; if not, every sample is still taken but the reader skips "
+		  "some: holes. Fewer channels, or channels within GPI bits 0-7, 8-15, 0-15, or 8-23, "
+		  "pack more samples a word at 125 and 62.5 MS/s. Pick a rate at least 4 times the "
+		  "fastest edge rate you care about, for example 25 MS/s for 1 MHz SPI, 1.25 MS/s for "
+		  "115200 baud UART. Setting it restarts PRU0, a gap of about 30 ms, for every viewer.\"}");
 	return NULL;
 }
 
@@ -1083,40 +1094,48 @@ static const struct {
 	const char *schema;
 } tools[] = {
 	{ "la_channels", t_channels,
-	  "The logic analyzer's 19 channels on the BeagleBone AI-64: each one's header pin, ball, "
-	  "PRU and GPI bit, and what the demo's jumper wires bring to it.",
+	  "The logic analyzer's 10 channels on the BeagleBone AI-64: each one's header pin, ball, "
+	  "and PRU0 GPI bit, and what the demo's jumper wires bring to it.",
 	  "{\"type\":\"object\",\"properties\":{}}" },
 	{ "la_status", t_status,
-	  "Live state, from a quarter-second look: each PRU's edges per second and totals, gaps, "
-	  "marks, trigger hits, the trigger, and every channel's level now.",
+	  "Live state, from a quarter-second look: the setup (rate, channels, bandwidth), each "
+	  "channel's level now and edges per second, and samples lost.",
 	  "{\"type\":\"object\",\"properties\":{}}" },
+	{ "la_mode", t_mode,
+	  "The setup: the sample rate (" RATES_TEXT ") and the channels sampled; or sets them. Says "
+	  "what each rate costs with these channels: MB/s, how long the ring holds, and whether the "
+	  "board reads it out live without holes.",
+	  "{\"type\":\"object\",\"properties\":{\"rate\":{\"type\":[\"number\",\"string\"],"
+	  "\"description\":\"samples a second, or MS/s: 125, 62.5, 25, 12.5, 6.25, 2.5, 1.25\"},"
+	  "\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"description\":"
+	  "\"channels to sample, 0 to 9\"}}}" },
 	{ "la_measure", t_measure,
-	  "Records the channels for some seconds and measures each active one: edges, frequency, "
-	  "period and high time (min, median, max, in ns), and duty. Pairs a:b give the time from "
-	  "each change of a to b's nearest change, such as a PWM's dead band between A and B. "
-	  "holes lists each PRU's holes, where the stream lost records (no interval spans one), "
-	  "and its late edges: in edge mode, changes that came while the PRU was busy, so up to "
-	  "50 ns late, with pulses that short possibly missing; raw mode has them exactly.",
+	  "Records for some seconds and measures each active channel: edges, frequency, period and "
+	  "high time (min, median, max, in ns), and duty. Pairs a:b give the time from each change "
+	  "of a to b's nearest change, such as SPI chip select to the first clock. rate and channels "
+	  "set the setup first, as la_mode. holes says where samples were lost (no interval spans one).",
 	  "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":\"number\",\"description\":"
 	  "\"how long to record, at most 10; default 1\"},\"pairs\":{\"type\":\"array\",\"items\":"
-	  "{\"type\":\"string\"},\"description\":\"\\\"a:b\\\" channel pairs; default the demo's PWM "
-	  "A/B pairs and its two copies of one signal\"}}}" },
+	  "{\"type\":\"string\"},\"description\":\"\\\"a:b\\\" channel pairs; default the demo's SPI7: "
+	  "1:2, 2:3\"},\"rate\":{\"type\":[\"number\",\"string\"]},\"channels\":{\"type\":\"array\","
+	  "\"items\":{\"type\":\"integer\"}}}}" },
 	{ "la_capture", t_capture,
-	  "Records all 19 channels, for some seconds or around the next trigger hit (a tenth before, "
-	  "the rest after), keeps it for la_edges and la_decode, saves a VCD file on the board, and "
-	  "returns a summary: each active channel's measurements, and the marks and trigger hits. "
-	  "With burst, channels of one PRU instead, sampled every 8 ns with no gap whatever the "
-	  "signal, for seconds or as long as the buffer holds: 255 ms for channels within pins "
-	  "0-7 or 8-15 of their PRU, 127 ms within 16 pins, 64 ms otherwise; the other channels are "
-	  "a hole. For signals too fast to stream.",
+	  "Records the channels for some seconds, or around the next trigger hit (pre_seconds "
+	  "before it, from the board's ring, and seconds after), keeps it for la_edges and "
+	  "la_decode, saves a VCD file on the board, and returns a summary of each channel. A "
+	  "trigger is a channel's rise, fall, or any change, or a pattern of levels. rate and "
+	  "channels set the setup first, as la_mode, and leave it so.",
 	  "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":\"number\",\"description\":"
-	  "\"at most 10; default 0.1\"},\"trigger\":{\"type\":\"boolean\",\"description\":\"wait for "
-	  "the next trigger hit (la_trigger sets one) and record around it\"},\"burst\":{\"type\":"
-	  "\"array\",\"items\":{\"type\":\"integer\"},\"description\":\"channels of one PRU for a "
-	  "burst (la_channels has each one's PRU)\"}}}" },
+	  "\"at most 10; default 0.1\"},\"trigger\":{\"type\":\"object\",\"description\":"
+	  "\"{\\\"channel\\\": 2, \\\"edge\\\": \\\"rise\\\"|\\\"fall\\\"|\\\"any\\\"} or "
+	  "{\\\"pattern\\\": {\\\"1\\\": 0, \\\"2\\\": 1}}\"},\"pre_seconds\":{\"type\":\"number\","
+	  "\"description\":\"with a trigger, how long before the hit; default a tenth of seconds; "
+	  "at most what the ring holds (la_mode)\"},\"wait_seconds\":{\"type\":\"number\","
+	  "\"description\":\"how long to wait for a hit, at most 60; default 10\"},\"rate\":{\"type\":"
+	  "[\"number\",\"string\"]},\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}" },
 	{ "la_edges", t_edges,
 	  "The last capture's changes on some channels in a time window, as [t_ns, level] from the "
-	  "capture's start, at most limit a channel.",
+	  "capture's start, at most limit a channel, and any holes in the window.",
 	  "{\"type\":\"object\",\"properties\":{\"channels\":{\"type\":\"array\",\"items\":{\"type\":"
 	  "\"integer\"},\"description\":\"default every channel with changes\"},\"from_ns\":{\"type\":"
 	  "\"number\"},\"to_ns\":{\"type\":\"number\"},\"limit\":{\"type\":\"integer\",\"description\":"
@@ -1124,36 +1143,13 @@ static const struct {
 	{ "la_decode", t_decode,
 	  "Decodes SPI (clk, mosi, optional cs active low and miso, cpol, cpha, bits, lsb_first) or "
 	  "UART (channel, baud, optional bits and invert; 8N1) in the last capture. The demo's SPI7 "
-	  "is cs 3, clk 4, mosi 5, mode 0.",
+	  "is cs 1, clk 2, mosi 3, mode 0.",
 	  "{\"type\":\"object\",\"properties\":{\"protocol\":{\"type\":\"string\",\"enum\":[\"spi\","
 	  "\"uart\"]},\"cs\":{\"type\":\"integer\"},\"clk\":{\"type\":\"integer\"},\"mosi\":{\"type\":"
 	  "\"integer\"},\"miso\":{\"type\":\"integer\"},\"cpol\":{\"type\":\"integer\"},\"cpha\":{"
 	  "\"type\":\"integer\"},\"bits\":{\"type\":\"integer\"},\"lsb_first\":{\"type\":\"boolean\"},"
 	  "\"channel\":{\"type\":\"integer\"},\"baud\":{\"type\":\"number\"},\"invert\":{\"type\":"
 	  "\"boolean\"}},\"required\":[\"protocol\"]}" },
-	{ "la_mode", t_mode,
-	  "The capture mode, or sets it. edge: every channel (or those given), each change "
-	  "stamped to within 8 ns, a change within 48 ns of another on the same PRU late. raw: "
-	  "the given channels, all of one PRU, sampled every 8 ns with no gap, so pulses and "
-	  "gaps down to 8 ns are exact; the other PRU's channels are not recorded. dump: as raw, "
-	  "but the other PRU copies every sample to memory and the board finds the changes, so the "
-	  "PRUs keep up with any signal, for the web page to follow live; the RTUs keep quiet then "
-	  "(no ticks, trigger, or marks), so la_capture and la_measure need edge or raw, or a "
-	  "burst. Setting it restarts both PRUs, a gap of about 50 ms. Without mode, says which runs.",
-	  "{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"edge\","
-	  "\"raw\",\"dump\"]},\"channels\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}" },
-	{ "la_trigger", t_trigger,
-	  "Sets the trigger the ICSSG1 Tx_PRUs match on the edges as they come: off, a channel's "
-	  "rise, fall, or any change, or a pattern of channel levels (one PRU's channels only).",
-	  "{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"off\","
-	  "\"rise\",\"fall\",\"any\",\"pattern\"]},\"channel\":{\"type\":\"integer\"},\"pattern\":{"
-	  "\"type\":\"object\",\"description\":\"channel number to level, such as {\\\"3\\\": 0, "
-	  "\\\"4\\\": 1}\"}},\"required\":[\"mode\"]}" },
-	{ "la_mark", t_mark,
-	  "Puts a mark with a 16-bit value in the analyzer's stream, through the board's fabric to "
-	  "ICSSG1 RTU0, so a capture shows when it happened next to the pins.",
-	  "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":"
-	  "[\"value\"]}" },
 };
 
 #define NTOOLS (sizeof(tools) / sizeof(tools[0]))
