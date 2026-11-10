@@ -72,7 +72,7 @@
 
 `LICENSE` — MIT, plus the files that keep their own license.
 
-`linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. The logic analyzer's side is `la.c` (`ai64 la`), `la_stream.c` (the stream reader), `la_rec.c` (recordings and measurements), `la_ws.c` (the viewer's WebSocket), and `mcp.c` (`ai64 mcp`). `web/index.html` is the live page `ai64 web` serves, and `web/la.html` the logic analyzer's viewer, both built in by `web_page.S`. `linux-app/ai64` is a build product.
+`linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. The logic analyzer's side is `la.c` (`ai64 la`), `la_src.c` (its setup, and the reader that follows the ring), `la_rec.c` (recordings, triggers, and measurements), `la_ws.c` (the viewer's WebSocket), and `mcp.c` (`ai64 mcp`). `web/index.html` is the live page `ai64 web` serves, and `web/la.html` the logic analyzer's viewer, both built in by `web_page.S`. `linux-app/ai64` is a build product.
 
 `beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
 
@@ -104,7 +104,7 @@
 
 `extra-demos/icssg1-multicore-scheduler/` — ICSSG1: the port of open-pru's `examples/multicore_scheduler`, a `main.c` and a `pwm_toggle.asm` per core. BSD-3-Clause, as TI's original. `README.md` says what changed for J721E. `ai64-demo --icssg1 scheduler` runs it.
 
-`pru/logic_analyzer/` — ICSSG1: the 19-channel logic analyzer. `firmware/` holds its memory map (`la_map.h`), the PRUs' sampling loop (`la_pru.c`, `la_sample.asm`), the RTUs' mover (`la_rtu.c`), and the Tx_PRUs' (`la_txpru.c`); the records and channels are in `zephyr/include/ai64_la.h`. `README.md` explains it.
+`pru/logic_analyzer/` — ICSSG1: the 10-channel logic analyzer. `firmware/` holds its memory map (`la_map.h`), PRU0's sampler (`la_pru.c`, `la_cap.asm`), and the RTUs' fabric nodes (`la_rtu.c`); the channels, rates, ring, and setup are in `zephyr/include/ai64_la.h`. `README.md` explains it.
 
 `pru/common/` — what both projects share: the trace-buffer log, the two resource tables (trace only, and RPMsg with trace), RTU0's RPMsg channel, text helpers, and the ICSSG register map (`icssg.h`).
 

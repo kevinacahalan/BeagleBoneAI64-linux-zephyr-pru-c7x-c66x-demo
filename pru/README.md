@@ -32,7 +32,9 @@ Each core's makefile names its image, its sources, and its defines, and includes
 | ICSSG0 RTU1 | `b006000.rtu` | `ai64-icssg0-rtu1.elf` | pwm, slice 1: talks, over the fabric (node 9, `g0rtu1`) |
 | ICSSG0 Tx_PRU1 | `b00c000.txpru` | `ai64-icssg0-txpru1.elf` | pwm, slice 1: the modulator |
 | ICSSG0 PRU1 | `b038000.pru` | `ai64-icssg0-pru1.elf` | pwm, slice 1: the ICSSG PWM module |
-| ICSSG1, all six | `b134000.pru`, `b138000.pru`, `b104000.rtu`, `b106000.rtu`, `b10a000.txpru`, `b10c000.txpru` | `ai64-la-<core><slice>.elf` | logic_analyzer: the PRUs sample, the RTUs move the records to DDR ([its README](logic_analyzer/README.md)) |
+| ICSSG1 PRU0 | `b134000.pru` | `ai64-la-pru0.elf` | logic_analyzer: samples 10 pins, and writes the samples to DDR through XFR2VBUS ([its README](logic_analyzer/README.md)) |
+| ICSSG1 RTU0, RTU1 | `b104000.rtu`, `b106000.rtu` | `ai64-la-rtu0.elf`, `ai64-la-rtu1.elf` | fabric nodes 10 and 11 (`g1rtu0`, `g1rtu1`) |
+| ICSSG1 PRU1, Tx_PRU0, Tx_PRU1 | `b138000.pru`, `b10a000.txpru`, `b10c000.txpru` | none | free: they stay stopped |
 
 In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 
@@ -41,7 +43,7 @@ In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 - **The trace log is the exception.** Every core keeps a remoteproc trace buffer in its own data RAM, which Linux reads (`ai64 trace <core>`); writing a line is a few local stores. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace calls out of the PRUs and Tx_PRUs. The RTUs always keep theirs.
 - **One RTU talks over RPMsg and one over shared memory only**, so the template has a working example of each. RPMsg needs a vring interrupt in the overlay and a few KiB of data RAM. Both RTUs are fabric nodes, and both publish what they know in their fabric page.
 
-ICSSG1's logic analyzer splits its work the same way: each PRU only watches its pins and stamps their changes into ICSSG1's shared RAM, and its RTU carries the records to DDR. Its RTUs are fabric nodes 10 and 11, and its Tx_PRUs match triggers on the records as they come.
+ICSSG1's logic analyzer needs no RTU between its PRU and DDR: PRU0 hands each block of samples to XFR2VBUS, a write engine in the slice, which writes it to DDR without the PRU waiting, so a slow DDR never stretches a sample. Its RTUs are fabric nodes 10 and 11, and nothing else.
 
 ## ICSSG0: PWM, three ways
 
@@ -66,7 +68,7 @@ Slice 1's PRU1 also samples P8.31 for [the pipeline](../docs/pipeline.md#the-pip
 
 ## ICSSG1: the logic analyzer
 
-[`logic_analyzer/`](logic_analyzer/README.md) records every change on 19 header pins, which jumper wires bring the demo's PWM generators, SPI7, and square wave, and `ai64 la` shows and captures them. Its README has the channels, how the cores share the work, and what it measures against the bench's Saleae.
+[`logic_analyzer/`](logic_analyzer/README.md) samples 10 header pins at a rate from 125 MS/s down to 1.25 MS/s, which jumper wires bring the demo's PWM generators, SPI7, the square wave, and EHRPWM4, and `ai64 la`, a page in the browser, and an MCP server show, capture, and measure them. Its README has the channels, the rates and what they cost, and how it works.
 
 ICSSG1 ran a port of TI's open-pru `multicore_scheduler` before; it is now an extra demo, which `ai64-demo --icssg1 scheduler` runs instead ([extra-demos/icssg1-multicore-scheduler/](../extra-demos/icssg1-multicore-scheduler/README.md)).
 

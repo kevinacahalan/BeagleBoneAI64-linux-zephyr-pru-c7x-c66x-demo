@@ -23,8 +23,8 @@
  * ai64 la measure [seconds] [a:b ...]
  *   Records for that long (1 s) and prints each channel's edges, frequency,
  *   and the spread of its periods and high times; then, for each pair a:b
- *   (the demo's SPI7 if none is given), the time from each change of a to
- *   b's nearest one.
+ *   (the demo's PWM slices' A and B if none is given), the time from each
+ *   change of a to b's nearest one.
  *
  * ai64 la rate [seconds]
  *   How fast the reader here keeps up: PRU0's blocks a second, the blocks
@@ -76,8 +76,8 @@ static void print_mode(const struct la_mode *m)
 			printf(" %d", c);
 		}
 	}
-	printf("; %u samples a word, %.1f MB/s into the ring, which holds %.3f s; %s\n",
-	       AI64_LA_PER_WORD(m->lane), m->bps / 1e6, m->span,
+	printf("; %u sample%s a word, %.1f MB/s into the ring, which holds %.3f s; %s\n",
+	       AI64_LA_PER_WORD(m->lane), AI64_LA_PER_WORD(m->lane) > 1 ? "s" : "", m->bps / 1e6, m->span,
 	       m->live ? "the reader keeps up" : "more than the reader keeps up with live: holes");
 }
 
@@ -451,8 +451,8 @@ static const char *chan_name(int c)
 static int measure_main(int argc, char **argv)
 {
 	static struct recording r;
-	/* The demo's SPI7: chip select to clock, clock to data. */
-	static const int demo_pairs[][2] = { { 1, 2 }, { 2, 3 } };
+	/* The demo's PWM slices' A and B, each way. */
+	static const int demo_pairs[][2] = { { 5, 6 }, { 6, 5 }, { 8, 9 }, { 9, 8 } };
 	struct changes ch[AI64_LA_NCHAN];
 	int pairs[16][2], npairs = 0;
 	uint64_t span, hole_ns;

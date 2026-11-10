@@ -547,16 +547,16 @@ static const char *t_status(const struct jv *args, struct sb *o)
 	return NULL;
 }
 
-/* "a:b" pairs from args.pairs, or the demo's SPI7. */
+/* "a:b" pairs from args.pairs, or the demo's PWM slices' A and B. */
 static int pairs_arg(const struct jv *args, int pairs[16][2])
 {
-	static const int demo[][2] = { { 1, 2 }, { 2, 3 } };
+	static const int demo[][2] = { { 5, 6 }, { 6, 5 }, { 8, 9 }, { 9, 8 } };
 	const struct jv *p = jget(args, "pairs");
 	int n = 0;
 	size_t i;
 
 	if (!p || p->t != J_ARR) {
-		for (n = 0; n < 2; n++) {
+		for (n = 0; n < 4; n++) {
 			pairs[n][0] = demo[n][0];
 			pairs[n][1] = demo[n][1];
 		}
@@ -1112,12 +1112,12 @@ static const struct {
 	{ "la_measure", t_measure,
 	  "Records for some seconds and measures each active channel: edges, frequency, period and "
 	  "high time (min, median, max, in ns), and duty. Pairs a:b give the time from each change "
-	  "of a to b's nearest change, such as SPI chip select to the first clock. rate and channels "
+	  "of a to b's nearest change, such as a PWM's dead band between A and B. rate and channels "
 	  "set the setup first, as la_mode. holes says where samples were lost (no interval spans one).",
 	  "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":\"number\",\"description\":"
 	  "\"how long to record, at most 10; default 1\"},\"pairs\":{\"type\":\"array\",\"items\":"
-	  "{\"type\":\"string\"},\"description\":\"\\\"a:b\\\" channel pairs; default the demo's SPI7: "
-	  "1:2, 2:3\"},\"rate\":{\"type\":[\"number\",\"string\"]},\"channels\":{\"type\":\"array\","
+	  "{\"type\":\"string\"},\"description\":\"\\\"a:b\\\" channel pairs; default the demo's PWM "
+	  "A/B pairs: 5:6, 6:5, 8:9, 9:8\"},\"rate\":{\"type\":[\"number\",\"string\"]},\"channels\":{\"type\":\"array\","
 	  "\"items\":{\"type\":\"integer\"}}}}" },
 	{ "la_capture", t_capture,
 	  "Records the channels for some seconds, or around the next trigger hit (pre_seconds "

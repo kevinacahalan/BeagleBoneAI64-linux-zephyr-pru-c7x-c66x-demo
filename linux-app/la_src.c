@@ -38,12 +38,16 @@ const struct la_chan la_chans[AI64_LA_NCHAN] = {
 
 /* What the demo's jumpers bring to each channel (pru/logic_analyzer/README.md). */
 const struct la_wired la_wired[AI64_LA_NCHAN] = {
+	[0] = { "ECAP", "P8.15" },
 	[1] = { "SPI7_CS", "P9.28" },
 	[2] = { "SPI7_CLK", "P9.31" },
 	[3] = { "SPI7_MOSI", "P9.30" },
 	[4] = { "SQUARE", "P8.18" },
 	[5] = { "S0_A", "P8.21" },
+	[6] = { "S0_B", "P8.12" },
 	[7] = { "EHRPWM4", "P9.25" },
+	[8] = { "S1_A", "P9.12" },
+	[9] = { "S1_B", "P9.15" },
 };
 
 const struct la_rate la_rates[] = {

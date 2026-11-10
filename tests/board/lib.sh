@@ -135,9 +135,9 @@ check_demo() {
 	n=$(echo "$la" | sed -n 's/.*lost \([0-9]*\) blocks this interval.*/\1/p')
 	[ -n "$n" ] && [ "$n" -le 20 ] && ok "the analyzer's reader kept up: $n blocks lost in a second" ||
 		bad "the analyzer: $(echo "$la" | grep -E 'read|lost' | tr -s ' ')"
-	# ch4: the 1 kHz square wave; ch5: ICSSG0 slice 0's PWM A, 15 kHz on
-	# average over its steps.
-	for c in 4 5; do
+	# ch4: the 1 kHz square wave; ch0, 5, 6, 8, 9: the PWM generators,
+	# 15 kHz on average over their steps.
+	for c in 0 4 5 6 8 9; do
 		hz=$(echo "$la" | awk -v c=$c '$1 == c && $2 ~ /^P[89]\./ {
 			f = $(NF - 2); if ($(NF - 1) == "kHz") f *= 1000; print int(f) }')
 		lo=14000 hi=16000
@@ -151,6 +151,13 @@ check_demo() {
 	echo "$out" | grep -q 'around the trigger hit' && grep -q '^#1000000$' /tmp/ai64-check.vcd &&
 		ok "la capture: triggered on ch4's rise, 1 ms of the ring before it" ||
 		bad "la capture with a trigger: $out"
+	# Slice 1's dead band, from A falling to B rising: 1000 ns, exact in
+	# hardware, at 125 MS/s, 8 ns a sample.
+	n=$("$AI64" la mode 125 8 9 >/dev/null && "$AI64" la measure 0.04 8:9 2>&1 |
+		awk '/ch8 S1_A -> ch9 S1_B/ { print $(NF - 1) }')
+	[ -n "$n" ] && [ "$n" -ge 992 ] && [ "$n" -le 1008 ] &&
+		ok "la measure at 125 MS/s: slice 1's dead band $n ns" ||
+		bad "la measure: slice 1's dead band ${n:-not measured} ns"
 	# Every sample at 125 MS/s, all 10 channels: more than the reader takes
 	# live, so the capture waits, PRU0 stops, and the ring is read whole.
 	out=$("$AI64" la mode 125 >/dev/null && "$AI64" la measure 0.04 2>&1)

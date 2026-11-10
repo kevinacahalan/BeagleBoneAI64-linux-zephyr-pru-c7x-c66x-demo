@@ -10,9 +10,9 @@ The demo's other links go through Linux, or join two cores that sit next to each
 | 7 | `c7x` | C7x | every pass of its main loop |
 | 8 | `g0rtu0` | ICSSG0 RTU0 (`pru/pwm/firmware/pwm_rtu.c`) | every pass of its main loop, next to its RPMsg check |
 | 9 | `g0rtu1` | ICSSG0 RTU1 (the same source) | every pass of its main loop |
-| 10, 11 | `g1rtu0`, `g1rtu1` | ICSSG1 RTU0 and RTU1, the logic analyzer's (`pru/logic_analyzer/firmware/la_rtu.c`) | every pass of its main loop, between batches of edge records |
+| 10, 11 | `g1rtu0`, `g1rtu1` | ICSSG1 RTU0 and RTU1 (`pru/logic_analyzer/firmware/la_rtu.c`) | every 100 µs |
 
-The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). ICSSG1's RTUs, which move the logic analyzer's records, are nodes, and take the `mark` action: any route can put a mark in the analyzer's stream ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md#marks-and-the-fabric)). With the multicore scheduler on ICSSG1 instead (`ai64-demo --icssg1 scheduler`), nodes 10 and 11 do not answer, as a stopped node. The layout's twelve slots (`AI64_FAB_SLOTS`) are all used.
+The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). ICSSG1's RTUs are nodes and nothing else: the logic analyzer's PRU0 writes to DDR on its own ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md#how-it-works)), and they poll every 100 µs, so as not to load ICSSG1's port to the SoC while it does. With the multicore scheduler on ICSSG1 instead (`ai64-demo --icssg1 scheduler`), nodes 10 and 11 do not answer, as a stopped node. The layout's twelve slots (`AI64_FAB_SLOTS`) are all used.
 
 **What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
 
@@ -84,7 +84,7 @@ tour from r5f0_0 round every node that answers its pings: 100 laps/s, 125.2 us a
 tally under hardware spinlock 255: 117315 adds, and the 12 counts sum to 117315
 ```
 
-- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 3 to 11 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one; the C66x cores, the slowest, at 7.5 to 10.7 µs. Linux sleeps between looks, so a message to it takes about 35 to 50 µs.
+- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 3 to 11 µs, reading it included. (These were measured while ICSSG1's RTUs still polled every pass of their loop; now they poll every 100 µs, and their round trips average about 105 µs: 102.5 µs at the least, on the Debian image.) The C7x, whose main loop is shortest, is the quickest to notice one; the C66x cores, the slowest, at 7.5 to 10.7 µs. Linux sleeps between looks, so a message to it takes about 35 to 50 µs.
 - **The nodes.** `starts` counts each node's starts since the board booted. `rtt us` is the mean round trip to all of the node's peers, which Linux pulls up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
 - **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 7 timeouts.
 - **The tally.** Every add from all twelve nodes is in the total, so the lock held.
@@ -114,7 +114,7 @@ g0rtu0 -> linux       2.5 us
 4 hops, 42.8 us, value ok
 ```
 
-P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_1 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. A route through `g1rtu0` or `g1rtu1` can carry `mark <value>`, which puts a mark in the logic analyzer's stream (`ai64 la mark <value>` sends one straight there). `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
+P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_1 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
 **Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both. Those runs had ten nodes, with the multicore scheduler on ICSSG1; with the analyzer's two RTUs as nodes 10 and 11, `tests/run.sh soak` restarts every core and checks the same, all twelve up.
 
