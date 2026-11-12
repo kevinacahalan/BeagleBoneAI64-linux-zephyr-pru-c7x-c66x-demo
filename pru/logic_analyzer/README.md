@@ -109,17 +109,17 @@ At 125 MS/s on two channels in two bytes a sample, 267 MB/s, the reader read 2.7
 `ai64-demo` starts it on ICSSG1, and opens the `la` window:
 
 ```
-ICSSG1 logic analyzer, the last 0.994 s; IEP0 at 892.646 s
+ICSSG1 logic analyzer, the last 1.004 s; IEP0 at 5493.118 s
   25 MS/s, channels 0 1 2 3 4 5 6 7 8 9; 1 sample a word, 106.7 MB/s into the ring, which holds 0.315 s; the reader keeps up
-  read 1666667 blocks/s, 32069 edges/s; lost 0 blocks this interval, 0 in all
+  read 1666667 blocks/s, 181567 edges/s; lost 0 blocks this interval, 113 in all
 
   ch  pin    GPI  wired to          level  edges/s     frequency   duty
-   0  P8.03  19   ECAP P8.15        low            0      0.0 Hz     0.0%
+   0  P8.03  19   ECAP P8.15        high       29936   14.968 kHz   50.1%
    1  P8.07  14   SPI7_CS P9.28     high           0      0.0 Hz   100.0%
    2  P8.08  13   SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
    3  P8.09  16   SPI7_MOSI P9.30   low            0      0.0 Hz     0.0%
-   4  P8.10  15   SQUARE P8.18      low         2000    1.000 kHz   50.0%
-   5  P8.36  7    S0_A P8.11        low        30072   15.036 kHz   50.1%
+   4  P8.10  15   SQUARE P8.18      high        2000    999.9 Hz    50.0%
+   5  P8.36  7    S0_A P8.11        high       29936   14.968 kHz   50.1%
    ...
 ```
 

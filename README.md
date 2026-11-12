@@ -347,21 +347,21 @@ pipeline (running, P9.25 follows): stage                        windows/s   late
   score: 15063 right, 0 wrong (100.00%), 4468 across a step, in 10.0 s; since training 214122 right, 0 wrong
 
 == la (every second, ICSSG1's 10 channels)
-ICSSG1 logic analyzer, the last 0.994 s; IEP0 at 892.646 s
+ICSSG1 logic analyzer, the last 1.004 s; IEP0 at 5493.118 s
   25 MS/s, channels 0 1 2 3 4 5 6 7 8 9; 1 sample a word, 106.7 MB/s into the ring, which holds 0.315 s; the reader keeps up
-  read 1666667 blocks/s, 32069 edges/s; lost 0 blocks this interval, 0 in all
+  read 1666667 blocks/s, 181567 edges/s; lost 0 blocks this interval, 113 in all
 
   ch  pin    GPI  wired to          level  edges/s     frequency   duty
-   0  P8.03  19   ECAP P8.15        low            0      0.0 Hz     0.0%
+   0  P8.03  19   ECAP P8.15        high       29936   14.968 kHz   50.1%
    1  P8.07  14   SPI7_CS P9.28     high           0      0.0 Hz   100.0%
    2  P8.08  13   SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
    3  P8.09  16   SPI7_MOSI P9.30   low            0      0.0 Hz     0.0%
-   4  P8.10  15   SQUARE P8.18      low         2000    1.000 kHz   50.0%
-   5  P8.36  7    S0_A P8.11        low        30072   15.036 kHz   50.1%
-   6  P8.38  8    S0_B P8.12        low            0      0.0 Hz     0.0%
-   7  P9.11  0    EHRPWM4 P9.25     low            0      0.0 Hz     0.0%
-   8  P9.13  1    S1_A P9.12        low            0      0.0 Hz     0.0%
-   9  P9.23  9    S1_B P9.15        low            0      0.0 Hz     0.0%
+   4  P8.10  15   SQUARE P8.18      high        2000    999.9 Hz    50.0%
+   5  P8.36  7    S0_A P8.11        high       29936   14.968 kHz   50.1%
+   6  P8.38  8    S0_B P8.12        low        29936   14.968 kHz   46.8%
+   7  P9.11  0    EHRPWM4 P9.25     high       29912   14.956 kHz   50.2%
+   8  P9.13  1    S1_A P9.12        high       29935   14.968 kHz   50.1%
+   9  P9.23  9    S1_B P9.15        low        29935   14.967 kHz   46.8%
 
 == c66x0 (c66x1 is the same, with DNUM 1 and the odd windows)
 4d80800000.dsp trace (ai64-c66x.elf), 2048 bytes at 0x4d80815480

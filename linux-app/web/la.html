@@ -759,7 +759,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<":
 // ---- decoders: each reads the time in view, and gives boxes for its row ----
 
 const DEC = {
-  spi: { name: "SPI", fields: [["cs", "CS", "ch", 3], ["clk", "CLK", "ch", 4], ["mosi", "MOSI", "ch", 5], ["miso", "MISO", "ch", -1], ["mode", "mode", "num", 0]] },
+  spi: { name: "SPI", fields: [["cs", "CS", "ch", 1], ["clk", "CLK", "ch", 2], ["mosi", "MOSI", "ch", 3], ["miso", "MISO", "ch", -1], ["mode", "mode", "num", 0]] },
   uart: { name: "UART", fields: [["ch", "RX", "ch", 6], ["baud", "baud", "num", 115200], ["invert", "inverted", "bool", false]] },
   i2c: { name: "I²C", fields: [["scl", "SCL", "ch", 0], ["sda", "SDA", "ch", 1]] },
 };
