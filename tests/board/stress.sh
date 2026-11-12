@@ -54,9 +54,9 @@ edges=$(echo "$out" | sed -n 's/.* found \([0-9]*\) edges\/s.*/\1/p')
 	bad "la rate at 200 ns: $(echo "$out" | tail -n 1)"
 
 echo "stress: every channel at 125 MS/s, 533 MB/s, read from the ring after"
-# At 48 ns: shorter, the pulse through the header and jumper is no longer
-# square at the input's threshold, and 533 MB/s into DDR tips the odd
-# sample at an edge by more than one (pru/logic_analyzer/README.md).
+# At 48 ns: shorter, with 32 bits a sample, PRU0's samples fall on
+# EHRPWM4's edges, which are on the same clock, and the odd one reads more
+# than a sample off (pru/logic_analyzer/README.md).
 check "ai64 la mode 125" "$AI64" la mode 125
 within 48 0.04 "40 ms of every channel"
 out=$("$AI64" la measure 0.04 2>&1)
