@@ -131,6 +131,12 @@ check_demo() {
 	# all 10 channels at 25 MS/s, the reader keeping up, and what it
 	# measures on the jumpered signals.
 	check "ai64 la mode 25: every channel at 25 MS/s" "$AI64" la mode 25
+	# ai64-demo loads ai64_la, which maps the ring cached: 300 MB/s live.
+	[ -c /dev/ai64-la ] && "$AI64" la mode 62.5 >/dev/null &&
+		"$AI64" la mode | grep -q 'the reader keeps up' &&
+		ok "ai64_la: /dev/ai64-la, and every channel at 62.5 MS/s is live" ||
+		bad "ai64_la: $(ls -l /dev/ai64-la 2>&1); $("$AI64" la mode 2>&1)"
+	"$AI64" la mode 25 >/dev/null
 	la=$("$AI64" la once 2>&1)
 	n=$(echo "$la" | sed -n 's/.*lost \([0-9]*\) blocks this interval.*/\1/p')
 	[ -n "$n" ] && [ "$n" -le 20 ] && ok "the analyzer's reader kept up: $n blocks lost in a second" ||

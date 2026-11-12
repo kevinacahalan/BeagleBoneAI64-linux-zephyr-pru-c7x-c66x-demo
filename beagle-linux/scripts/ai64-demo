@@ -389,6 +389,11 @@ restart_icssg1() {
 		src=$(firmware_path "$fw" "/lib/firmware/$fw" "pru/build/$fw")
 		load_fw "$name" "$fw" "$src"
 	done
+	# /dev/ai64-la, the analyzer's ring mapped cached, which ai64 la reads
+	# about twice as fast as through /dev/mem (beagle-linux/kernel/ai64_la/).
+	if [[ $ICSSG1 == la && ! -e /dev/ai64-la ]] && ! as_root modprobe ai64_la 2>/dev/null; then
+		echo "ai64_la is not installed: ai64 la reads the ring through /dev/mem, 150 MB/s live." >&2
+	fi
 }
 
 # find_rpmsg CORE DST: the /dev/rpmsgN whose device path is under remoteproc

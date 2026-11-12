@@ -11,7 +11,8 @@
 # every period, where PRU0's start puts it, and if that is on a sample,
 # the edge comes a sample early or late at times. The live part is the one
 # reader of the ring: 133 MB/s, which is most of what the ring gives
-# uncached, so the demo's la window stops reading for it. Then every
+# through /dev/mem, without the ai64_la module, so the demo's la window
+# stops reading for it. Then every
 # channel at 125 MS/s, more than the reader takes live: a capture still
 # comes whole, read from the ring after (la_rec.c). The demo must be
 # running.

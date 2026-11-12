@@ -74,7 +74,7 @@
 
 `linux-app/` — the `ai64` userspace program, a file per subcommand (`linux-app/README.md` lists them): `ai64.c` dispatches, `cores.c` is the table of every demo core that `ai64`, `ai64-demo`, and the web page read, and `util.c` holds what the subcommands share. The logic analyzer's side is `la.c` (`ai64 la`), `la_src.c` (its setup, and the reader that follows the ring), `la_rec.c` (recordings, triggers, and measurements), `la_ws.c` (the viewer's WebSocket), and `mcp.c` (`ai64 mcp`). `web/index.html` is the live page `ai64 web` serves, and `web/la.html` the logic analyzer's viewer, both built in by `web_page.S`. `linux-app/ai64` is a build product.
 
-`beagle-linux/` — the Debian overlay, the two patched kernel modules, the build script, and the on-board scripts.
+`beagle-linux/` — the Debian overlay, the two patched kernel modules and the logic analyzer's `ai64_la`, the build script, and the on-board scripts.
 
 `beagle-linux/overlays/` — the Linux device-tree overlay: the ICSSG pins, ICSSG0 RTU0's vring interrupt, and the DDR the fabric uses. The `.dtbo` blob is a build product.
 

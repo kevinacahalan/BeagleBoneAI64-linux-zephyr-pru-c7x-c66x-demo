@@ -179,7 +179,7 @@ build_kmod() {
 	fi
 	krel=${AI64_KREL:-$(ssh "$host" uname -r)}
 	headers=$CACHE/linux-headers-$krel
-	echo "building pru_rproc and ti_k3_r5_remoteproc for $krel"
+	echo "building pru_rproc, ti_k3_r5_remoteproc, and ai64_la for $krel"
 	build_image "$IMAGE_LINUX" "$ROOT/containers/linux/Containerfile"
 	if [[ ! -f $headers/Makefile ]]; then
 		echo "fetching kernel headers from $host"
@@ -206,7 +206,7 @@ build_kmod() {
 			# Clean first. The headers sit at /tmp/kheaders for every kernel
 			# version, so kbuild would otherwise keep a module built for the
 			# previous kernel.
-			for m in pru_rproc k3_r5_rproc; do
+			for m in pru_rproc k3_r5_rproc ai64_la; do
 				make -C /tmp/kheaders M=/work/beagle-linux/kernel/$m ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean
 				make -C /tmp/kheaders M=/work/beagle-linux/kernel/$m ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
 			done
@@ -283,6 +283,7 @@ bundle() {
 		pru/build/ai64-mcs-txpru1.elf
 		beagle-linux/kernel/pru_rproc/pru_rproc.ko
 		beagle-linux/kernel/k3_r5_rproc/ti_k3_r5_remoteproc.ko
+		beagle-linux/kernel/ai64_la/ai64_la.ko
 		beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtbo
 		dsp/build/ai64-c66x.elf
 		dsp/build/ai64-c7x.elf

@@ -55,11 +55,15 @@ extern const size_t la_nrates;
 
 /*
  * The bytes a second the reader here takes out of the ring and keeps up
- * with (la_src.c): about 168 MB/s while PRU0 writes, uncached. A setup
- * that writes more keeps every sample in PRU0 and the ring, but a live
- * reader falls behind, which is a hole.
+ * with (la_src.c): through /dev/mem, uncached, about 170 MB/s while PRU0
+ * writes; through /dev/ai64-la, cached, about 350 MB/s, where finding
+ * the changes takes most of a core. A setup that writes more
+ * keeps every sample in PRU0 and the ring, but a live reader falls behind,
+ * which is a hole. la_live_bps() is the one that applies here.
  */
-#define LA_LIVE_BPS 150000000u
+#define LA_LIVE_BPS        150000000u
+#define LA_LIVE_BPS_CACHED 300000000u
+uint32_t la_live_bps(void);
 
 /* What PRU0 runs: the channels (bit c channel c) and the rate, and what follows from them. */
 struct la_mode {
@@ -74,7 +78,7 @@ struct la_mode {
 	uint32_t spb;       /* samples a block */
 	double bps;         /* bytes a second into the ring */
 	double span;        /* seconds the ring holds */
-	int live;           /* whether a live reader keeps up: bps <= LA_LIVE_BPS */
+	int live;           /* whether a live reader keeps up: bps <= la_live_bps() */
 };
 
 /* hz: one of la_rates; chans: at least one. Fills in the rest; -1 if not a setup. */

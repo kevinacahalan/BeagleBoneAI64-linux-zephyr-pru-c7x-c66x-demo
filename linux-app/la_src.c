@@ -5,13 +5,16 @@
  * are due is a matter of IEP0's count, read here directly: there is no
  * write count to follow.
  *
- * The ring is mapped uncached, which one thread reads at about 250 MB/s.
- * So one pump thread a process copies each block, once it is due, out of
- * the ring into a cached copy of it, and every reader in the process finds
- * the changes in that copy, each at its own pace: the web page's viewers
- * share one pass over DDR. A setup that writes faster than the pump reads
- * (LA_LIVE_BPS) still has every sample in the ring, but the pump falls
- * behind and skips ahead, and what it skipped is a hole.
+ * The ring is mapped through /dev/ai64-la (beagle-linux/kernel/ai64_la/)
+ * cached, each line cleaned and invalidated before it is read, as PRU0
+ * writes DDR behind the caches: about 1.2 GB/s. Without the module it is
+ * mapped through /dev/mem, as Device memory, about 170 MB/s. One pump
+ * thread a process copies each block, once it is due, out of the ring
+ * into a copy of it, and every reader in the process finds the changes in
+ * that copy, each at its own pace: the web page's viewers share one pass
+ * over DDR. A setup that writes faster than the pump reads (la_live_bps())
+ * still has every sample in the ring, but the pump falls behind and skips
+ * ahead, and what it skipped is a hole.
  */
 #define _GNU_SOURCE
 
@@ -28,6 +31,7 @@
 #include "la.h"
 
 #define LA_DT "/proc/device-tree/reserved-memory/ai64-la@ac000000"
+#define LA_DEV "/dev/ai64-la"
 #define PRU0  "g1pru0"
 
 const struct la_chan la_chans[AI64_LA_NCHAN] = {
@@ -59,6 +63,12 @@ const size_t la_nrates = sizeof(la_rates) / sizeof(la_rates[0]);
 
 static const volatile uint32_t *ring, *iep;
 static volatile struct ai64_la_cfg *cfg;
+static int ring_cached;     /* through LA_DEV: invalidate before reading */
+
+uint32_t la_live_bps(void)
+{
+	return access(LA_DEV, F_OK) ? LA_LIVE_BPS : LA_LIVE_BPS_CACHED;
+}
 
 static int map_all(char *err, size_t errlen)
 {
@@ -72,12 +82,20 @@ static int map_all(char *err, size_t errlen)
 			 "run install-beagle.sh and reboot", LA_DT);
 		return -1;
 	}
+	fd = open(LA_DEV, O_RDONLY);
+	if (fd >= 0) {
+		ring = mmap(NULL, AI64_LA_RING_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+		ring_cached = ring != MAP_FAILED;
+		close(fd);
+	}
 	fd = open("/dev/mem", O_RDONLY | O_SYNC);
 	if (fd < 0) {
 		snprintf(err, errlen, "cannot open /dev/mem (root?)");
 		return -1;
 	}
-	ring = mmap(NULL, AI64_LA_RING_SIZE, PROT_READ, MAP_SHARED, fd, AI64_LA_RING_ADDR);
+	if (!ring_cached) {
+		ring = mmap(NULL, AI64_LA_RING_SIZE, PROT_READ, MAP_SHARED, fd, AI64_LA_RING_ADDR);
+	}
 	iep = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, ICSSG1_IEP0);
 	close(fd);
 	cfg = map_phys(ICSSG1_DRAM0, 0x2000);
@@ -172,7 +190,7 @@ int la_mode_of(struct la_mode *m, uint32_t chans, uint32_t hz)
 	m->block_ns = m->spb * m->sample_ns;
 	m->bps = AI64_LA_SLOT * 1e9 / (double)m->block_ns;
 	m->span = AI64_LA_SLOTS * (double)m->block_ns / 1e9;
-	m->live = m->bps <= LA_LIVE_BPS;
+	m->live = m->bps <= la_live_bps();
 	return 0;
 }
 
@@ -311,11 +329,24 @@ static uint64_t due(uint64_t t0, uint64_t block_ns)
 	return now > t0 + settle ? (now - t0 - settle) / block_ns : 0;
 }
 
-/* 64-byte loads: about twice as fast as words from an uncached mapping. */
+/*
+ * 64-byte loads: about twice as fast as words from an uncached mapping.
+ * Cached, each line cleaned and invalidated first (DC CIVAC, which Linux
+ * lets EL0 do), so the load comes from DDR, not from a line taken before
+ * PRU0 wrote it.
+ */
 static void read_ring(void *dst, const void *src, size_t len)
 {
 	size_t at;
 
+#ifdef __aarch64__
+	if (ring_cached) {
+		for (at = 0; at < len; at += 64u) {
+			__asm__ volatile("dc civac, %0" : : "r"((const uint8_t *)src + at) : "memory");
+		}
+		__asm__ volatile("dsb sy" : : : "memory");
+	}
+#endif
 	for (at = 0; at < len; at += 64u) {
 		const uint8_t *s = (const uint8_t *)src + at;
 		uint8_t *d = (uint8_t *)dst + at;

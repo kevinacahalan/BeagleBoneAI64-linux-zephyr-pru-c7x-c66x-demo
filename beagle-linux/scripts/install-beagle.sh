@@ -77,12 +77,13 @@ for core in r5f0_0 r5f0_1 r5f1_0 r5f1_1; do
 done
 PRU_KO=$(find_artifact pru_rproc.ko beagle-linux/kernel/pru_rproc/pru_rproc.ko)
 R5_KO=$(find_artifact ti_k3_r5_remoteproc.ko beagle-linux/kernel/k3_r5_rproc/ti_k3_r5_remoteproc.ko)
+LA_KO=$(find_artifact ai64_la.ko beagle-linux/kernel/ai64_la/ai64_la.ko)
 DTBO=$(find_artifact "$OVERLAY" "beagle-linux/overlays/$OVERLAY")
 C66X=$(find_artifact ai64-c66x.elf dsp/build/ai64-c66x.elf)
 C7X=$(find_artifact ai64-c7x.elf dsp/build/ai64-c7x.elf)
 
 # The modules have to be built for this kernel.
-for ko in "$PRU_KO" "$R5_KO"; do
+for ko in "$PRU_KO" "$R5_KO" "$LA_KO"; do
 	if ! grep -aq "vermagic=$KREL " "$ko"; then
 		echo "$ko was not built for $KREL." >&2
 		echo "On the PC: AI64_SSH=USER@BOARD ./beagle-linux/scripts/build.sh kmod && ./beagle-linux/scripts/build.sh bundle," >&2
@@ -124,9 +125,10 @@ if ! command -v tmux >/dev/null 2>&1; then
 	fi
 fi
 
-echo "pru_rproc and ti_k3_r5_remoteproc for $KREL"
+echo "pru_rproc, ti_k3_r5_remoteproc, and ai64_la for $KREL"
 install -D -m 0644 "$PRU_KO" "/lib/modules/$KREL/updates/pru_rproc.ko"
 install -D -m 0644 "$R5_KO" "/lib/modules/$KREL/updates/ti_k3_r5_remoteproc.ko"
+install -D -m 0644 "$LA_KO" "/lib/modules/$KREL/updates/ai64_la.ko"
 depmod "$KREL"
 
 echo "overlay"

@@ -8,6 +8,7 @@ IMAGE_INSTALL:append = " \
     ai64-pru-fw \
     ai64-r5-fw \
     ai64-dsp-fw \
+    ai64-la-mod \
     ai64-boot \
     ai64-sysconf \
     bb-usb-gadgets \

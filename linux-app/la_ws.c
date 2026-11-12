@@ -342,7 +342,7 @@ static void send_meta(struct viewer *v)
 		n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s%u", i ? "," : "", la_rates[i].hz);
 	}
 	snprintf(buf + n, sizeof(buf) - n, "],\"live_bps\":%u,\"ring\":%u,\"slot\":%u,\"words\":%u}",
-		 LA_LIVE_BPS, AI64_LA_RING_SIZE, AI64_LA_SLOT, AI64_LA_WORDS);
+		 la_live_bps(), AI64_LA_RING_SIZE, AI64_LA_SLOT, AI64_LA_WORDS);
 	send_text(v, buf);
 }
 
