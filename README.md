@@ -357,7 +357,7 @@ ICSSG1 logic analyzer, the last 0.994 s; IEP0 at 892.646 s
    2  P8.08  13   SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
    3  P8.09  16   SPI7_MOSI P9.30   low            0      0.0 Hz     0.0%
    4  P8.10  15   SQUARE P8.18      low         2000    1.000 kHz   50.0%
-   5  P8.36  7    S0_A P8.21        low        30072   15.036 kHz   50.1%
+   5  P8.36  7    S0_A P8.11        low        30072   15.036 kHz   50.1%
    6  P8.38  8    S0_B P8.12        low            0      0.0 Hz     0.0%
    7  P9.11  0    EHRPWM4 P9.25     low            0      0.0 Hz     0.0%
    8  P9.13  1    S1_A P9.12        low            0      0.0 Hz     0.0%

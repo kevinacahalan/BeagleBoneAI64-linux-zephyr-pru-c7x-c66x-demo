@@ -15,7 +15,7 @@ The channels are PRU0's GPI pins, numbered in header pin order: P8 before P9, th
 | 2 | P8.08 | GPI13 | P9.31 | SPI7 CLK |
 | 3 | P8.09 | GPI16 | P9.30 | SPI7 MOSI |
 | 4 | P8.10 | GPI15 | P8.18 | the 1 kHz square wave |
-| 5 | P8.36 | GPI7 | P8.21 | ICSSG0 slice 0, A (P8.11, through P8.21) |
+| 5 | P8.36 | GPI7 | P8.11 | ICSSG0 slice 0, A |
 | 6 | P8.38 | GPI8 | P8.12 | ICSSG0 slice 0, B |
 | 7 | P9.11 | GPI0 | P9.25 | EHRPWM4, Zephyr on R5F0_1: the fast test signal |
 | 8 | P9.13 | GPI1 | P9.12 | ICSSG0 slice 1, A |
@@ -49,7 +49,7 @@ flowchart LR
 
 **The ring** is the first 32 MiB of the 64 MiB the overlay reserves at `0xac000000`, a 64-byte slot a block, round again when full. A block's tag is the run's key plus its number: Linux picks a new random key each time it starts PRU0, so a slot an earlier run left, or one PRU0 dropped, never reads as this run's. PRU0 keeps no count: sample k of block n is at t0 + (n × samples a block + k) × the sample time, so Linux knows from IEP0, which it reads directly, which blocks are due. Every rate ran on time to the block, measured over seconds against IEP0.
 
-**Linux** (`linux-app/la_src.c`) maps the ring uncached. One pump thread a process copies each block, 100 µs after it is due, into a cached copy of the ring, and every reader in the process finds the changes in that copy at its own pace: the web page's viewers share one pass over DDR. A word whose samples all equal the last one is passed over whole, so a quiet channel costs little to decode. Uncached, the pump takes about 170 MB/s out of the ring while PRU0 writes to it: `LA_LIVE_BPS`, 150 MB/s, is what a setup may write and still stream live.
+**Linux** (`linux-app/la_src.c`) maps the ring uncached. One pump thread a process copies each block, 100 µs after it is due, into a cached copy of the ring, and every reader in the process finds the changes in that copy at its own pace: the web page's viewers share one pass over DDR. A word whose samples all equal the last one is passed over whole, so a quiet channel costs little to decode. Uncached, the pump takes about 170 MB/s out of the ring while PRU0 writes to it: `LA_LIVE_BPS`, 150 MB/s, is what a setup may write and still stream live. That is for all the processes reading at once, since each has its own pump: the `la` window, `ai64 web` while a page is open, and the MCP server while it records each read the ring. Two of them at 133 MB/s (one channel at 125 MS/s) fall behind, and what they skip is a hole. A reader decodes a block only from a copy it knows the pump had finished, and had not yet started over again a lap on, so a block the pump wrote over is a hole too, never a mix of two laps.
 
 **Setting it** (`ai64 la mode`, the page, `la_mode`): Linux stops PRU0, writes the channels' mask, the lane, the period, and the new key into PRU0's data RAM (`struct ai64_la_cfg`, `ai64_la.h`), and starts it again, a gap of some 30 ms. IEP0 keeps counting across it. PRU0 keeps its setup across a restart of the demo; at power-up it takes every channel at 25 MS/s.
 
@@ -89,7 +89,9 @@ Nothing the analyzer misses is passed off as signal. A hole is where blocks of s
 
 The board tests (`tests/run.sh check`) read, on the board's own signals: the square wave at 1000 Hz; the PWM generators at 15 kHz averaged over their steps; a capture triggered on the square wave's rise with 1 ms of the ring before it; 40 ms of every channel at 125 MS/s, read whole after; and, through the MCP server, a capture triggered on SPI7's chip select that decodes to `hello`. The 1 kHz square wave, which the R5F1_0 makes in software, measures 1,000,000 ns from rise to rise at the median at 25 MS/s, its jitter up to 17 µs either way.
 
-`tests/run.sh stress` takes ch7 alone at 125 MS/s, a byte a sample, live, against EHRPWM4 stepped from 2 µs down to 16 ns, its fastest, 62.5 MHz, the Nyquist rate: every period and every high time is checked exact, to the sample; then every channel at 125 MS/s, whole from the ring. It has not passed on the bench yet: EHRPWM4's jumper to ch7 does not reach the pin. Neither has a cross-check against the bench's Saleae of this design; edge times are exact to the sample by construction, as the loop's timing is fixed, but that is still to be measured.
+`tests/run.sh stress` takes ch7 alone at 125 MS/s, a byte a sample, live, against EHRPWM4 stepped from 2 µs down to 16 ns, its fastest, 62.5 MHz, the Nyquist rate; then every channel at 125 MS/s, read whole from the ring. On the bench, with ch7 alone, every period comes out exact at every step, 16 ns included, and every high time exact, or a sample short where half the period is no whole number of samples (96 ns of 200, 16 of 40). At 200 ns the reader finds all 10 million edges a second live, with only PRU0's own drops lost.
+
+EHRPWM4 and PRU0 run from the same clock, so an edge falls at the same place among the samples every period: what a run measures repeats exactly, to the sample, and an edge that falls on a sample comes a sample early or late at times. At periods under about 50 ns the pulse through the header and a jumper wire is no longer square where the input switches, and with every channel at 125 MS/s, 533 MB/s into DDR, the odd sample at an edge reads the other way: at 16 ns about 1 edge in 2,500 a sample off, at 48 ns none more than a sample out (periods 40 to 56 ns, 48 at the median). At one byte a sample, 133 MB/s, 16 ns reads clean. That is the signal at the pin, not the sampling, as far as the board can tell: PRU0 never slips a cycle, every edge stays on the same phase over 40 ms; a cross-check on the bench's Saleae at 500 MS/s is still to be done.
 
 `ai64 la rate` reads for a while and says how many blocks a second PRU0 wrote and the reader read, those lost, the changes it found, and how close two came:
 
@@ -115,7 +117,7 @@ ICSSG1 logic analyzer, the last 0.994 s; IEP0 at 892.646 s
    2  P8.08  13   SPI7_CLK P9.31    low            0      0.0 Hz     0.0%
    3  P8.09  16   SPI7_MOSI P9.30   low            0      0.0 Hz     0.0%
    4  P8.10  15   SQUARE P8.18      low         2000    1.000 kHz   50.0%
-   5  P8.36  7    S0_A P8.21        low        30072   15.036 kHz   50.1%
+   5  P8.36  7    S0_A P8.11        low        30072   15.036 kHz   50.1%
    ...
 ```
 

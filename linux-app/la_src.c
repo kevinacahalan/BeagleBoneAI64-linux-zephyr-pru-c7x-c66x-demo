@@ -43,7 +43,7 @@ const struct la_wired la_wired[AI64_LA_NCHAN] = {
 	[2] = { "SPI7_CLK", "P9.31" },
 	[3] = { "SPI7_MOSI", "P9.30" },
 	[4] = { "SQUARE", "P8.18" },
-	[5] = { "S0_A", "P8.21" },
+	[5] = { "S0_A", "P8.11" },
 	[6] = { "S0_B", "P8.12" },
 	[7] = { "EHRPWM4", "P9.25" },
 	[8] = { "S1_A", "P9.12" },
@@ -289,6 +289,8 @@ const char *la_rate_name(uint32_t hz, char *buf, size_t len)
 #define SETTLE_NS 100000u
 /* Slots a reader keeps clear of the pump, which writes over the copy a lap on. */
 #define GUARD (AI64_LA_SLOTS / 8u)
+/* Blocks the pump copies at a time, at most. */
+#define PUMP_CHUNK 4096u
 
 static struct {
 	pthread_mutex_t lock;
@@ -342,20 +344,22 @@ static void *pump(void *arg)
 		}
 		if (to - at > AI64_LA_SLOTS - GUARD) {
 			/* A ring behind: on from near the newest; what it skips is a hole. */
-			at = to - 4096u;
+			at = to - PUMP_CHUNK;
 		}
 		slot = (uint32_t)(at % AI64_LA_SLOTS);
 		n = to - at;
 		if (n > AI64_LA_SLOTS - slot) {
 			n = AI64_LA_SLOTS - slot;
 		}
-		if (n > 4096u) {
-			n = 4096u;
+		if (n > PUMP_CHUNK) {
+			n = PUMP_CHUNK;
 		}
 		read_ring(P.copy + slot * (AI64_LA_SLOT / 4u),
 			    (const void *)(ring + slot * (AI64_LA_SLOT / 4u)), n * AI64_LA_SLOT);
 		at += n;
 		__atomic_store_n(&P.pumped, at, __ATOMIC_RELEASE);
+		/* Its next writes after that, for decode()'s check. */
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
 	}
 	return NULL;
 }
@@ -498,21 +502,37 @@ static inline uint32_t replicate(uint32_t lane, uint32_t cur)
 	}
 }
 
-/* Blocks [from, to) out of the copy, as edges and holes. */
+/* A word's places from place n on: bits sb a place. */
+static inline uint32_t from_place(uint32_t n, uint32_t sb)
+{
+	return n * sb >= 32u ? 0u : ~0u << (n * sb);
+}
+
+/*
+ * Blocks [from, to) out of the copy, as edges and holes; live, as the pump
+ * goes on copying, or not, from a ring that holds still.
+ */
 static void decode(struct la_src *s, uint64_t from, uint64_t to, la_edge_fn fn, la_hole_fn hfn,
-		   void *ctx)
+		   void *ctx, int live)
 {
 	const struct la_mode *m = &s->mode;
-	uint32_t per = AI64_LA_PER_WORD(m->lane);
+	uint32_t per = AI64_LA_PER_WORD(m->lane), sb = 32u / per;
+	uint32_t smask = per == 1u ? ~0u : (1u << sb) - 1u;
+	uint32_t sh = m->lane == AI64_LA_LANE_ALL || m->lane == AI64_LA_LANE_LO16 ? 0u :
+		      m->lane == AI64_LA_LANE_MID16 ? 8u : AI64_LA_LANE_SHIFT(m->lane);
 	uint64_t b;
 
 	for (b = from; b < to; b++) {
-		const uint32_t *w = s->copy + (b % AI64_LA_SLOTS) * (AI64_LA_SLOT / 4u);
+		uint32_t w[AI64_LA_SLOT / 4u];
 		uint64_t tb = s->t0 + b * m->block_ns;
-		uint32_t r;
-		int k = 0, wi;
+		uint32_t r, x, j, k = 0, wi;
 
-		if (w[AI64_LA_WORDS] != m->key + (uint32_t)b) {
+		memcpy(w, s->copy + (b % AI64_LA_SLOTS) * (AI64_LA_SLOT / 4u), sizeof(w));
+		/* Taken before the pump came round to write over it, or not at
+		 * all: it writes a chunk at most past what it has said it has. */
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if ((live && __atomic_load_n(&P.pumped, __ATOMIC_RELAXED) + PUMP_CHUNK > b + AI64_LA_SLOTS) ||
+		    w[AI64_LA_WORDS] != m->key + (uint32_t)b) {
 			/* Dropped by PRU0, or skipped by the pump: the levels are unknown. */
 			s->lost++;
 			continue;
@@ -532,22 +552,19 @@ static void decode(struct la_src *s, uint64_t from, uint64_t to, la_edge_fn fn, 
 			}
 			k = 1;
 		}
-		/* A word holding cur in every place has no change: on to the next. */
+		/* The places of a word that differ from cur in every place are
+		 * where it changes: straight to each in turn. */
 		r = replicate(m->lane, s->cur);
-		for (wi = k / (int)per; wi < (int)AI64_LA_WORDS; wi++) {
-			if (w[wi] == r && k <= wi * (int)per) {
-				continue;
+		for (wi = k / per; wi < AI64_LA_WORDS; wi++) {
+			x = (w[wi] ^ r) & from_place(wi == k / per ? k % per : 0u, sb);
+			while (x) {
+				j = (uint32_t)__builtin_ctz(x) / sb;
+				s->cur = (w[wi] >> (j * sb) & smask) << sh;
+				fn(ctx, tb + (uint64_t)(wi * per + j) * m->sample_ns, chans(s, s->cur));
+				s->edges++;
+				r = replicate(m->lane, s->cur);
+				x = (w[wi] ^ r) & from_place(j + 1u, sb);
 			}
-			for (k = k > wi * (int)per ? k : wi * (int)per; k < (wi + 1) * (int)per; k++) {
-				uint32_t v = sample(w, m->lane, k);
-
-				if (v != s->cur) {
-					fn(ctx, tb + (uint64_t)k * m->sample_ns, chans(s, v));
-					s->cur = v;
-					s->edges++;
-				}
-			}
-			r = replicate(m->lane, s->cur);
 		}
 		s->last = tb + (m->spb - 1u) * m->sample_ns;
 		s->blocks++;
@@ -562,15 +579,15 @@ void la_src_poll(struct la_src *s, la_edge_fn fn, la_hole_fn hfn, void *ctx, uin
 	if (to - s->next > AI64_LA_SLOTS - GUARD && to > s->next) {
 		/* A ring behind the pump, which has written over the copy: on from
 		 * near it. What it skips is lost too, and a hole. */
-		s->lost += to - 4096u - s->next;
-		s->next = to - 4096u;
+		s->lost += to - PUMP_CHUNK - s->next;
+		s->next = to - PUMP_CHUNK;
 		s->behind++;
 	}
 	if (to > s->next + max) {
 		to = s->next + max;
 	}
 	if (to > s->next) {
-		decode(s, s->next, to, fn, hfn, ctx);
+		decode(s, s->next, to, fn, hfn, ctx, 1);
 		s->next = to;
 	}
 	s->now = s->t0 + s->next * s->mode.block_ns;
@@ -598,10 +615,11 @@ int la_src_reread(struct la_src *s, uint64_t stopped, uint64_t from, uint64_t to
 	}
 	b0 = (from - s->t0) / s->mode.block_ns;
 	b1 = (to - s->t0) / s->mode.block_ns + 1u;
-	/* The newest block PRU0 can have written before it stopped; the ring
-	 * holds a lap back from it, less what it wrote while it stopped. */
+	/* The newest block PRU0 can have written before it stopped. A block it
+	 * wrote over a lap on, as it took its time stopping, has the next
+	 * lap's tag: decode() finds it lost, a hole. */
 	newest = (stopped - s->t0) / s->mode.block_ns;
-	if (b1 + 2u > newest || newest - b0 > AI64_LA_SLOTS - 1024u) {
+	if (b1 + 2u > newest || newest - b0 > 2u * AI64_LA_SLOTS) {
 		return -1;
 	}
 	/* Copied again over the pump's copy: the ring holds still now, so the
@@ -619,6 +637,6 @@ int la_src_reread(struct la_src *s, uint64_t stopped, uint64_t from, uint64_t to
 	}
 	s->have = 0;
 	s->blocks = s->lost = s->edges = 0;
-	decode(s, b0, b1, fn, hfn, ctx);
+	decode(s, b0, b1, fn, hfn, ctx, 0);
 	return 0;
 }

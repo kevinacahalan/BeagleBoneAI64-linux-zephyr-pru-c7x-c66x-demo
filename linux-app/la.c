@@ -577,7 +577,8 @@ static int quiet_main(void)
 /* Each edge's time, for the closest two. */
 struct closest {
 	uint64_t last, min;
-	int have;
+	int have;           /* last is an edge's, or the end of a hole's */
+	int started;        /* past the first call, the levels at the first sample */
 };
 
 static void count_edge(void *ctx, uint64_t t, uint32_t state)
@@ -585,6 +586,10 @@ static void count_edge(void *ctx, uint64_t t, uint32_t state)
 	struct closest *c = ctx;
 
 	(void)state;
+	if (!c->started) {
+		c->started = 1;
+		return;
+	}
 	if (c->have && t - c->last < c->min) {
 		c->min = t - c->last;
 	}
@@ -605,7 +610,7 @@ static void count_hole(void *ctx, uint64_t from, uint64_t to, uint32_t state)
 static int rate_main(int argc, char **argv)
 {
 	double secs = argc > 3 ? atof(argv[3]) : 1.0, t0, t1;
-	struct closest c = { 0, UINT64_MAX, 0 };
+	struct closest c = { 0, UINT64_MAX, 0, 0 };
 	struct la_src src;
 	char err[160];
 

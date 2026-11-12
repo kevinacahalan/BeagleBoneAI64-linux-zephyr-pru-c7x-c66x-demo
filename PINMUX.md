@@ -29,29 +29,29 @@ J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
 | P8.31 | AE29 | `0x100` | 1, `PRG0_PRU1_GPI0` | ICSSG0 PRU1, its GPI shift register | the pipeline's input, jumpered from P9.15 |
 | P8.31 | AJ25 | `0x084` | 7, held off | — | shorted to AE29 |
 | P8.03 | AH21 | `0x054` | 1, `PRG1_PRU0_GPI19`, pull-down | ICSSG1 PRU0 | logic analyzer ch0 |
-| P8.05 | AH25 | `0x088` | 1, `PRG1_PRU1_GPI12`, pull-down | ICSSG1 PRU1 | logic analyzer ch1 |
-| P8.06 | AG25 | `0x08c` | 1, `PRG1_PRU1_GPI13`, pull-down | ICSSG1 PRU1 | logic analyzer ch2 |
-| P8.07 | AD24 | `0x03c` | 1, `PRG1_PRU0_GPI14`, pull-down | ICSSG1 PRU0 | logic analyzer ch3 |
-| P8.08 | AG24 | `0x038` | 1, `PRG1_PRU0_GPI13`, pull-down | ICSSG1 PRU0 | logic analyzer ch4 |
-| P8.09 | AE24 | `0x044` | 1, `PRG1_PRU0_GPI16`, pull-down | ICSSG1 PRU0 | logic analyzer ch5 |
-| P8.10 | AC24 | `0x040` | 1, `PRG1_PRU0_GPI15`, pull-down | ICSSG1 PRU0 | logic analyzer ch6 |
-| P8.21 | AF21 | `0x07c` | 1, `PRG1_PRU1_GPI9`, pull-down | ICSSG1 PRU1 | logic analyzer ch7 |
-| P8.23 | AB23 | `0x080` | 1, `PRG1_PRU1_GPI10`, pull-down | ICSSG1 PRU1 | logic analyzer ch8 |
-| P8.25 | AH26 | `0x090` | 1, `PRG1_PRU1_GPI14`, pull-down | ICSSG1 PRU1 | logic analyzer ch9 |
-| P8.32 | AG21 | `0x06c` | 1, `PRG1_PRU1_GPI5`, pull-down | ICSSG1 PRU1 | logic analyzer ch10 |
+| P8.05 | AH25 | `0x088` | 1, `PRG1_PRU1_GPI12`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
+| P8.06 | AG25 | `0x08c` | 1, `PRG1_PRU1_GPI13`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
+| P8.07 | AD24 | `0x03c` | 1, `PRG1_PRU0_GPI14`, pull-down | ICSSG1 PRU0 | logic analyzer ch1 |
+| P8.08 | AG24 | `0x038` | 1, `PRG1_PRU0_GPI13`, pull-down | ICSSG1 PRU0 | logic analyzer ch2 |
+| P8.09 | AE24 | `0x044` | 1, `PRG1_PRU0_GPI16`, pull-down | ICSSG1 PRU0 | logic analyzer ch3 |
+| P8.10 | AC24 | `0x040` | 1, `PRG1_PRU0_GPI15`, pull-down | ICSSG1 PRU0 | logic analyzer ch4 |
+| P8.21 | AF21 | `0x07c` | 1, `PRG1_PRU1_GPI9`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
+| P8.23 | AB23 | `0x080` | 1, `PRG1_PRU1_GPI10`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
+| P8.25 | AH26 | `0x090` | 1, `PRG1_PRU1_GPI14`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
+| P8.32 | AG21 | `0x06c` | 1, `PRG1_PRU1_GPI5`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
 | P8.32 | AD28 | `0x104` | 7, held off | — | shorted to AG21 |
-| P8.33 | AH24 | `0x068` | 1, `PRG1_PRU1_GPI4`, pull-down | ICSSG1 PRU1 | logic analyzer ch11 |
+| P8.33 | AH24 | `0x068` | 1, `PRG1_PRU1_GPI4`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
 | P8.33 | AA2 | `0x1c0` | 7, held off | — | shorted to AH24 |
-| P8.35 | AD23 | `0x064` | 1, `PRG1_PRU1_GPI3`, pull-down | ICSSG1 PRU1 | logic analyzer ch12 |
+| P8.35 | AD23 | `0x064` | 1, `PRG1_PRU1_GPI3`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
 | P8.35 | Y3 | `0x1d4` | 7, held off | — | shorted to AD23 |
-| P8.36 | AE20 | `0x020` | 1, `PRG1_PRU0_GPI7`, pull-down | ICSSG1 PRU0 | logic analyzer ch13 |
-| P8.38 | AJ20 | `0x024` | 1, `PRG1_PRU0_GPI8`, pull-down | ICSSG1 PRU0 | logic analyzer ch14 |
+| P8.36 | AE20 | `0x020` | 1, `PRG1_PRU0_GPI7`, pull-down | ICSSG1 PRU0 | logic analyzer ch5 |
+| P8.38 | AJ20 | `0x024` | 1, `PRG1_PRU0_GPI8`, pull-down | ICSSG1 PRU0 | logic analyzer ch6 |
 | P8.38 | Y29 | `0x1a8` | 7, held off | — | shorted to AJ20 |
-| P9.11 | AC23 | `0x004` | 1, `PRG1_PRU0_GPI0`, pull-down | ICSSG1 PRU0 | logic analyzer ch15 |
-| P9.13 | AG22 | `0x008` | 1, `PRG1_PRU0_GPI1`, pull-down | ICSSG1 PRU0 | logic analyzer ch16 |
-| P9.21 | AJ22 | `0x0a0` | 1, `PRG1_PRU1_GPI18`, pull-down | ICSSG1 PRU1 | logic analyzer ch17 |
+| P9.11 | AC23 | `0x004` | 1, `PRG1_PRU0_GPI0`, pull-down | ICSSG1 PRU0 | logic analyzer ch7 |
+| P9.13 | AG22 | `0x008` | 1, `PRG1_PRU0_GPI1`, pull-down | ICSSG1 PRU0 | logic analyzer ch8 |
+| P9.21 | AJ22 | `0x0a0` | 1, `PRG1_PRU1_GPI18`, pull-down | ICSSG1 PRU1 | an input nothing samples: PRU1 is free |
 | P9.21 | U28 | `0x16c` | 7, held off | — | shorted to AJ22 |
-| P9.23 | AG20 | `0x028` | 1, `PRG1_PRU0_GPI9`, pull-down | ICSSG1 PRU0 | logic analyzer ch18 |
+| P9.23 | AG20 | `0x028` | 1, `PRG1_PRU0_GPI9`, pull-down | ICSSG1 PRU0 | logic analyzer ch9 |
 | P8.17 | AF22 | `0x00c` | 3, `PRG1_PWM2_A0` | the six ICSSG1 cores, with `--icssg1 scheduler` | the multicore scheduler (extra-demos/) |
 | P9.25 | W26 | `0x1a4` | 6, `EHRPWM4_B` | Zephyr on R5F0_1 | EHRPWM4 output B |
 | P9.25 | AC4 | `0x200` | 7, held off | — | shorted to W26 |
@@ -83,9 +83,9 @@ Mux mode 3 on these balls is the ICSSG's PWM module: `PRG0_PWM2_A0` and `PRG0_PW
 
 Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its GPI shift register samples in 28-bit shift mode ([the pipeline](docs/pipeline.md#the-pipeline-p831-to-p925)). PRU1 drives no pin of its own, since the PWM module drives P9.12 and P9.15, so its inputs are free. P8.31's other ball, AJ25 (`PRG1_PRU1_GPO11`, pad `0x084`), is held off. The pinctrl goes with PRU1's other pins, on `&pru0_1`. A jumper wire from P9.15 brings it slice 1's output B; without one the pin floats, and the pipeline finds nothing to train on.
 
-## ICSSG1: the logic analyzer's 19 inputs
+## ICSSG1: the logic analyzer's 10 inputs
 
-Mode 1 on each of these balls is `PRG1_PRU<n>_GPI<bit>`, an input of PRU0's or PRU1's R31, read in direct mode. Each pad has its receiver and its pull-down on (`PIN_INPUT_PULLDOWN`), so a pin with nothing on it reads low. PRU0's ten go on `&pru1_0` and PRU1's nine on `&pru1_1`, so `pru_rproc` applies them when the cores probe; ICSSG1 drives none of them. P8.32, P8.33, P8.35, P8.38, and P9.21 each have a second ball, held off. [The analyzer's README](pru/logic_analyzer/README.md#the-channels) has the jumpers that bring the demo's signals to them, and why the other ICSSG1 inputs on the header are not among them.
+Mode 1 on each of these balls is `PRG1_PRU<n>_GPI<bit>`, an input of PRU0's or PRU1's R31, read in direct mode. Each pad has its receiver and its pull-down on (`PIN_INPUT_PULLDOWN`), so a pin with nothing on it reads low. PRU0's ten go on `&pru1_0`, and the analyzer samples them; PRU1's nine go on `&pru1_1` and stay inputs, but nothing samples them, since PRU1 is free. `pru_rproc` applies them when the cores probe; ICSSG1 drives none of them. P8.32, P8.33, P8.35, P8.38, and P9.21 each have a second ball, held off. [The analyzer's README](pru/logic_analyzer/README.md#the-channels) has the jumpers that bring the demo's signals to them, and why the other ICSSG1 inputs on the header are not among them.
 
 ## ICSSG1: P8.17, with the multicore scheduler
 
