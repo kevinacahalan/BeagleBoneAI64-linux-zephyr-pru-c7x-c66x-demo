@@ -40,8 +40,6 @@
   --critical: #dc2626;
   --marker-a: #0891b2;
   --marker-b: #db2777;
-  --tip: #1d1d1b;
-  --tip-ink: #f4f3ef;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -62,8 +60,6 @@
     --trig: #fbbf24;
     --marker-a: #22d3ee;
     --marker-b: #f472b6;
-    --tip: #f4f3ef;
-    --tip-ink: #141413;
   }
 }
 :root[data-theme="dark"] {
@@ -84,8 +80,6 @@
   --trig: #fbbf24;
   --marker-a: #22d3ee;
   --marker-b: #f472b6;
-  --tip: #f4f3ef;
-  --tip-ink: #141413;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -191,15 +185,6 @@ tr.go:hover td { background: var(--panel-2); }
 .status b { color: var(--ink); font-weight: 600; }
 .status .grow { flex: 1; }
 
-/* The pointer's tooltip */
-#tip {
-  position: fixed; pointer-events: none; z-index: 20; display: none;
-  background: var(--tip); color: var(--tip-ink); border-radius: 8px; padding: 7px 10px;
-  font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.25); min-width: 150px;
-}
-#tip .t { font-weight: 650; margin-bottom: 3px; }
-#tip .g { display: grid; grid-template-columns: auto auto; gap: 1px 12px; }
-#tip .g span:nth-child(odd) { opacity: 0.7; }
 
 .banner { display: none; position: fixed; left: 50%; top: 56px; transform: translateX(-50%); z-index: 30;
   background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--critical);
@@ -326,7 +311,6 @@ kbd { font: 11.5px ui-monospace, monospace; background: var(--panel-2); border: 
   <span id="s-mem"></span>
 </footer>
 
-<div id="tip"></div>
 <div class="banner" id="banner"></div>
 <div id="help">
   <b>Mouse and keys</b>
@@ -932,6 +916,11 @@ function tOf(x) { return S.view.a + (x - LABEL) / plotW() * (S.view.b - S.view.a
 function nsPerPx() { return (S.view.b - S.view.a) / plotW(); }
 function rowAt(y) { const i = Math.floor((y - RULER) / rowH); return y >= RULER && i >= 0 && i < S.rows.length ? i : -1; }
 function rowY(i) { return RULER + i * rowH; }
+// A row's high and low levels. Tall rows keep a strip at the top for the pointer's measurements.
+function levels(y) {
+  const pad = Math.max(4, rowH * 0.2), top = rowH >= 32 ? Math.max(pad, 15) : pad;
+  return [y + top, y + rowH - pad];
+}
 
 function tzero() {
   if (S.tzero === "trig") { const e = S.events.find(e => e.kind === "trig"); return e ? e.t : 0; }
@@ -995,7 +984,7 @@ function drawRuler() {
 }
 
 function drawTrack(tr, y, color, end) {
-  const { a, b } = S.view, pw = plotW(), pad = Math.max(4, rowH * 0.2), hi = y + pad, lo = y + rowH - pad;
+  const { a, b } = S.view, pw = plotW(), [hi, lo] = levels(y);
   if (tr.init === null) return;
   const right = Math.min(b, end);
   if (right <= a) return;
@@ -1273,35 +1262,15 @@ function hoverInfo() {
   return { kind: "pulse", r, t, p, edge: snapEdge(tr, t) };
 }
 
-function tipHTML(info) {
+// The one-line note the pointer gets at the top of its row, when it is not on a pulse.
+function noteOf(info) {
   if (info.kind === "dec") {
     const d = info.hit;
-    return `<div class="t">${esc(d.text)}${d.ch && d.ch !== "." ? " '" + esc(d.ch) + "'" : ""}</div><div class="g">` +
-      `<span>at</span><span class="num">${fmtAt(d.t0)}</span>` +
-      (d.t1 > d.t0 ? `<span>lasts</span><span class="num">${fmtTime(d.t1 - d.t0)}</span>` : "") + `</div>`;
+    return d.text + (d.ch && d.ch !== "." ? ` '${d.ch}'` : "") + (d.t1 > d.t0 ? " · " + fmtTime(d.t1 - d.t0) : "");
   }
-  const c = S.meta.channels[info.r.ch], name = chName(info.r.ch) || c.pin;
-  if (info.kind === "hole") {
-    return `<div class="t">ch${c.ch} ${esc(name)}: no data</div><div class="g">` +
-      `<span>from</span><span class="num">${fmtAt(info.a)}</span><span>for</span><span class="num">${fmtTime(info.b - info.a)}</span></div>` +
-      `<div style="opacity:.7;margin-top:3px">not recorded here: a hole where samples were lost</div>`;
-  }
-  if (info.kind === "dense") {
-    return `<div class="t">ch${c.ch} ${esc(name)}</div><div class="g">` +
-      `<span>edges near</span><span class="num">${info.dense.n} in ${fmtTime(info.dense.w)}</span>` +
-      `<span>about</span><span class="num">${fmtHz(info.dense.hz)}</span></div><div style="opacity:.7;margin-top:3px">zoom in to measure one pulse</div>`;
-  }
-  const p = info.p;
-  let g = "";
-  if (p.width !== undefined) g += `<span>${p.lvl ? "high" : "low"} for</span><span class="num">${fmtTime(p.width)}</span>`;
-  else g += `<span>${p.lvl ? "high" : "low"}</span><span>${p.t0 === null ? "since the start" : "until now"}</span>`;
-  if (p.period !== undefined) {
-    g += `<span>period</span><span class="num">${fmtTime(p.period)}</span><span>frequency</span><span class="num">${fmtHz(1e9 / p.period)}</span>`;
-    if (p.duty !== undefined) g += `<span>duty</span><span class="num">${(100 * p.duty).toFixed(2)} %</span>`;
-  }
-  if (info.edge !== null) g += `<span>edge at</span><span class="num">${fmtAt(info.edge)}</span>`;
-  return `<div class="t"><span class="sw" style="background:${chColor(c.ch)}"></span>ch${c.ch} ${esc(name)}</div><div class="g">${g}</div>` +
-    (p.holed ? `<div style="opacity:.7;margin-top:3px">next to a hole: only what it leaves is measured</div>` : "");
+  if (info.kind === "hole") return `no data for ${fmtTime(info.b - info.a)}: samples lost`;
+  if (info.kind === "dense") return `about ${fmtHz(info.dense.hz)} · ${info.dense.n} edges near: zoom in`;
+  return "";
 }
 
 function statusHover(info) {
@@ -1319,15 +1288,16 @@ function statusHover(info) {
 
 // ---- the overlay: the pointer, the markers, the selection ----
 
-function bracket(c, x0, x1, y, color, text) {
-  c.strokeStyle = color; c.fillStyle = color; c.lineWidth = 1.25;
-  c.beginPath(); c.moveTo(x0, y - 4); c.lineTo(x0, y + 4); c.moveTo(x1, y - 4); c.lineTo(x1, y + 4);
+function bracket(c, x0, x1, y, color, text, small) {
+  const e = small ? 3 : 4;
+  c.strokeStyle = color; c.fillStyle = color; c.lineWidth = small ? 1 : 1.25;
+  c.beginPath(); c.moveTo(x0, y - e); c.lineTo(x0, y + e); c.moveTo(x1, y - e); c.lineTo(x1, y + e);
   c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
   if (x1 - x0 > 12) {
     c.beginPath(); c.moveTo(x0, y); c.lineTo(x0 + 5, y - 3); c.lineTo(x0 + 5, y + 3); c.fill();
     c.beginPath(); c.moveTo(x1, y); c.lineTo(x1 - 5, y - 3); c.lineTo(x1 - 5, y + 3); c.fill();
   }
-  if (text) pill(c, (x0 + x1) / 2, y, text, color, true);
+  if (text) pill(c, (x0 + x1) / 2, y, text, color, true, small);
 }
 
 // Black or white, whichever reads better on color (#rrggbb).
@@ -1338,9 +1308,9 @@ function inkOn(color) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111" : "#fff";
 }
 
-function pill(c, x, y, text, color, center) {
-  c.font = "600 11px system-ui, sans-serif";
-  const w = c.measureText(text).width + 10, h = 16;
+function pill(c, x, y, text, color, center, small) {
+  c.font = small ? "600 10.5px system-ui, sans-serif" : "600 11px system-ui, sans-serif";
+  const w = c.measureText(text).width + 10, h = small ? 13 : 16;
   let px = center ? x - w / 2 : x;
   px = Math.max(LABEL + 2, Math.min(W - w - 2, px));
   c.fillStyle = color; roundRect(c, px, y - h / 2, w, h, 4); c.fill();
@@ -1385,40 +1355,41 @@ function drawOverlay() {
       octx.fillStyle = colors.sel; octx.fillRect(LABEL, y, plotW(), rowH);
     }
   }
-  if (info && info.kind === "pulse") {
-    const p = info.p, y = rowY(info.r.row !== undefined ? info.r.row : h.row), color = chColor(info.r.ch);
-    const pad = Math.max(4, rowH * 0.2), lvlY = p.lvl ? y + pad : y + rowH - pad;
-    if (p.t0 !== null && p.t1 !== null) {
-      const x0 = xOf(p.t0), x1 = xOf(p.t1);
-      octx.strokeStyle = color; octx.lineWidth = 3.5;
-      octx.beginPath(); octx.moveTo(x0, lvlY); octx.lineTo(x1, lvlY); octx.stroke();
-      octx.strokeStyle = colors["ink-3"]; octx.lineWidth = 1; octx.setLineDash([3, 3]);
-      octx.beginPath(); octx.moveTo(x0 + 0.5, RULER); octx.lineTo(x0 + 0.5, H); octx.moveTo(x1 + 0.5, RULER); octx.lineTo(x1 + 0.5, H); octx.stroke();
-      octx.setLineDash([]);
-      if (p.c0 !== undefined) {
-        const c0 = xOf(p.c0), c1 = xOf(p.c1), by = y + rowH + 9 <= H - 4 ? y + rowH + 9 : y - 9;
-        if (c1 - c0 > 30) bracket(octx, c0, c1, by, color, fmtTime(p.period));
+  if (info) {
+    const y = rowY(h.row), top = y + 7;
+    if (info.kind === "pulse") {
+      const p = info.p, color = chColor(info.r.ch), [hi, lo] = levels(y), lvlY = p.lvl ? hi : lo;
+      if (p.t0 !== null && p.t1 !== null) {
+        const x0 = xOf(p.t0), x1 = xOf(p.t1);
+        octx.strokeStyle = color; octx.lineWidth = 3.5;
+        octx.beginPath(); octx.moveTo(x0, lvlY); octx.lineTo(x1, lvlY); octx.stroke();
+        octx.strokeStyle = colors["ink-3"]; octx.lineWidth = 1; octx.setLineDash([3, 3]);
+        octx.beginPath(); octx.moveTo(x0 + 0.5, RULER); octx.lineTo(x0 + 0.5, H); octx.moveTo(x1 + 0.5, RULER); octx.lineTo(x1 + 0.5, H); octx.stroke();
+        octx.setLineDash([]);
+        // The pulse's width, across the pulse.
+        if (p.width !== undefined) bracket(octx, x0, x1, (hi + lo) / 2, color, x1 - x0 > 50 ? fmtTime(p.width) : "", true);
       }
-    }
-    if (info.edge !== null) {
-      const xe = xOf(info.edge);
-      octx.fillStyle = color; octx.beginPath(); octx.arc(xe, y + rowH / 2, 4, 0, 2 * Math.PI); octx.fill();
+      // The cycle along the top of the row: period, frequency, duty.
+      const parts = [];
+      if (p.width !== undefined) parts.push(`${p.lvl ? "high" : "low"} ${fmtTime(p.width)}`);
+      if (p.period !== undefined) parts.push(`period ${fmtTime(p.period)}`, fmtHz(1e9 / p.period));
+      if (p.duty !== undefined) parts.push(`duty ${(100 * p.duty).toFixed(1)} %`);
+      if (p.c0 !== undefined && p.period !== undefined) {
+        const c0 = xOf(p.c0), c1 = xOf(p.c1);
+        bracket(octx, c0, c1, top, colors.ink, "", true);
+        pill(octx, Math.min(Math.max((c0 + c1) / 2, LABEL), W), top, parts.join(" · "), colors.ink, true, true);
+      } else if (parts.length) {
+        pill(octx, h.x, top, parts.join(" · "), colors.ink, true, true);
+      }
+      if (info.edge !== null) {
+        const xe = xOf(info.edge);
+        octx.fillStyle = color; octx.beginPath(); octx.arc(xe, (hi + lo) / 2, 4, 0, 2 * Math.PI); octx.fill();
+      }
+    } else {
+      pill(octx, h.x, top, noteOf(info), colors.ink, true, true);
     }
   }
   octx.restore();
-  // The tooltip and the status bar.
-  const tip = $("tip");
-  if (info && h && !S.drag) {
-    tip.innerHTML = tipHTML(info);
-    tip.style.display = "block";
-    const r = ov.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
-    let tx = r.left + h.x + 16, ty = r.top + h.y + 18 - plot.scrollTop * 0;
-    if (tx + tw > window.innerWidth - 8) tx = r.left + h.x - tw - 16;
-    if (ty + th > window.innerHeight - 8) ty = r.top + h.y - th - 12;
-    tip.style.left = tx + "px"; tip.style.top = ty + "px";
-  } else {
-    tip.style.display = "none";
-  }
   $("s-hover").innerHTML = statusHover(info);
 }
 
