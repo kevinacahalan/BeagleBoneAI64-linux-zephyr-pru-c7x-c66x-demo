@@ -193,7 +193,7 @@ tr.go:hover td { background: var(--panel-2); }
 
 /* The pointer's tooltip */
 #tip {
-  position: absolute; right: 14px; bottom: 52px; pointer-events: none; z-index: 20; display: none;
+  position: absolute; right: 14px; top: 0; pointer-events: none; z-index: 20; display: none;
   background: var(--tip); color: var(--tip-ink); border-radius: 8px; padding: 7px 10px;
   font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.25); min-width: 150px;
 }
@@ -914,7 +914,7 @@ function layout() {
   dpr = window.devicePixelRatio || 1;
   W = plot.clientWidth;
   const avail = plot.clientHeight, n = Math.max(1, S.rows.length);
-  rowH = Math.max(20, Math.min(44, Math.floor((avail - RULER - 2) / n)));
+  rowH = Math.max(32, Math.min(60, Math.floor((avail - RULER - 2) / n)));
   H = Math.max(avail, RULER + rowH * n + 2);
   for (const c of [cv, ov]) {
     c.style.width = W + "px"; c.style.height = H + "px";
@@ -932,10 +932,10 @@ function tOf(x) { return S.view.a + (x - LABEL) / plotW() * (S.view.b - S.view.a
 function nsPerPx() { return (S.view.b - S.view.a) / plotW(); }
 function rowAt(y) { const i = Math.floor((y - RULER) / rowH); return y >= RULER && i >= 0 && i < S.rows.length ? i : -1; }
 function rowY(i) { return RULER + i * rowH; }
-// A row's high and low levels. Tall rows keep a strip at the top for the period line.
+// A row's high and low levels, with a strip above and below for the pointer's width and period arrows.
 function levels(y) {
-  const pad = Math.max(4, rowH * 0.2), top = rowH >= 32 ? Math.max(pad, 15) : pad;
-  return [y + top, y + rowH - pad];
+  const pad = Math.max(8, Math.min(15, Math.round(rowH * 0.25)));
+  return [y + pad, y + rowH - pad];
 }
 
 function tzero() {
@@ -1335,6 +1335,24 @@ function bracket(c, x0, x1, y, color, text) {
   if (text) pill(c, (x0 + x1) / 2, y, text, color, true);
 }
 
+// A thin measuring arrow from x0 to x1 at y, its value on it.
+function arrow(c, x0, x1, y, text) {
+  y = Math.round(y) + 0.5;
+  c.strokeStyle = colors["ink-2"]; c.fillStyle = colors["ink-2"]; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x0 + 0.5, y - 3); c.lineTo(x0 + 0.5, y + 3); c.moveTo(x1 - 0.5, y - 3); c.lineTo(x1 - 0.5, y + 3);
+  c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
+  if (x1 - x0 > 14) {
+    c.beginPath(); c.moveTo(x0 + 1, y); c.lineTo(x0 + 6, y - 2.5); c.lineTo(x0 + 6, y + 2.5); c.fill();
+    c.beginPath(); c.moveTo(x1 - 1, y); c.lineTo(x1 - 6, y - 2.5); c.lineTo(x1 - 6, y + 2.5); c.fill();
+  }
+  c.font = "600 11px system-ui, sans-serif";
+  const w = c.measureText(text).width + 8;
+  let x = (x0 + x1) / 2 - w / 2;
+  x = Math.max(LABEL + 2, Math.min(W - w - 2, x));
+  c.fillStyle = colors.plot; c.fillRect(x, y - 7, w, 14);
+  c.fillStyle = colors.ink; c.textBaseline = "middle"; c.fillText(text, x + 4, y + 0.5);
+}
+
 // Black or white, whichever reads better on color (#rrggbb).
 function inkOn(color) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color.trim());
@@ -1391,23 +1409,19 @@ function drawOverlay() {
     }
   }
   if (info && info.kind === "pulse") {
-    const p = info.p, y = rowY(info.r.row !== undefined ? info.r.row : h.row), color = chColor(info.r.ch);
-    const [hi, lo] = levels(y), lvlY = p.lvl ? hi : lo;
+    const p = info.p, y = rowY(h.row), color = chColor(info.r.ch), [hi, lo] = levels(y);
     if (p.t0 !== null && p.t1 !== null) {
       const x0 = xOf(p.t0), x1 = xOf(p.t1);
-      octx.strokeStyle = color; octx.lineWidth = 3.5;
-      octx.beginPath(); octx.moveTo(x0, lvlY); octx.lineTo(x1, lvlY); octx.stroke();
       octx.strokeStyle = colors["ink-3"]; octx.lineWidth = 1; octx.setLineDash([3, 3]);
       octx.beginPath(); octx.moveTo(x0 + 0.5, RULER); octx.lineTo(x0 + 0.5, H); octx.moveTo(x1 + 0.5, RULER); octx.lineTo(x1 + 0.5, H); octx.stroke();
       octx.setLineDash([]);
-      if (p.c0 !== undefined) {
-        const c0 = xOf(p.c0), c1 = xOf(p.c1), by = y + 7;
-        if (c1 - c0 > 30) bracket(octx, c0, c1, by, color, fmtTime(p.period));
-      }
+      // The pulse's width just above its high level, the cycle's period just below its low level.
+      if (p.width !== undefined) arrow(octx, x0, x1, hi - 5, fmtTime(p.width));
     }
+    if (p.period !== undefined) arrow(octx, xOf(p.c0), xOf(p.c1), lo + 5, fmtTime(p.period));
     if (info.edge !== null) {
       const xe = xOf(info.edge);
-      octx.fillStyle = color; octx.beginPath(); octx.arc(xe, y + rowH / 2, 4, 0, 2 * Math.PI); octx.fill();
+      octx.fillStyle = color; octx.beginPath(); octx.arc(xe, (hi + lo) / 2, 4, 0, 2 * Math.PI); octx.fill();
     }
   }
   octx.restore();
@@ -1416,6 +1430,10 @@ function drawOverlay() {
   if (info && h && !S.drag) {
     tip.innerHTML = tipHTML(info);
     tip.style.display = "block";
+    // At the right end of the row pointed at, centered on it, kept inside the plot.
+    const th = tip.offsetHeight, ph = plot.clientHeight;
+    const ty = rowY(h.row) + rowH / 2 - th / 2 - plot.scrollTop;
+    tip.style.top = Math.max(4, Math.min(ph - th - 4, ty)) + "px";
   } else {
     tip.style.display = "none";
   }
