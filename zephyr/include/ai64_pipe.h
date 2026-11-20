@@ -14,7 +14,7 @@
  *                 descriptor's second TR then writes the count of windows
  *                 copied, that C66x's doorbell.
  *   C66x 0 and 1  window the samples, take a 2048-point FFT, and write 64
- *                 int8 features (the spectrum's first 63 bins, and the DC)
+ *                 int8 features (the DC, then bins 1 to 62, then a 0)
  *                 into the C7x's L2 SRAM. Each has a window every 1.024 ms.
  *   C7x           runs the features through an int8 layer on its Matrix
  *                 Multiply Accelerator, one output per class, rings

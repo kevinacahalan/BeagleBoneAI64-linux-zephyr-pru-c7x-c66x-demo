@@ -36,11 +36,21 @@ In the default demo ICSSG1's PRU1, Tx_PRU0, and Tx_PRU1 have nothing to do: the 
 
 **If the PRU names are new to you:** an *ICSSG* (Industrial Communication Subsystem, Gigabit) is a block of small real-time cores that TI built for industrial Ethernet, with its own RAM, timers (*IEP*), and direct access to header pins. Each ICSSG has two *slices*, and each slice has three 32-bit cores at 250 MHz that run one instruction a cycle: a *PRU* (Programmable Real-time Unit), an *RTU* (a second, auxiliary PRU), and a *Tx_PRU* (a third, meant for transmit). The PRU reads its pins through register R31 and writes them through R30 in a single cycle, which is what makes it good at exact timing. The BeagleBone AI-64 has two ICSSGs, so twelve of these cores.
 
+**The other names, in a line each:**
+
+- *R5F*: an Arm Cortex-R5F, a real-time microcontroller core. Four sit in the SoC's main domain, and two more in its MCU domain, which run the board's device manager.
+- *Zephyr*: a small open-source real-time OS; each main-domain R5F runs its own copy here.
+- *remoteproc*: the Linux framework that loads firmware into another core and starts and stops it, through `/sys/class/remoteproc/`.
+- *RPMsg*: Linux's message channel to a core remoteproc started, a pair of shared-memory rings and a mailbox doorbell. *eRPC* runs function calls over it.
+- *Mailbox*: a SoC block of small hardware FIFOs; one core writes a word into a FIFO, and the other gets an interrupt or polls for it. The demo uses them as doorbells.
+- *Device manager* and *TI-SCI*: the firmware on the MCU R5F that owns the SoC's clocks, power, and interrupt routing, and the message protocol cores use to ask it for them.
+- *GTC*: the SoC's global 200 MHz counter, which every core can read, so their timestamps compare directly.
+
 **To try it**, you need the board, a microSD card, and a Linux PC with podman or docker; every compiler runs in a container. [Quick start](#quick-start-beagleboard-debian) takes you from a blank card to the running demo in four steps. Ten jumper wires let the logic analyzer watch the demo's own signals, and one more feeds the pipeline; without them everything else still runs. [How it works](#how-it-works) maps which README covers which part.
 
 ## What runs where
 
-- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo: `ai64-demo` restarts every core with its firmware and opens a tmux window per core.
+- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo: `ai64-demo` restarts every core with its firmware and opens a tmux session of 15 windows: one for each core or pair of cores, and one each for the fabric, the pipeline, the logic analyzer, the web page, and the MCP server.
 - **Zephyr on the four main-domain R5Fs** (R5F0_0, R5F0_1, R5F1_0, R5F1_1: cluster, then core). Each has an app in `zephyr/r5/<core>/` on shared code, and one `west build --sysbuild` builds all four ([Four Zephyr apps, one build](zephyr/r5/README.md)).
   - R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA.
   - R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4; the pipeline takes it over once it runs.
@@ -182,8 +192,8 @@ The demo runs on the BeagleBoard Debian image, plus a one-time install script. A
 
 ## What you need
 
-- A BeagleBone AI-64, a microSD card (16 GB or more), and a 5 V supply for it.
-- A network link to it: Ethernet to your LAN, or the USB-C port, which brings up a USB network adapter on the PC.
+- A BeagleBone AI-64, a microSD card (16 GB or more), and a 5 V, 3 A supply for it, into the barrel jack marked 5 V or the USB-C port.
+- A network link to it: Ethernet to your LAN, or a cable from the PC to the board's USB-C port, which brings up a USB network adapter on the PC, with the board at `192.168.7.2`.
 - A Linux PC with `git`, `ssh`, `rsync`, `xz`, and either `podman` or `docker`. Every compiler runs in a container, so you don't install any toolchains.
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
 - Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
@@ -205,10 +215,10 @@ Every command below runs from this directory unless it says "on the board".
 
 Download [BeagleBone AI-64 Debian 13.7 IoT, v6.18 k3](https://www.beagleboard.org/distros/bbai64-debian-13-7-2026-10-09-iot-v6-18-x-k3), the file `bbai64-debian-13.7-iot-v6.18-k3-arm64-2026-10-09-10gb.img.xz`. A fresh image has no login until you give it one. Pick either way:
 
-- **BeagleBoard Imager** (easiest). Choose the image, and in its settings set a user name, a password, and your SSH public key. Imager writes them for you.
+- **BeagleBoard Imager** (easiest). Choose the image, and in its settings set a user name, a password, a hostname, and your SSH public key. Imager writes them for you. Below, use your own user name and hostname wherever this says `debian` and `bbai64`.
 - **By hand.**
   1. Write the image: `xz -dc bbai64-debian-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress`. Replace `/dev/sdX` with your card. Check it with `lsblk` first: `dd` overwrites whatever you give it.
-  2. Mount the card's `BOOT` partition.
+  2. Mount the card's `BOOT` partition, the first one: take the card out and put it back in, and most desktops mount it by its label; or `sudo mount /dev/sdX1 /mnt`, then `sudo umount /mnt` when step 3 is done.
   3. Add these lines to the end of `sysconf.txt`, with your own values. The board applies them on first boot and then clears the password from the file.
 
      ```
@@ -220,7 +230,7 @@ Download [BeagleBone AI-64 Debian 13.7 IoT, v6.18 k3](https://www.beagleboard.or
 
      The key line is the contents of your `~/.ssh/id_ed25519.pub`. Run `ssh-keygen -t ed25519` if you don't have one. With the key in place, the build steps below don't keep asking for a password.
 
-Put the card in the board and power it. With a card in the slot the board boots from it; the console prints `Trying to boot from MMC1`. If yours boots its eMMC instead, hold the BOOT button while you apply power.
+Put the card in the board and power it. With a card in the slot the board boots from it; the console prints `Trying to boot from MMC1`. If yours boots its eMMC instead, hold the button marked BOOT while you apply power.
 
 A fresh card reboots twice on its own before it stays up: the first boot applies `sysconf.txt` and grows the root partition, and the second resizes the filesystem. Give it about three minutes. Then log in over the network:
 
@@ -272,6 +282,7 @@ ai64-demo --tmux
 
 - It asks for your `sudo` password once.
 - It restarts the four R5F cores, the nine ICSSG cores the demo runs, and the DSPs with the installed firmware, then opens a tmux session with fifteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `la` (ICSSG1's logic analyzer), `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, `web`, which serves [the web page](#the-web-page) on port 8064, and `mcp`, the logic analyzer's MCP server on port 8065. Before it stops each R5F and DSP, it asks the core to go idle ([why](dsp/README.md#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
+- The demo is up when the `linux` window prints `linux window ready. commands: ...` and then runs its startup script; the pipeline's training adds 3 s more.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: Ctrl+b then w lists the windows to pick from; Ctrl+b then n and p go to the next and previous; Ctrl+b then 0–9 goes straight to one of the first ten. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
@@ -427,10 +438,10 @@ c7x up 20 s
 - **The `pwm` window** shows what each generator's own core says it is running, read from shared memory. It does not measure the pins. Each generator starts as two lines: its pins, then whether it is software or hardware PWM and what makes the edges. The values are a snapshot of whichever step the generator was on at that moment, so they change every 10 s. `periods/s` averages the three frequencies over the 10 s, so it reads about 15000.
 - **A and B** on each ICSSG0 slice form a complementary pair: B is high while A is low, except for 1000 ns either side of A's pulse, where both are low (the dead band, which keeps a half bridge's two switches from ever being on together). So B's high time is the period less A's, less two dead bands, less the 40 ns that A starts into each period. [Probe the pins](#probe-the-pins) draws it.
 - **The R5F round trips** are R5F1_1 pinging each other core over `ipc_service` every 100 ms: a request into the peer's buffer and a mailbox doorbell, through the peer's icmsg work queue and its request thread, and the reply back the same way, about 80 µs. The `dma` line's copy is R5F0_0's UDMA moving 16 KiB; the R5F's own time for the same bytes is that slow because it reads them through an uncached mapping, which is how it shares the buffer with Linux.
-- **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about 1.5 ms behind the input; [The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
+- **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends: that is the cores' own time, and it moves a few µs from run to run (the web page showed 130 µs). The pin itself follows about 1.5 ms behind the input, because a window is 1.024 ms long and has to be mostly the new step before it names it, and R5F0_1 changes P9.25 only once two windows in a row agree; [The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
-The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps; [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#from-the-shell) has more.
+The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps. Its `113 in all` is not a failure: those are blocks of samples lost since the window started, about 68 µs of signal in an hour and a half, each one marked as a [hole](pru/logic_analyzer/README.md#holes); [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#from-the-shell) has more.
 
 The other three R5F cores have no console UART. Each logs into its remoteproc trace buffer instead:
 
@@ -532,7 +543,7 @@ While the demo runs, open `http://<board>:8064/` in a browser on the same networ
 
 **The logic analyzer's viewer** is at `http://<board>:8064/la`: ICSSG1's 10 channels at the rate you pick, streamed live into the browser, with measurements by pointing, snapping markers, range selection, an overview of the whole capture, SPI, UART, and I²C analyzers, saved captures, and VCD export ([The web viewer](pru/logic_analyzer/README.md#the-web-viewer)).
 
-`sudo ai64 web [port]` serves them on its own. It only reads: sysfs, and the shared memory the cores publish to, mapped read only. It joins no link and takes no lock, so it changes nothing the demo does, except the logic analyzer's rate and channels, which its viewer can set. The numbers it sends are the cores' own running totals, and the page works out the rates, over about 3 s. It needs no internet, and it has no password: anyone on the board's network can see it, and no one can change anything else through it.
+`sudo ai64 web [port]` serves them on its own. It only reads: sysfs, and the shared memory the cores publish to, mapped read only. It joins no link and takes no lock, so it changes nothing the demo does, except the logic analyzer's rate and channels, which its viewer can set. The numbers it sends are the cores' own running totals, and the page works out the rates, over about 3 s. It needs no internet, and it has no password: anyone on the board's network can see it and set the analyzer's rate and channels, though nothing else ([Security](#security)).
 
 ## Probe the pins
 
@@ -590,6 +601,17 @@ Before `zephyr/patches/` fixed Zephyr's DMTimer system timer, one half period in
 
 `PINMUX.md` lists every pin the demo muxes, plus the shorted partner balls it holds off.
 
+## Security
+
+The demo is made for a bench on a network you trust. It opens the board up in a few ways, all on purpose, and none of them is safe on a network you don't:
+
+- **Ports 8064 and 8065 listen on every interface**, Ethernet and USB alike, with no password. On 8064, anyone who can reach the board sees every core's state and the logic analyzer's signals, and can set the analyzer's rate and channels through the viewer's WebSocket (`/la/stream`). That WebSocket does not check where a request came from, so any web page open in a browser on the same network can do the same.
+- **The MCP server on 8065** can set the analyzer up, capture, and decode, and saves each capture to `/tmp/ai64-la-capture.vcd`. It refuses a request whose `Origin` is not the address it was sent to, which stops an ordinary web page elsewhere, but not one that uses DNS rebinding to make its own name point at the board. Set `AI64_MCP_TOKEN` in its environment to require `Authorization: Bearer <token>` on every request ([MCP](pru/logic_analyzer/README.md#mcp-the-analyzer-for-an-agent)).
+- **`ai64` reaches SoC memory through `/dev/mem`.** Opening it needs `CAP_SYS_RAWIO`, which `install-beagle.sh` and `ai64-demo` give `/usr/bin/ai64` with `setcap`, and `ai64-demo` makes `/dev/mem` itself group read-write (`0660`), so a user in its group (`kmem` on Debian) can run every `ai64` command. On the Yocto image the demo runs as root, the web and MCP servers included.
+- **The RPMsg devices** of the R5F cores and ICSSG0 RTU0 are made readable and writable by every user (`chmod a+rw`, until the next restart of those cores), so any local user can send them commands.
+
+None of it reaches past the demo's own cores and the analyzer: the servers read the cores' shared memory, and the only setting they change is the analyzer's. But the board has no protection either. To use it anywhere else, firewall ports 8064 and 8065 or don't start the `web` and `mcp` windows, set `AI64_MCP_TOKEN`, and drop the `chmod` lines from `ai64-demo`.
+
 ## The test bench
 
 The demo was developed on a bench that the PC runs on its own. Going from a build to a freshly written card, a power cycle, a booted board, and a logic analyzer capture needs nobody at the board, except to move a probe:
@@ -605,7 +627,7 @@ The demo was developed on a bench that the PC runs on its own. Going from a buil
 
 A reflash is: relay off, mux to the PC, write the image and compare the card against it, add the login to `sysconf.txt`, mux to the board, relay on, then watch the console until the login prompt, the first boot's two automatic reboots included. Every signal figure in this README is a Saleae capture that the PC started, of the demo running.
 
-![The BeagleBone AI-64 under the screw-terminal breakout, with the SD card mux in its microSD slot (teal, right), the bench supply behind, and the Saleae under the board](media/test-bench.jpg)
+![The BeagleBone AI-64 from above, under the screw-terminal breakout with the logic analyzer's jumpers in it; the SD card mux in its microSD slot (right); the barrel jack marked 5 V, the USB-C port, and the mini DisplayPort along the front edge; the Saleae on the left](media/test-bench.jpg)
 
 None of this is needed to run the demo: the board, a microSD card, a 5 V supply, and a network link are enough ([What you need](#what-you-need)).
 
@@ -658,7 +680,13 @@ KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 - The image builds `ai64`, the four R5F images, the fifteen ICSSG images, the two DSP images, the `ai64_la` module, and the overlay itself. You don't need `build.sh` for it.
 - Set `KAS_CONTAINER_ENGINE` to `podman` or `docker` if you need to choose one.
 
-Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port). `ai64` and `ai64-demo` are in `/usr/bin`, the firmware in `/lib/firmware`, and the `ai64_la` module is in the image. Then run `ai64-demo --tmux`.
+Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz` the same way as the Debian image:
+
+```
+xz -dc yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-*.wic.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+```
+
+The login is `root` with no password, on the serial console or over SSH: `ssh root@<board>`, where `<board>` is the address your router gave it (dropbear, DHCP on the Ethernet port). It is a development image: give root a password, or keep it off networks you don't trust. `ai64` and `ai64-demo` are in `/usr/bin`, the firmware in `/lib/firmware`, and the `ai64_la` module is in the image. Then run `ai64-demo --tmux`.
 
 On a board, the image with TI's 6.18 ran `ai64-demo` 20 times in a row (15 times with the firmware copied in, 5 from a freshly built image), stopping and starting every demo core each time, with every core up, the fabric clean after each run, and no kernel errors, and gave the same PWM, fabric, and DSP timings as the Debian image.
 

@@ -5,7 +5,7 @@ This demo muxes header pins from two places, and RPMsg, the fabric, and ICSSG RA
 - **The Linux overlay** sets the ICSSG pins (below). Each pad hangs on the ICSSG core that drives it, reads it, or runs its PWM set, so `pru_rproc` applies it when the core probes: P8.31, the pipeline's input, goes with PRU1, in mode 1 (`PRG0_PRU1_GPI0`), and its partner ball is held off. The overlay also carries RTU0's vring interrupt.
 - **Each R5F core** muxes its own pins from its `zephyr/r5/<core>/app.overlay`: the SPI7 pins on R5F0_0, P9.25's EHRPWM4_B on R5F0_1, and P8.18 (as GPIO2_4) on R5F1_0; the UART2 console pins come from the upstream board file, on R5F0_0. R5F1_1 uses no pins. A core can write those pad registers only because Linux has already unlocked them.
 
-Most BeagleBone AI-64 header pins are wired to two SoC balls, an "a" ball and a "b" ball. The ball the demo does not use is held off (mux mode 7, transmit disabled) so it cannot fight the one it does. Every ICSSG pin the demo uses has one ball, but P8.31.
+Most BeagleBone AI-64 header pins are wired to two SoC balls, an "a" ball and a "b" ball. The ball the demo does not use is held off (mux mode 7, transmit disabled) so it cannot fight the one it does. Among the ICSSG pins, P8.31, P8.32, P8.33, P8.35, P8.38, and P9.21 have a second ball, each held off; the rest have one.
 
 The Linux overlay is `beagle-linux/overlays/k3-j721e-beagleboneai64-ai64-demo.dtso`. It writes each pad with `J721E_IOPAD()` from BeagleBoard-DeviceTrees `ti/k3-pinctrl.h` (commit `550f7711a4696d5f5e92505289379b754e871313`). This repository does not contain a copy of that header; `./beagle-linux/scripts/build.sh linux` clones the tree and preprocesses the overlay the way that tree's Makefile does (`cpp -nostdinc -I src/arm64`, then `dtc`).
 
@@ -85,7 +85,7 @@ Mux mode 1 on ball AE29 is `PRG0_PRU1_GPI0`, input 0 of PRU1's R31, the one its 
 
 ## ICSSG1: the logic analyzer's 10 inputs
 
-Mode 1 on each of these balls is `PRG1_PRU<n>_GPI<bit>`, an input of PRU0's or PRU1's R31, read in direct mode. Each pad has its receiver and its pull-down on (`PIN_INPUT_PULLDOWN`), so a pin with nothing on it reads low. PRU0's ten go on `&pru1_0`, and the analyzer samples them; PRU1's nine go on `&pru1_1` and stay inputs, but nothing samples them, since PRU1 is free. `pru_rproc` applies them when the cores probe; ICSSG1 drives none of them. P8.32, P8.33, P8.35, P8.38, and P9.21 each have a second ball, held off. [The analyzer's README](pru/logic_analyzer/README.md#the-channels) has the jumpers that bring the demo's signals to them, and why the other ICSSG1 inputs on the header are not among them.
+Mode 1 on each of these balls is `PRG1_PRU<n>_GPI<bit>`, an input of PRU0's or PRU1's R31, read in direct mode. Each pad has its receiver and its pull-down on (`PIN_INPUT_PULLDOWN`), so a pin with nothing on it reads low. PRU0's ten go on `&pru1_0`, and the analyzer samples them; PRU1's nine go on `&pru1_1` and stay inputs, but nothing samples them, since PRU1 is free. `pru_rproc` applies them when the cores probe; ICSSG1 drives none of them. P8.32, P8.33, P8.35, P8.38, and P9.21 each have a second ball, held off. [The analyzer's README](pru/logic_analyzer/README.md#the-channels) has the jumpers that bring the demo's signals to them, and why PRU1's inputs are not among them.
 
 ## ICSSG1: P8.17, with the multicore scheduler
 

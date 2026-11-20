@@ -64,7 +64,7 @@ Linux still loads and starts each core with remoteproc, and `ai64-demo` still re
 
 The buffers are in the 1 MiB of DDR the Linux overlay reserves at `0xa9000000`, past the fabric, and every core's MPU maps them non-cacheable. The doorbells needed some care:
 
-- **Which mailboxes.** After boot, the MCU R5F's firmware, which runs the device manager, listens on mailbox cluster 7 and leaves messages in clusters 5, 6, 8, and 9. Writing doorbells into cluster 7 stopped the device manager answering anyone, until a power cycle. Clusters 10 and 11 have nobody listening; the fabric polls cluster 11's FIFOs 0 to 9.
+- **Which mailboxes.** After boot, the MCU R5F's firmware, which runs the device manager, listens on mailbox cluster 7 and leaves messages in clusters 5, 6, 8, and 9. Writing doorbells into cluster 7 stopped the device manager answering anyone, until a power cycle. Clusters 10 and 11 have nobody listening; the fabric polls cluster 11's FIFOs 0 to 11, one per node.
 - **Which users.** Only users 1 to 3 of a cluster reach the interrupt router (TI-SCI's `pend_intr` 0 to 2). So R5F0_1, R5F1_0, and R5F1_1 are users 1 to 3 of cluster 10, and R5F0_0 is user 1 of cluster 11, on its FIFOs 12 to 14. Each core routes its user to VIM 229, the way it routes Linux's doorbell ([below](#linux-to-zephyr-the-mailbox-interrupt)):
 
 | Core | Doorbells | Router 213 input | Router output | VIM input |

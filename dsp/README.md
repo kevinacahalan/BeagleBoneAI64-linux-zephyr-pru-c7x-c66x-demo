@@ -32,7 +32,7 @@ Both C66x cores run the same image: each sees its own L2 SRAM at `0x00800000`, a
 
 The compilers are TI's C6000 CGT 8.3.12 and C7000 CGT 1.2.0.STS, the newest versions TI serves without a login (`containers/dsp-cgt/`).
 
-The windows read the trace buffers with `ai64 trace`. It finds the buffer from the resource table in the core's firmware file, and reads it through `/dev/mem`, so it needs neither root nor debugfs.
+The windows read the trace buffers with `ai64 trace`. It finds the buffer from the resource table in the core's firmware file, and reads it through `/dev/mem`, not debugfs. Opening `/dev/mem` takes `CAP_SYS_RAWIO` as well as the file's permissions, so it runs as root, or as a user once `ai64-demo` has given `/usr/bin/ai64` that capability ([Security](../README.md#security)).
 
 ## Linux to the DSPs: FIR jobs
 
@@ -85,9 +85,12 @@ Both DSPs run their own path in `ai64_dsp_job.h`, with the plain C loop left for
 | `0x40000000` | 1 GiB | device, apart from the L2 SRAM pages below | |
 | `0x64800000` | 4 KiB | normal, non-cacheable | the job block header |
 | `0x64801000` | 60 KiB | normal, write-back | the rest of the job block |
+| `0x64810000` | 4 KiB | normal, non-cacheable | the pipeline's features, which C66x 0 writes ([the pipeline](../docs/pipeline.md)) |
+| `0x64811000` | 12 KiB | normal, write-back | the pipeline's weights and outputs |
 | `0xa8000000` | 2 MiB | normal, non-cacheable | the DMA pool, then the trace buffer and resource table at `0xa8100000` |
 | `0xa8200000` | 14 MiB | normal, write-back | code, data, stack, and the page tables |
 | `0xa9000000` | 128 KiB | normal, non-cacheable | the fabric |
+| `0xa9090000` | 64 KiB | normal, non-cacheable | the pipeline's DDR block |
 
 Anything else faults. The register values and their order follow the secure startup in TI's PDK (`ti/csl/arch/c7x/src/Mmu.c`), which flushes no cache and no TLB before the MMU goes on. One difference: the table base goes in `TBR0` as well as `TBR0_S`. With only `TBR0_S`, the core stops the moment the MMU is on, even though the core starts in secure supervisor mode.
 

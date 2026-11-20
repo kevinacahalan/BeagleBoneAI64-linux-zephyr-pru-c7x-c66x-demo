@@ -6,7 +6,7 @@ ICSSG1 PRU0 samples 10 header pins at once, at a rate you pick from 125 MS/s dow
 - **An MCP server** at `http://<board>:8065/mcp`, so Claude Code or any other MCP client can set the rate, capture around a trigger, measure, and decode.
 - **`ai64 la`** on the board, which prints each pin's activity, measures timing, and writes VCD files for PulseView or GTKWave.
 
-Jumper wires bring it the demo's own signals (the PWM generators, SPI7, the square wave, and EHRPWM4 as a fast test signal), so the board can measure itself.
+Jumper wires bring it the demo's own signals (the PWM generators, SPI7, the square wave, and EHRPWM4), so the board can measure itself. EHRPWM4 runs the demo's steps like the other PWM generators; `tests/run.sh stress` turns it into a fast test signal, down to 16 ns periods.
 
 You choose the channels and the sample rate. The more bytes a second that setup writes, the less of it the board can stream live: up to about 300 MB/s, enough for every channel at 62.5 MS/s (267 MB/s). A faster setup, up to every channel at 125 MS/s, still captures whole, read back from the ring after ([Faster than live](#faster-than-live)). PRU0 itself never falls behind. Anything lost along the way is a [marked hole](#holes), never a false level.
 
@@ -41,11 +41,11 @@ The channels are PRU0's GPI pins, numbered in header order: P8 before P9, then b
 | 4 | P8.10 | GPI15 | P8.18 | the 1 kHz square wave |
 | 5 | P8.36 | GPI7 | P8.11 | ICSSG0 slice 0, A |
 | 6 | P8.38 | GPI8 | P8.12 | ICSSG0 slice 0, B |
-| 7 | P9.11 | GPI0 | P9.25 | EHRPWM4, from Zephyr on R5F0_1: the fast test signal |
+| 7 | P9.11 | GPI0 | P9.25 | EHRPWM4, from Zephyr on R5F0_1: the demo's steps, or the pipeline's output; `stress`'s fast test signal |
 | 8 | P9.13 | GPI1 | P9.12 | ICSSG0 slice 1, A |
 | 9 | P9.23 | GPI9 | P9.15 | ICSSG0 slice 1, B |
 
-Each pin is in mode 1, `PRG1_PRU0_GPI<bit>`, with its pull-down on, so a pin with nothing on it reads a steady low. P8.38 has a second SoC ball, which the overlay holds off. PRU1's nine GPI pins (P8.05, P8.06, P8.21, P8.23, P8.25, P8.32, P8.33, P8.35, P9.21) stay muxed as its inputs, but nothing samples them: PRU1 is free.
+Each pin is in mode 1, `PRG1_PRU0_GPI<bit>`, with its pull-down on, so a pin with nothing on it reads a steady low. P8.38 has a second SoC ball, which the overlay holds off. PRU1's nine GPI pins (P8.05, P8.06, P8.21, P8.23, P8.25, P8.32, P8.33, P8.35, P9.21) stay muxed as its inputs, but nothing samples them: PRU1 is free. They cannot simply be added as channels 10 to 18, because a PRU's R31 holds only its own GPI pins: PRU0 cannot see PRU1's, so sampling them would take PRU1 running a sampler of its own, in step with PRU0.
 
 ## The web viewer
 
@@ -96,7 +96,7 @@ The waveforms fill the window: a row per channel in its own color, the time rule
 
 Answers are JSON, as both text and structured content, and sized for a model: measurements and windows, not whole captures. Each says the setup it was taken at, and `la_mode`'s notes tell a model how to pick a rate. Through the MCP Python SDK's client, at 25 MS/s, `la_capture` with `{"trigger": {"channel": 1, "edge": "fall"}, "seconds": 0.002, "pre_seconds": 0.0002}` caught SPI7's chip select falling while the demo sent `spi hello`, and `la_decode` returned `{"frames":[{"t_ns":200000,"mosi":"68 65 6c 6c 6f","mosi_text":"hello"}]}`. UART decoding has not yet met a real UART: none of the demo's signals on the analyzer's pins is one.
 
-Unlike the web page, it can change the setup, which every viewer then follows, so it guards itself. It refuses a request whose `Origin` header is not its own address, which keeps a web page elsewhere from reaching it through your browser, and with `AI64_MCP_TOKEN` set in its environment it requires `Authorization: Bearer <token>` on every request. Without a token, anyone on the board's network can use it: it is meant for a bench.
+Unlike the web page, it can change the setup, which every viewer then follows, so it guards itself. It refuses a request whose `Origin` header is not its own address, which keeps an ordinary web page elsewhere from reaching it through your browser, though not one that uses DNS rebinding; with `AI64_MCP_TOKEN` set in its environment it requires `Authorization: Bearer <token>` on every request. Without a token, anyone on the board's network can use it: it is meant for a bench ([Security](../../README.md#security)).
 
 ## From the shell
 
@@ -118,6 +118,8 @@ ICSSG1 logic analyzer, the last 1.004 s; IEP0 at 5493.118 s
 ```
 
 Frequency and duty are over the whole second, so the PWM channels show the average of their steps: 15 kHz, and 50% on A. SPI7 only moves at startup and for each `spi` command, so its channels sit still.
+
+106.7 MB/s is 25 MS/s of 4-byte words, 100 MB/s, plus the tag word that ends each 64-byte block. `lost` counts the blocks that became [holes](#holes): none in the last second here, and 113 since the window started an hour and a half before. At 15 samples a block that is about 68 µs of the signal missing, in short gaps where the SoC held DDR off PRU0 for longer than it could buffer.
 
 | Command | What it does |
 | --- | --- |
@@ -174,9 +176,15 @@ At 125 MS/s there is one spare instruction between samples, so the block's bookk
 
 **The ring** is the first 32 MiB of the 64 MiB the overlay reserves at `0xac000000`: a 64-byte slot per block, wrapping when full. A block's tag is the run's key plus its number. Linux picks a new random key each time it starts PRU0, so a slot left by an earlier run, or one PRU0 dropped, never reads as this run's. PRU0 keeps no count: sample k of block n is at t0 + (n × samples per block + k) × the sample time, so Linux knows from IEP0, which it reads directly, which blocks are due. Every rate ran on time to the block, measured over seconds against IEP0.
 
+**What the timing rests on.** Three things, which a port to another board or SoC has to keep:
+
+- PRU0 sets bit 0 of ICSSG1's `IEPCLK` register, so IEP0 counts on the ICSSG core clock (sync mode), the clock PRU0's own instructions run on. That is why sample n is exactly n periods after t0 on IEP0. The bit clears only on a hardware reset (`pru/common/icssg.h`).
+- Linux reads IEP0's 64-bit count itself (`la_now()` in `linux-app/la_src.c`), so it works out which blocks are due on the same clock, with nothing to convert and no wrap to handle.
+- The reader looks at a block only once 100 µs (`SETTLE_NS`) and one block's time have passed since the block was due: time for XFR2VBUS's write to land, and for the SoC to hold DDR off PRU0 for a while. A block that still lacks this run's tag after that is lost, and becomes a hole.
+
 **Linux** (`linux-app/la_src.c`) maps the ring through `/dev/ai64-la`, a small kernel module in this repo (`beagle-linux/kernel/ai64_la/`) that `ai64-demo` loads.
 
-- The overlay reserves the ring `no-map`, so through `/dev/mem` it maps as Device memory: a bus transaction per load, about 220 MB/s. The module maps it as Normal, cached memory instead, and the reader cleans and invalidates each line (`DC CIVAC`, which Linux lets user space do) just before reading it, since PRU0's writes go to DDR behind the caches: 1.27 GB/s.
+- The overlay reserves the ring `no-map`, so through `/dev/mem` it maps as Device memory: a bus transaction per load, about 220 MB/s with PRU0 stopped. The module maps it as Normal, cached memory instead, and the reader cleans and invalidates each line (`DC CIVAC`, which Linux lets user space do) just before reading it, since PRU0's writes go to DDR behind the caches: 1.27 GB/s.
 - One pump thread per process copies each block, 100 µs after it is due, into a cached copy of the ring. Every reader in the process finds the changes in that copy at its own pace, so all the web page's viewers share one pass over DDR. A word whose samples all equal the last one is skipped whole, so a quiet channel costs little to decode.
 - A reader decodes a block only from a copy the pump had finished and had not yet started overwriting a lap later, so a block the pump wrote over becomes a hole, never a mix of two laps.
 - A reader keeps up live with 266 MB/s (every channel at 62.5 MS/s), even with 10 million changes a second. At 533 MB/s (every channel at 125 MS/s) it gets through 300 to 380 MB/s, with finding the changes taking most of a core. `LA_LIVE_BPS_CACHED`, 300 MB/s, is what a setup may write and still stream live.
@@ -209,11 +217,11 @@ Nothing the analyzer misses is passed off as signal. A hole is where blocks of s
 
 ## What it measures
 
-The board tests (`tests/run.sh check`) read the board's own signals: the square wave at 1000 Hz; the PWM generators at 15 kHz averaged over their steps; a capture triggered on the square wave's rise with 1 ms of the ring before it; 40 ms of every channel at 125 MS/s, read whole afterwards; and, through the MCP server, a capture triggered on SPI7's chip select that decodes to `hello`. The 1 kHz square wave, which R5F1_0 makes in software, measures 1,000,000 ns from rise to rise at the median at 25 MS/s, with jitter up to 17 µs either way.
+The board tests (`tests/run.sh check`) read the board's own signals: the square wave at 1000 Hz; the PWM generators at 15 kHz averaged over their steps; a capture triggered on the square wave's rise with 1 ms of the ring before it; 40 ms of every channel at 125 MS/s, read whole afterwards; and, through the MCP server, a capture triggered on SPI7's chip select that decodes to `hello`. The 1 kHz square wave, which R5F1_0 makes in software, measures 1,000,000 ns from rise to rise at the median at 25 MS/s, with now and then a period up to 17 µs off either way, when another interrupt holds up R5F1_0's timer. The test allows for that; most periods are within a few µs.
 
-`tests/run.sh stress` takes ch7 alone at 125 MS/s, one byte a sample, live, against EHRPWM4 stepped from 2 µs down to 16 ns, its fastest: 62.5 MHz, the Nyquist rate. It stops the `la` window's reader first, since without the module two readers at that rate fall behind. Then it takes every channel at 125 MS/s, read whole from the ring. With ch7 alone, every period comes out exact at every step, 16 ns included, and every high time is exact, or one sample short where half the period is not a whole number of samples (96 ns of 200, 16 of 40). At 200 ns the reader finds all 10 million edges a second live, losing only PRU0's own drops.
+`tests/run.sh stress` takes ch7 alone at 125 MS/s, one byte a sample, live, against EHRPWM4 stepped from 2 µs down to 16 ns, its fastest: 62.5 MHz, the Nyquist frequency of 125 MS/s. It stops the `la` window's reader first, since without the module two readers at that rate fall behind. Then it takes every channel at 125 MS/s, read whole from the ring. With ch7 alone, every period comes out exact at every step, 16 ns included, and every high time is exact, or one sample short where half the period is not a whole number of samples (96 ns of 200, 16 of 40). At 200 ns the reader finds all 10 million edges a second live, losing only PRU0's own drops.
 
-**A known effect with EHRPWM4.** EHRPWM4 and PRU0 run from the same clock and both switch on its 4 ns grid, so PRU0's samples land at the same place against EHRPWM4's edges every period. That can be right on an edge, inside the input's setup and hold time, and then a high reads a sample long or short, the same way every period. With every channel at 125 MS/s (32 bits a sample) it is worse: at 16 ns the odd edge is a sample off (about 1 in 2,500); at 32 ns nearly every high reads as 8 or 24 ns, and at 48 ns as 24 or 32. That is the sampling against this one signal, not the signal: a separate logic analyzer at 500 MS/s on the same pin shows the high and low times equal (8, 16, and 24 ns, within its 2 ns sample), with ch7 alone or with every channel running. A signal on a clock of its own does not line up with the samples like that. So `stress` asks for the median period to be exact and every period and high time to be within a sample, and takes every channel at 48 ns.
+**A known effect with EHRPWM4.** EHRPWM4 counts at 125 MHz, 8 ns a count, and PRU0 samples on a 4 ns grid, and the two clocks are locked together: PRU0's samples land at the same place against EHRPWM4's edges every period. That can be right on an edge, inside the input's setup and hold time, and then a high reads a sample long or short, the same way every period. With every channel at 125 MS/s (32 bits a sample) it is worse: at 16 ns the odd edge is a sample off (about 1 in 2,500); at 32 ns nearly every high reads as 8 or 24 ns, and at 48 ns as 24 or 32. That is the sampling against this one signal, not the signal: a separate logic analyzer at 500 MS/s on the same pin shows the high and low times equal (8, 16, and 24 ns, within its 2 ns sample), with ch7 alone or with every channel running. A signal on a clock of its own does not line up with the samples like that. So `stress` asks for the median period to be exact and every period and high time to be within a sample, and takes every channel at 48 ns.
 
 **Against a separate logic analyzer**, on signals from other clocks, the two agree to within a sample:
 

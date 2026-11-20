@@ -20,7 +20,7 @@ Four pieces of SoC hardware that every one of those cores can reach:
 
 - **DDR**, 128 KiB at `0xA9000000`, in the gap between the C7x's carveout and the IPC region above it. The overlay reserves 1 MiB there (`ai64-fabric@a9000000`, no-map) so that Linux keeps out, and `ai64-demo` refuses to start the cores on a kernel that booted without it. Each node owns an 8 KiB page: its inbox, and the counts it publishes for Linux to read. A spinlock tally follows the pages.
 - **Mailbox cluster 11** (`0x31F8B000`) for doorbells. Linux's device tree leaves clusters 5–11 disabled; 5, 6, 8, and 9 hold messages from the device manager's firmware, and 11 is empty. FIFO n is node n's doorbell.
-- **The GTC** (`0x00A90000`), the 200 MHz counter Linux's arch timer counts too. Every core reads the same clock, so a latency measured from one core's stamp to another's is real, one way.
+- **The GTC** (`0x00A90000`), the 200 MHz counter Linux's arch timer counts too. Every core reads the same clock, so a latency measured from one core's stamp to another's is real, one way. A message carries the counter's low 32 bits, which wrap every 21.47 s; every difference is taken in 32 bits, so it comes out right as long as it is under that, and the 50 ms timeout keeps it so.
 - **Hardware spinlock 255** (`0x30E00000`), which no kernel driver uses, for the tally.
 
 ## Read your own page, write to the others
@@ -35,7 +35,7 @@ Each inbox has one 64-byte slot for every sender and message class, and only tha
 | --- | --- | --- |
 | ping | every node, to every other, every 10 ms | carries the sender's GTC stamp and a value. The receiver stamps when it has read it, mixes its node number into the value, and sends it back. |
 | pong | the receiver of a ping | the sender checks the value and times the round trip. The receiver's stamp minus the sender's is the one-way latency. A ping with no pong in 50 ms is a timeout, and that peer counts as down until a later ping comes back. |
-| tour | R5F0_0, every 10 ms | goes round every node whose pings R5F0_0 sees answered, Linux included while its viewer runs, in an order that keeps changing the kind of core: c66x0, g0rtu0, r5f1_0, c7x, r5f0_1, c66x1, g0rtu1, r5f1_1, linux, and home. Each hop stamps it and mixes its number into the value, and R5F0_0 checks the value when the tour comes back. |
+| tour | R5F0_0, every 10 ms | goes round every node whose pings R5F0_0 sees answered, Linux included while its viewer runs, in an order that keeps changing the kind of core: c66x0, g0rtu0, r5f1_0, c7x, g1rtu0, r5f0_1, c66x1, g0rtu1, r5f1_1, g1rtu1, linux, and home. Each hop stamps it and mixes its number into the value, and R5F0_0 checks the value when the tour comes back. |
 | route | `ai64 fabric route`, from Linux | the same as a tour, along the nodes you name and back to Linux. It can carry an action for the first PWM generator on the way: `pwm <period_ns> <duty_ns>` or `steps <ms>` for ICSSG0 RTU0 or RTU1, or R5F0_1's EHRPWM4, or `sweep <ms>` or `dead <ns>` for either RTU. Its count lives in a word of its own, so routes work while the viewer, also node 0, runs. |
 
 A node that starts takes the counts it finds as already seen, and zeroes its own counters. A message sent to a stopped node is simply lost, and its sender times out, so `ai64-demo` can restart any core while the others keep going.
@@ -62,42 +62,42 @@ The `fabric` window, `ai64 fabric`, redraws once a second. On the Yocto image, w
 ```
 fabric: one-way latency in us, from the row's node to the column's, over the last 1.0 s
          linux r5f0_0 r5f0_1 r5f1_0 r5f1_1  c66x0  c66x1    c7x g0rtu0 g0rtu1 g1rtu0 g1rtu1
-linux        .    6.4    6.3    5.1    4.9    8.7    6.6    3.1    4.1    4.5    4.8    4.7
-r5f0_0    46.5      .    7.4    5.3    5.7   10.7    9.9    4.0    4.9    5.4    5.7    5.4
-r5f0_1    46.2    9.2      .    7.2    5.6    8.5   10.4    3.8    5.3    5.3    5.2    5.1
-r5f1_0    49.9    7.2    6.7      .    5.2    9.3    9.8    3.6    4.9    4.9    5.1    5.0
-r5f1_1    41.5    7.0    7.1    5.5      .    8.5    9.0    3.8    4.7    5.1    5.5    5.1
-c66x0     34.6    5.8    7.2    4.7    4.7      .    8.0    2.9    4.0    4.4    4.6    4.4
-c66x1     37.7    6.8    6.7    4.9    4.7    9.7      .    3.2    4.3    4.3    5.2    4.3
-c7x       33.9    5.6    5.6    3.8    4.5    7.5    7.9      .    3.5    3.6    4.7    4.1
-g0rtu0    42.8    6.6    5.7    4.9    5.1    8.3    7.8    3.1      .    4.3    4.8    4.8
-g0rtu1    46.2    6.7    6.3    4.9    4.7    7.5    8.7    3.2    4.1      .    4.7    4.9
-g1rtu0    45.6    6.0    6.7    4.9    5.4    8.2    9.3    3.1    4.0    4.3      .    4.8
-g1rtu1    42.0    6.4    6.3    5.1    4.9    8.4    8.8    3.1    4.4    4.4    5.0      .
+linux        .    7.2    7.2    5.1    5.1   10.4    8.3    3.3    4.1    4.4   51.2   57.5
+r5f0_0    61.7      .    6.7    5.5    5.5    8.2    7.4    3.8    4.7    5.6   56.5   53.7
+r5f0_1    40.6    6.4      .    5.3    5.2    8.4    9.3    3.3    4.5    4.9   57.2   54.4
+r5f1_0    53.9    6.8    6.8      .    5.5    8.2    9.0    3.5    4.4    4.7   53.7   61.0
+r5f1_1    50.0    7.0    6.5    5.2      .    8.9    9.7    3.2    4.1    4.3   54.3   57.5
+c66x0     50.1    5.8    6.7    4.1    4.5      .    7.8    2.7    3.4    3.7   55.2   50.1
+c66x1     44.7    6.0    5.9    4.2    4.5    7.2      .    2.5    3.8    3.9   46.9   57.2
+c7x       57.4    5.6    4.8    3.9    4.1    6.7    7.5      .    3.0    3.3   50.5   52.3
+g0rtu0    57.5    6.4    5.8    4.5    4.7    7.3    9.7    2.7      .    3.8   56.9   53.7
+g0rtu1    57.8    6.0    5.5    4.6    4.4    9.0    8.7   10.3    3.6      .   54.4   53.6
+g1rtu0    74.3    6.4    8.5    4.9    6.9   10.6   10.5    2.7    5.8    4.0      .   51.7
+g1rtu1    54.7    6.4    7.7    4.4    7.1    5.4    8.0    2.6    5.4    3.9   57.6      .
 
 node    starts   polls/s  pongs/s    rtt us  rtt min to max us timeouts errors  passed/s
-linux       15     13130     1100      77.8     37.7 to  156.3        0      0       100
-r5f0_0      15    262788     1100      18.6      6.3 to  124.9        0      0         0
-r5f0_1      15    257106     1100      16.3      5.9 to  110.3        0      0       100
-r5f1_0      15    328239     1100      14.9      5.9 to  102.3        0      0       100
-r5f1_1      15    360885     1100      13.9      4.9 to  101.1        0      0       100
-c66x0       15    804658     1100      12.3      4.1 to  127.1        0      0       100
-c66x1       15    802735     1100      13.3      4.8 to  170.9        0      0       100
-c7x         15    801001     1100      10.7      4.2 to   96.9        0      0       100
-g0rtu0      15    442011     1100      13.0      4.9 to   98.5        0      0       100
-g0rtu1      15    420796     1100      13.6      5.3 to   97.4        0      0       100
-g1rtu0       6    305480     1100      14.0      4.5 to  784.5        0      0       100
-g1rtu1       6    289146     1100      13.6      4.5 to   99.0        0      0       100
+linux       11     12331     1100      87.5     59.4 to 1637.3        0      0       100
+r5f0_0      11    285821     1100      29.6      5.9 to 1590.4        0      0         0
+r5f0_1      11    314315     1100      23.4      4.9 to 1268.6        0      0       100
+r5f1_0      11    380581     1101      24.0      4.9 to 1132.5        0      0       100
+r5f1_1      11    385050     1100      23.4      4.6 to 1345.5        0      0       100
+c66x0       11   1104419     1100      22.5      3.9 to  842.8        0      0       100
+c66x1       11   1099597     1100      22.2      4.2 to 1398.2        0      0       100
+c7x         11   1058320     1100      20.8      4.0 to 1465.9        0      0       100
+g0rtu0      11    612849     1100      23.0      4.1 to 1285.6        0      0       100
+g0rtu1      11    583335     1101      23.7      4.4 to 1496.4        0      0       100
+g1rtu0      11      9699     1100     107.5    102.5 to 1232.1        0      0       100
+g1rtu1      11      9719     1099     105.7    102.5 to  929.9        0      0       100
 
-tour from r5f0_0 round every node that answers its pings: 100 laps/s, 125.2 us a lap (71.3 to 192.1), errors 0, timeouts 7
-  r5f0_0 >46.3> c66x0 >4.2> g0rtu0 >5.3> r5f1_0 >4.2> c7x >4.2> g1rtu0 >6.7> r5f0_1 >9.4> c66x1 >5.0> g0rtu1 >5.5> r5f1_1 >10.6> g1rtu1 >44.6> linux >6.4> r5f0_0
+tour from r5f0_0 round every node that answers its pings: 100 laps/s, 238.6 us a lap (105.7 to 1206.7), errors 0, timeouts 6
+  r5f0_0 >8.2> c66x0 >4.5> g0rtu0 >5.6> r5f1_0 >4.1> c7x >85.7> g1rtu0 >7.3> r5f0_1 >68.0> c66x1 >4.9> g0rtu1 >7.6> r5f1_1 >6.5> g1rtu1 >11.6> linux >4.5> r5f0_0
 
-tally under hardware spinlock 255: 117315 adds, and the 12 counts sum to 117315
+tally under hardware spinlock 255: 111209 adds, and the 12 counts sum to 111209
 ```
 
-- **The matrix.** Between any two of the R5Fs, DSPs, and RTUs a message takes 3 to 11 µs, reading it included. (These were measured while ICSSG1's RTUs still polled every pass of their loop; now they poll every 100 µs, and their round trips average about 105 µs: 102.5 µs at the least, on the Debian image.) The C7x, whose main loop is shortest, is the quickest to notice one; the C66x cores, the slowest, at 7.5 to 10.7 µs. Linux sleeps between looks, so a message to it takes about 35 to 50 µs.
-- **The nodes.** `starts` counts each node's starts since the board booted. `rtt us` is the mean round trip to all of the node's peers, which Linux pulls up; the minimum and maximum are the fastest and slowest single round trips in the last second. `passed/s` is tour hops, one per node per lap.
-- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 7 timeouts.
+- **The matrix.** Between any two of the R5Fs, DSPs, and ICSSG0's RTUs a message takes about 2.5 to 11 µs, reading it included. The C7x, whose main loop is shortest, is the quickest to notice one, at 2.5 to 4 µs; the C66x cores, the slowest, at 5.4 to 10.6 µs. Linux sleeps between looks, so a message to it takes about 40 to 75 µs. ICSSG1's two RTUs look at their inbox only every 100 µs, so as not to load ICSSG1's port to the SoC while the analyzer writes through it, and a message to either waits about 50 µs, half of that, on average.
+- **The nodes.** `starts` counts each node's starts since the board booted: this one had just run `tests/run.sh soak 10`. `rtt us` is the mean round trip to all of the node's peers, which Linux and ICSSG1's RTUs pull up; ICSSG1's own are about 106 µs. The minimum and maximum are the fastest and slowest single round trips in the last second: now and then one takes 1 to 2 ms. Every node polls, so nothing is late by design; a slow one is a core held up by something else on the SoC, and only the mean says what to expect.
+- **The tour.** Each `>µs>` is one hop, from the last node reading the message to the next reading it; a hop into one of ICSSG1's RTUs waits for its next look, up to 100 µs. R5F0_0 started before the DSPs and the ICSSG cores in that `ai64-demo` run, so its first tours ran into cores that were restarting: those are the 6 timeouts.
 - **The tally.** Every add from all twelve nodes is in the total, so the lock held.
 
 The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric lines`).
@@ -131,7 +131,7 @@ P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps agai
 
 ## Restarts
 
-`ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting every demo core each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both. Those runs had ten nodes, with the multicore scheduler on ICSSG1; with the analyzer's two RTUs as nodes 10 and 11, `tests/run.sh soak` restarts every core and checks the same, all twelve up.
+`tests/run.sh soak 10` on the Yocto image ran `ai64-demo` 10 times in a row, stopping and starting every demo core each time while the others kept talking. Every run came back with all 16 demo cores running and the free ones stopped, RTU0 answering over RPMsg, both ICSSG0 PWM slices running, the pipeline trained with nothing wrong, the analyzer's channels reading the demo's signals, no fabric timeouts or errors, the tally agreeing, and no kernel errors after all ten. Before ICSSG1 held the analyzer, with ten nodes and the multicore scheduler there, `ai64-demo` ran 10 times on the Debian image and 20 on the Yocto image the same way, and routes with `pwm` actions changed the ICSSG PWM and P9.25 alike on both.
 
 ## What it costs
 

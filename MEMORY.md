@@ -15,6 +15,8 @@ Most of it has build-time checks: the R5F's `mpu.c` checks the regions it maps a
 
 The board's device tree reserves each core's carveout, and the demo's overlay reserves 1 MiB at `0xa9000000` for what the cores share, and 64 MiB at `0xac000000` for the logic analyzer, so Linux keeps out of all of them.
 
+The fabric has three sizes, which nest: its twelve pages are 96 KiB; every core maps 128 KiB from `0xa9000000` (`AI64_FAB_SIZE`), which takes in the tally after the pages and leaves room; and the overlay's reservation is 1 MiB, which also holds the R5F cores' `ipc_service` buffers and the pipeline's block.
+
 | Address | Size | What | Written by | Read by |
 | --- | --- | --- | --- | --- |
 | `0xa2000000` | 16 MiB | R5F0_0's carveout: vrings (1 MiB), resource table (1 MiB), then the image | Linux (vrings), R5F0_0 | Linux, R5F0_0 |
@@ -26,7 +28,7 @@ The board's device tree reserves each core's carveout, and the demo's overlay re
 | `0xa8000000` | 1 MiB | the C7x's DMA pool | | |
 | `0xa8100000` | 1 MiB | the C7x's trace buffer and resource table | the C7x | Linux |
 | `0xa8200000` | 14 MiB | the C7x's image: code, data, stack, page tables | Linux (load), the C7x | the C7x |
-| `0xa9000000` | 96 KiB | the fabric: one 8 KiB page per node, twelve, all used | each node's own page, its inbox by every sender | every node |
+| `0xa9000000` | 96 KiB | the fabric: one 8 KiB page per node, twelve, all used; the first 96 KiB of the 128 KiB each core maps | each node's own page, its inbox by every sender | every node |
 | `0xa9018000` | | the fabric's spinlock tally | every node, under hardware spinlock 255 | Linux |
 | `0xa9020000` | 384 KiB | free, inside the reservation | | |
 | `0xa9080000` | 4 KiB | R5F0_0's UDMA rings and descriptor (the `ipc_service` slot for core 0 to itself) | R5F0_0, the UDMA | R5F0_0, the UDMA |
@@ -76,5 +78,5 @@ Clusters 5 to 9 are not the demo's: the device manager's firmware listens on clu
 | R5F | its carveout, write-through cached, the vrings and resource table not (`common/src/mpu.c`) | MPU regions, normal non-cacheable | the low 2 GiB, device memory |
 | C66x | its L2 SRAM; L1D snoops writes from outside | the MAR registers of the fabric's and the C7x's pages cleared, so nothing is cached or prefetched | directly, but the GTC through MPAX |
 | C7x | its DDR image write-back; the job block past its header write-back (`dsp/c7x/mmu.c`) | MMU pages, normal non-cacheable | the low 1 GiB, device memory |
-| ICSSG | its data RAM and its ICSSG's shared RAM: no cache | the RTUs only, with `LBBO`/`SBBO` bursts; a PRU or Tx_PRU stays inside its ICSSG | the RTUs, and each Tx_PRU's one GTC read a period |
-| Linux | | `/dev/mem`, mapped uncached (`O_SYNC`) | the same |
+| ICSSG | its data RAM and its ICSSG's shared RAM: no cache | ICSSG0's and ICSSG1's RTUs, with `LBBO`/`SBBO` bursts; ICSSG1 PRU0, which writes the logic analyzer's ring through XFR2VBUS; no other PRU or Tx_PRU reaches DDR | the RTUs, and each Tx_PRU's one GTC read a period |
+| Linux | | `/dev/mem`, mapped uncached (`O_SYNC`); the logic analyzer's ring through `/dev/ai64-la` instead when its module is loaded: offset 0 maps it normal, cached, and the reader cleans and invalidates each line before reading it (`DC CIVAC`); offset 32 MiB maps it non-cacheable (`beagle-linux/kernel/ai64_la/`) | `/dev/mem` |
