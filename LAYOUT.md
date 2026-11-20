@@ -116,7 +116,7 @@
 
 `yocto/` — kas config and the `meta-ai64` layer. Recipes there build `ai64`, the R5F images, the twelve ICSSG images, and the DSP images; `recipes-kernel/` patches TI's 6.18 kernel so the R5F and C66x cores restart.
 
-`media/` — the README's pictures: the bench photo, and logic analyzer captures of the demo's pins.
+`media/` — the READMEs' pictures: the bench photo, captures of the demo's pins from a separate logic analyzer, and screenshots of the board's web page (`web.png`) and of the logic analyzer's viewer (`la-viewer.png`, `la-decode.png`).
 
 `containers/` — Containerfiles for the Linux, PRU, Zephyr, and DSP build images.
 

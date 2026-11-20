@@ -1,17 +1,50 @@
 # BeagleBone AI-64: Linux, Zephyr, PRU, RTU, Tx_PRU, and DSPs together
 
-A starting point for BeagleBone AI-64 (TI TDA4VM / J721E) projects that use its heterogeneous cores:
+The BeagleBone AI-64's TI TDA4VM (J721E) has 23 cores of seven kinds: two Cortex-A72s, six Cortex-R5Fs, two C66x DSPs, a C7x DSP with a matrix accelerator, and twelve PRU, RTU, and Tx_PRU cores in its two ICSSGs. Most projects use only the A72s, because getting the rest booted, talking, and restartable is a lot of work spread over TI documents, kernel drivers, and forum threads.
 
-- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo.
-- **Zephyr** runs on all four main-domain Cortex-R5F cores, R5F0_0, R5F0_1, R5F1_0, and R5F1_1 (R5F, then the cluster, then the core): an app for each, in `zephyr/r5/<core>/`, on code they share, and one `west build --sysbuild` makes all four ([Four Zephyr apps, one build](zephyr/r5/README.md)). R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA; R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4, which the pipeline below takes over once it runs; R5F1_0 makes a square wave on P8.18 from a kernel timer; R5F1_1 watches the other three. They call each other through Zephyr's `ipc_service`, so any core takes a request for SPI or the PWM and passes it on to the one whose job it is. Each answers function calls from Linux too (eRPC over RPMsg). Their drivers get clocks, power, and interrupt routes from the board's device manager over TI-SCI, which a small polled mailbox driver carries on these cores ([Zephyr and the device manager](zephyr/r5/README.md#zephyr-and-the-device-manager-ti-sci)).
-- **ICSSG0 makes PWM three ways** ([PWM, three ways](pru/README.md#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing its pins at times it polls from IEP0; slice 1 with the ICSSG's own PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, which copies slice 0's A onto P8.15, given only a period and duty by slice 0's Tx_PRU. Each slice makes a complementary pair, A and B: B is high while A is low, except for 1 µs of dead band where both are low. Like P9.25, both start stepping through 10, 15, and 20 kHz, and at each through 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges. RTU0 talks to Linux over RPMsg; RTU1 only over shared memory.
-- **ICSSG1 is a 10-channel logic analyzer** ([ICSSG1: a logic analyzer](pru/logic_analyzer/README.md)), set up as a Saleae is: pick the channels and a sample rate from 125 MS/s down to 1.25 MS/s. ICSSG1 PRU0 samples them all at once with no gap and hands each block of samples to XFR2VBUS, which writes it to a ring in DDR without the PRU ever waiting, and Linux finds the changes: `ai64 la` shows each pin's frequency and duty and writes VCD files for PulseView or GTKWave, a page on the board streams them live into a browser, and an MCP server lets Claude Code, or any MCP client, capture around a trigger, measure, and decode them. Jumper wires bring it the demo's own signals, the PWM generators, SPI7, the square wave, and EHRPWM4, so the board measures itself. The board's reader streams about 300 MB/s live, every channel at 62.5 MS/s, through a small kernel module of the demo's that maps the ring cached; a capture at a faster setup, up to every channel at 125 MS/s, still comes whole from the ring. Anything lost is a marked hole, never a false level. TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler), which ICSSG1 ran before, is kept as an extra demo ([extra-demos/](extra-demos/README.md)).
-- **The two C66x DSPs and the C7x DSP** log through their remoteproc trace buffers, which Linux follows, and run FIR filter jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, about 250 times as fast as one A72 core ([The C7x's MMA](dsp/README.md#the-c7xs-matrix-multiply-accelerator)), with its input brought into its L2 SRAM by R5F0_0's DMA ([R5F0_0's DMA](zephyr/r5/README.md#r5f0_0s-dma-the-udma)).
-- **The pipeline** takes a signal in on one header pin and out on another, through five kinds of core, with no Linux in the path ([The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz with its GPI shift register, and RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into the L2 SRAM of one C66x or the other, in turn; the C66x takes its FFT; the C7x's MMA classifies the spectrum, with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper wire from P9.15 gives it ICSSG0's stepping PWM to listen to: it names every one of the 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
-- **The fabric** joins these cores, and Linux, directly to each other: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices and to ICSSG1's logic analyzer, and back. Every core pings every other one, R5F0_0 sends a message round all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](docs/fabric.md)).
-- **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies, read from shared memory twice a second ([The web page](#the-web-page)).
+This repo does that work, and puts **16 of the other cores** to work alongside Linux in one demo. Each piece is small and written up next to its code, so you can take only the parts you need into your own project:
 
-The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/logic_analyzer/`, a directory per core with its own makefile and linker script, shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1's analyzer works the same way: its PRUs only watch their pins, and its RTUs carry the records to DDR.
+- **Booting and restarting every core from Linux**, as often as you like, on stock Linux 6.18 (BeagleBoard Debian, or a Yocto image built here).
+- **Talking to each one**: RPMsg and eRPC from Linux, Zephyr's `ipc_service` between the R5Fs, and *the fabric*, a set of shared-memory inboxes and doorbells that lets any core message any other directly, with no Linux in the path.
+- **Real work on each one**: Zephyr drivers for SPI, PWM, GPIO, and DMA on the R5Fs; FIR filters, an FFT, and an int8 neural-network layer on the DSPs; and hardware-timed PWM on the PRUs.
+- **A pipeline across five kinds of core**: a signal goes in on one header pin, gets sampled, moved by DMA, transformed, and classified, and comes back out on another pin about 1.5 ms later.
+- **A 10-channel logic analyzer built from ICSSG1**, sampling at up to 125 MS/s, with a live browser viewer and an MCP server, so an AI agent can capture, trigger on, measure, and decode the board's own pins.
+
+![The logic analyzer's web viewer, served by the board, on the demo's own signals](media/la-viewer.png)
+
+| Core | What it does here | Read |
+| --- | --- | --- |
+| 2 × Cortex-A72, Linux | `ai64`, one program that starts every core, talks to them, and serves the web pages | [`linux-app/`](linux-app/README.md) |
+| 4 × Cortex-R5F, Zephyr | one sysbuild app, four images: SPI and DMA, PWM, a square wave, and a monitor | [`zephyr/r5/`](zephyr/r5/README.md) |
+| ICSSG0: 2 PRUs, 2 RTUs, 2 Tx_PRUs | PWM three ways (software, the ICSSG's PWM module, and its eCAP), and the pipeline's sampler | [`pru/`](pru/README.md) |
+| ICSSG1: PRU0, 2 RTUs | the logic analyzer | [`pru/logic_analyzer/`](pru/logic_analyzer/README.md) |
+| 2 × C66x | FIR jobs, and the pipeline's FFT | [`dsp/`](dsp/README.md) |
+| C7x and its MMA | FIR jobs, and the pipeline's classifier | [`dsp/`](dsp/README.md#the-c7xs-matrix-multiply-accelerator) |
+| all of the above | the fabric: any core to any other, timed on the SoC's shared clock | [`docs/fabric.md`](docs/fabric.md) |
+
+The two MCU-domain R5Fs are left alone: they run the board's device manager.
+
+**To try it**, you need the board, a microSD card, and a Linux PC with podman or docker; every compiler runs in a container. [Quick start](#quick-start-beagleboard-debian) takes you from a blank card to the running demo in four steps. Ten jumper wires let the logic analyzer watch the demo's own signals, and one more feeds the pipeline; without them everything else still runs.
+
+## What runs where
+
+- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo: `ai64-demo` restarts every core with its firmware and opens a tmux window per core.
+- **Zephyr on the four main-domain R5Fs** (R5F0_0, R5F0_1, R5F1_0, R5F1_1: cluster, then core). Each has an app in `zephyr/r5/<core>/` on shared code, and one `west build --sysbuild` builds all four ([Four Zephyr apps, one build](zephyr/r5/README.md)).
+  - R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA.
+  - R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4; the pipeline takes it over once it runs.
+  - R5F1_0 makes a 1 kHz square wave on P8.18 from a kernel timer.
+  - R5F1_1 watches the other three.
+  - They call each other through `ipc_service`, so any core takes a request for SPI or the PWM and passes it to the one whose job it is. Each also answers function calls from Linux (eRPC over RPMsg). Their drivers get clocks, power, and interrupt routes from the device manager over TI-SCI, carried by a small polled mailbox driver ([Zephyr and the device manager](zephyr/r5/README.md#zephyr-and-the-device-manager-ti-sci)).
+- **ICSSG0 makes PWM three ways** ([PWM, three ways](pru/README.md#icssg0-pwm-three-ways)): slice 0 in software, its PRU writing the pins at times it polls from IEP0; slice 1 with the ICSSG's PWM module, on IEP1 compare events; and the ICSSG's eCAP in APWM mode, a copy of slice 0's A on P8.15. Each slice makes a complementary pair, A and B, with 1 µs of dead band where both are low. All of them, and P9.25, step through 10, 15, and 20 kHz at 10, 25, 50, 75, and 90% duty, a step every 5 ms. In each slice the RTU talks to the rest of the SoC, the Tx_PRU modulates the duty, and the PRU makes the edges.
+- **ICSSG1 is a 10-channel logic analyzer** ([ICSSG1: a logic analyzer](pru/logic_analyzer/README.md)). Pick the channels and a sample rate from 125 MS/s down to 1.25 MS/s. PRU0 samples them all with no gap and hands each 64-byte block to the slice's XFR2VBUS engine, which writes it to a ring in DDR without the PRU ever waiting. Linux finds the changes. `ai64 la` measures and writes VCD files, a page on the board streams the pins live into a browser, and an MCP server lets Claude Code, or any MCP client, capture around a trigger, measure, and decode. The board streams about 300 MB/s live (every channel at 62.5 MS/s); faster setups, up to every channel at 125 MS/s, still capture whole from the ring. Anything lost is a marked hole, never a false level. TI's open-pru [`multicore_scheduler`](https://github.com/TexasInstruments/open-pru/tree/main/examples/multicore_scheduler), which ICSSG1 ran before, is kept as an extra demo ([extra-demos/](extra-demos/README.md)).
+- **The two C66x DSPs and the C7x** log through their remoteproc trace buffers and run FIR jobs that Linux hands them through shared memory. The C7x also runs an int8 neural-network layer on its Matrix Multiply Accelerator, fed by its Streaming Engines: 256 rows in under 2 µs, about 250 times as fast as one A72 core ([The C7x's MMA](dsp/README.md#the-c7xs-matrix-multiply-accelerator)). R5F0_0's DMA brings its input into L2 SRAM ([R5F0_0's DMA](zephyr/r5/README.md#r5f0_0s-dma-the-udma)).
+- **The pipeline** takes a signal in on P8.31 and out on P9.25, through five kinds of core, with no Linux in the path ([The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925)). ICSSG0 PRU1 samples P8.31 at 2 MHz; RTU1 stamps each 1.024 ms window, a new one every 512 µs; R5F0_0's UDMA moves each window into one C66x's L2 SRAM, then the other's; the C66x takes its FFT; the C7x's MMA classifies the spectrum with a layer Linux trains at startup; and R5F0_1 sets P9.25 to match. A jumper from P9.15 gives it ICSSG0's stepping PWM to listen to: it names all 15 steps right, and P9.25 plays the pattern back about 1.5 ms later.
+- **The fabric** joins these cores and Linux directly: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices and to ICSSG1's RTUs, and back. Every core pings every other, R5F0_0 sends a message around all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](docs/fabric.md)).
+- **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies ([The web page](#the-web-page)).
+
+The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/logic_analyzer/`, a directory per core with its own makefile and linker script, and shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1's PRU0 is the exception that proves the rule: XFR2VBUS lets it write DDR without ever waiting on it, so it keeps exact time while it streams.
+
+### How the cores connect
 
 ```mermaid
 flowchart LR
@@ -115,9 +148,10 @@ flowchart LR
   fab <--> c7x
   fab <-->|"requests, status"| rtu0
   fab <-->|"requests, status"| rtu1
+  fab <-->|"pings"| lartu
 ```
 
-Each arrow goes from a core to what it controls or talks to; the label says how. Linux also loads and starts every core here through remoteproc, which the diagram leaves out. The four R5Fs each run a Zephyr app of their own, on shared code, built together with sysbuild, and talk to each other through Zephyr's `ipc_service`. The fabric joins Linux, the R5Fs, the DSPs, and both ICSSG0 RTUs directly to each other, so any of them can reach either slice, not only Linux. RTU1 takes requests only over the fabric; RTU0 takes them over RPMsg too. What the fabric is made of, and how far into a slice it reaches:
+Each arrow goes from a core to what it controls or talks to; the label says how. Linux also loads and starts every core here through remoteproc, which the diagram leaves out. The four R5Fs each run a Zephyr app of their own, on shared code, built together with sysbuild, and talk to each other through Zephyr's `ipc_service`. The fabric joins Linux, the R5Fs, the DSPs, both ICSSG0 RTUs, and ICSSG1's two RTUs directly to each other, so any of them can reach either slice, not only Linux. RTU1 takes requests only over the fabric; RTU0 takes them over RPMsg too. What the fabric is made of, and how far into a slice it reaches:
 
 ```mermaid
 flowchart LR
@@ -127,9 +161,10 @@ flowchart LR
   d["C66x 0, C66x 1, C7x"] <--> fab
   p["ICSSG0 RTU0 and RTU1"] <--> fab
   p <-->|"slice RAM only"| rt["each slice's Tx_PRU and PRU"]
+  g1r["ICSSG1 RTU0 and RTU1"] <--> fab
 ```
 
-Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them. The MCU-domain R5F cores are left alone: they run the board's device manager.
+Each link is small and easy to copy into your own project. [How it works](#how-it-works) walks through them.
 
 The demo runs on the BeagleBoard Debian image, plus a one-time install script. A Yocto (Poky) configuration in `yocto/` builds the demo into an image of its own, which has been built and tested on the board. Both images run Linux 6.18, but different kernels: BeagleBoard's on Debian, TI's on Yocto ([Two 6.18 kernels](docs/kernels.md#two-618-kernels)).
 
@@ -141,7 +176,7 @@ The demo runs on the BeagleBoard Debian image, plus a one-time install script. A
 - About 6 GB of free disk on the PC: roughly 3 GB of container images plus 2 GB of fetched sources. The first build takes 10–20 minutes, mostly downloading. Later builds take seconds to a minute.
 - Network access from the PC to GitHub, git.ti.com, software-dl.ti.com, and Docker Hub. git.ti.com is only for the PRU Software Support Package.
 - A jumper wire from P9.15 to P8.31, for the pipeline. Without it the rest of the demo runs the same, the pipeline says it found nothing to train on, and P9.25 keeps its own steps.
-- Optional: eleven jumper wires for the board's own logic analyzer on ICSSG1 ([the channels](pru/logic_analyzer/README.md#the-channels)); a logic analyzer, to watch SPI7, the four PWM generators, and the pipeline on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
+- Optional: ten jumper wires for the board's own logic analyzer on ICSSG1 ([the channels](pru/logic_analyzer/README.md#the-channels)); a logic analyzer, to watch SPI7, the four PWM generators, and the pipeline on the header ([Probe the pins](#probe-the-pins)); and a 3.3 V USB-serial adapter on P8.34 (TX) and P8.22 (RX), to read the Zephyr console.
 
 Get the code:
 
@@ -383,7 +418,7 @@ c7x up 20 s
 - **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends. It changes P9.25 only once two windows in a row agree, so the pin follows about 1.5 ms behind the input; [The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
-The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps; [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#using-it) has more.
+The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps; [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#from-the-shell) has more.
 
 The other three R5F cores have no console UART. Each logs into its remoteproc trace buffer instead:
 
@@ -461,8 +496,8 @@ Periods run from 2000 ns to 1 s; P9.25's EHRPWM, which makes every edge in hardw
 | `ai64 trace <core>` | follows a core's trace log, for example `ai64 trace r5f0_1` or `ai64 trace g0pru0` |
 | `sudo ai64 pwm once`, `sudo ai64 la once` | prints one sample of the `pwm` or `la` window |
 | `sudo ai64 la mode [<rate> [<ch> ...]]` | the logic analyzer's sample rate and channels, and what they cost; or sets them ([how](pru/logic_analyzer/README.md#rates-and-lanes)) |
-| `sudo ai64 la capture <seconds> <file.vcd> [<ch> rise\|fall\|any ...] [pre <s>]` | records the logic analyzer's channels to a VCD file, for PulseView or GTKWave, or around a trigger's next hit ([how](pru/logic_analyzer/README.md#using-it)) |
-| `sudo ai64 mcp [port]` | the logic analyzer's MCP server, on port 8065, for Claude Code or any MCP client ([how](pru/logic_analyzer/README.md#mcp-the-analyzer-for-a-model)) |
+| `sudo ai64 la capture <seconds> <file.vcd> [<ch> rise\|fall\|any ...] [pre <s>]` | records the logic analyzer's channels to a VCD file, for PulseView or GTKWave, or around a trigger's next hit ([how](pru/logic_analyzer/README.md#from-the-shell)) |
+| `sudo ai64 mcp [port]` | the logic analyzer's MCP server, on port 8065, for Claude Code or any MCP client ([how](pru/logic_analyzer/README.md#mcp-the-analyzer-for-an-agent)) |
 | `sudo ai64 la measure`, `la rate` | each channel's periods and high times and the timing between pairs; how fast the reader keeps up |
 | `ai64 bench <rpmsg-dev>` | times eRPC calls to one R5F core ([R5F caches](zephyr/r5/README.md#r5f-caches)) |
 | `sudo ai64 dsp <core>` | runs FIR jobs on a DSP and checks them against the A72 ([how](dsp/README.md#linux-to-the-dsps-fir-jobs)) |
@@ -611,7 +646,7 @@ KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 - The image builds `ai64`, the four R5F images, the nine ICSSG images, the two DSP images, and the overlay itself. You don't need `build.sh` for it.
 - Set `KAS_CONTAINER_ENGINE` to `podman` or `docker` if you need to choose one.
 
-Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port), and `/root` holds `ai64`, `ai64-demo`, and the firmware. Then `./ai64-demo --tmux`.
+Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz`. The login is `root` with no password, on the serial console or over SSH (dropbear, DHCP on the Ethernet port). `ai64` and `ai64-demo` are in `/usr/bin`, the firmware in `/lib/firmware`, and the `ai64_la` module is in the image. Then run `ai64-demo --tmux`.
 
 On a board, the image with TI's 6.18 ran `ai64-demo` 20 times in a row (15 times with the firmware copied in, 5 from a freshly built image), stopping and starting all 19 demo cores each time, with every core up, the fabric clean after each run, and no kernel errors, and gave the same PWM, fabric, and DSP timings as the Debian image.
 
