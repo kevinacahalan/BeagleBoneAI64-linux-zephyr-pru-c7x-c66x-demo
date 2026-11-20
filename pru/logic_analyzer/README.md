@@ -119,7 +119,7 @@ ICSSG1 logic analyzer, the last 1.004 s; IEP0 at 5493.118 s
 
 Frequency and duty are over the whole second, so the PWM channels show the average of their steps: 15 kHz, and 50% on A. SPI7 only moves at startup and for each `spi` command, so its channels sit still.
 
-106.7 MB/s is 25 MS/s of 4-byte words, 100 MB/s, plus the tag word that ends each 64-byte block. `lost` counts the blocks that became [holes](#holes): none in the last second here, and 113 since the window started an hour and a half before. At 15 samples a block that is about 68 µs of the signal missing, in short gaps where the SoC held DDR off PRU0 for longer than it could buffer.
+106.7 MB/s is 25 MS/s of 4-byte words, 100 MB/s, plus the tag word that ends each 64-byte block. `lost` counts the blocks that became [holes](#holes): none in the last second here, and 113 since the window started. At 15 samples a block that is about 68 µs of the signal missing, in blocks PRU0 dropped ([XFR2VBUS](#how-it-works)) or the reader skipped.
 
 | Command | What it does |
 | --- | --- |
@@ -180,7 +180,7 @@ At 125 MS/s there is one spare instruction between samples, so the block's bookk
 
 - PRU0 sets bit 0 of ICSSG1's `IEPCLK` register, so IEP0 counts on the ICSSG core clock (sync mode), the clock PRU0's own instructions run on. That is why sample n is exactly n periods after t0 on IEP0. The bit clears only on a hardware reset (`pru/common/icssg.h`).
 - Linux reads IEP0's 64-bit count itself (`la_now()` in `linux-app/la_src.c`), so it works out which blocks are due on the same clock, with nothing to convert and no wrap to handle.
-- The reader looks at a block only once 100 µs (`SETTLE_NS`) and one block's time have passed since the block was due: time for XFR2VBUS's write to land, and for the SoC to hold DDR off PRU0 for a while. A block that still lacks this run's tag after that is lost, and becomes a hole.
+- The pump copies a block out of the ring only once 100 µs (`SETTLE_NS`) and one more block's time have passed since its last sample: time for XFR2VBUS's write to land, and for the SoC to hold DDR off PRU0 for a while. A block that still lacks this run's tag after that is lost, and becomes a hole.
 
 **Linux** (`linux-app/la_src.c`) maps the ring through `/dev/ai64-la`, a small kernel module in this repo (`beagle-linux/kernel/ai64_la/`) that `ai64-demo` loads.
 
@@ -217,7 +217,7 @@ Nothing the analyzer misses is passed off as signal. A hole is where blocks of s
 
 ## What it measures
 
-The board tests (`tests/run.sh check`) read the board's own signals: the square wave at 1000 Hz; the PWM generators at 15 kHz averaged over their steps; a capture triggered on the square wave's rise with 1 ms of the ring before it; 40 ms of every channel at 125 MS/s, read whole afterwards; and, through the MCP server, a capture triggered on SPI7's chip select that decodes to `hello`. The 1 kHz square wave, which R5F1_0 makes in software, measures 1,000,000 ns from rise to rise at the median at 25 MS/s, with now and then a period up to 17 µs off either way, when another interrupt holds up R5F1_0's timer. The test allows for that; most periods are within a few µs.
+The board tests (`tests/run.sh check`) read the board's own signals: the square wave at 1000 Hz; the PWM generators at 15 kHz averaged over their steps; a capture triggered on the square wave's rise with 1 ms of the ring before it; 40 ms of every channel at 125 MS/s, read whole afterwards; and, through the MCP server, a capture triggered on SPI7's chip select that decodes to `hello`. The 1 kHz square wave, which R5F1_0 makes in software, measures 1,000,000 ns from rise to rise at the median at 25 MS/s, with now and then a period up to 17 µs off either way, when another interrupt holds up R5F1_0's timer. Most are within a few µs ([P8.18](../../README.md#probe-the-pins)).
 
 `tests/run.sh stress` takes ch7 alone at 125 MS/s, one byte a sample, live, against EHRPWM4 stepped from 2 µs down to 16 ns, its fastest: 62.5 MHz, the Nyquist frequency of 125 MS/s. It stops the `la` window's reader first, since without the module two readers at that rate fall behind. Then it takes every channel at 125 MS/s, read whole from the ring. With ch7 alone, every period comes out exact at every step, 16 ns included, and every high time is exact, or one sample short where half the period is not a whole number of samples (96 ns of 200, 16 of 40). At 200 ns the reader finds all 10 million edges a second live, losing only PRU0's own drops.
 

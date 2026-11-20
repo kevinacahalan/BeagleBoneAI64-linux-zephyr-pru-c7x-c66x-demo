@@ -15,7 +15,7 @@
  *   0x64801000 60 KiB  normal write-back: the rest of the job block. The
  *                      job code writes L1D back around each job.
  *   0x64810000  4 KiB  normal non-cacheable: the pipeline's features, which
- *                      C66x 0 writes (ai64_pipe.h)
+ *                      both C66x cores write (ai64_pipe.h)
  *   0x64811000 12 KiB  normal write-back: the pipeline's weights and outputs
  *   0xa8000000  2 MiB  normal non-cacheable: the DMA pool, then the trace
  *                      buffer and resource table (c7x.cmd), which Linux reads

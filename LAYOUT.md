@@ -83,7 +83,7 @@
 
 `beagle-linux/kernel/k3_r5_rproc/` — `ti_k3_r5_remoteproc` that can start an R5F again after a stop.
 
-`beagle-linux/kernel/ai64_la/` — `ai64_la`, which gives the logic analyzer's reader `/dev/ai64-la`: its DDR ring mapped cached, so it reads about twice as fast as through `/dev/mem`. The Yocto image builds it too.
+`beagle-linux/kernel/ai64_la/` — `ai64_la`, which gives the logic analyzer's reader `/dev/ai64-la`: its DDR ring mapped cached, so the reader streams up to 300 MB/s live, against 150 MB/s through `/dev/mem`. The Yocto image builds it too.
 
 `beagle-linux/scripts/` — `build.sh` compiles in the containers; `ai64-demo` starts the demo on the board; `install-beagle.sh` sets up the Debian image once, so a reboot needs no manual steps.
 

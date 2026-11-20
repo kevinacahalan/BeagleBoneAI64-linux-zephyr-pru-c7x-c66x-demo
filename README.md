@@ -50,7 +50,7 @@ In the default demo ICSSG1's PRU1, Tx_PRU0, and Tx_PRU1 have nothing to do: the 
 
 ## What runs where
 
-- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo: `ai64-demo` restarts every core with its firmware and opens a tmux session of 15 windows: one for each core or pair of cores, and one each for the fabric, the pipeline, the logic analyzer, the web page, and the MCP server.
+- **Linux** on the Cortex-A72s runs `ai64`, one program that drives the demo: `ai64-demo` restarts every core with its firmware and opens a tmux session of 15 windows ([Run the demo](#4-run-the-demo) lists them).
 - **Zephyr on the four main-domain R5Fs** (R5F0_0, R5F0_1, R5F1_0, R5F1_1: cluster, then core). Each has an app in `zephyr/r5/<core>/` on shared code, and one `west build --sysbuild` builds all four ([Four Zephyr apps, one build](zephyr/r5/README.md)).
   - R5F0_0 writes SPI7, and moves data with a channel of the SoC's UDMA.
   - R5F0_1 drives a PWM on P9.25 with the SoC's EHRPWM4; the pipeline takes it over once it runs.
@@ -64,7 +64,7 @@ In the default demo ICSSG1's PRU1, Tx_PRU0, and Tx_PRU1 have nothing to do: the 
 - **The fabric** joins these cores and Linux directly: R5F to R5F, DSP to DSP, DSP to R5F, any of them to the ICSSG0 slices and to ICSSG1's RTUs, and back. Every core pings every other, R5F0_0 sends a message around all of them, and Linux can send one along any route, so that, say, the C7x passes it to a C66x that has ICSSG0 RTU1 change its PWM. Each message is stamped with the SoC's shared clock, so Linux shows the one-way latency of all 132 paths ([The fabric](docs/fabric.md)).
 - **A web page** on the board shows all of it live: every core's state, the pipeline's stages and score, the PWM generators, and the fabric's latencies ([The web page](#the-web-page)).
 
-The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/logic_analyzer/`, a directory per core with its own makefile and linker script, and shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, so nothing elsewhere on the chip can stretch their timing. ICSSG1's PRU0 is the exception: it writes DDR itself, through XFR2VBUS, a write engine in its slice that takes a 64-byte block and writes it in the background, so the PRU never waits on DDR and keeps exact time while it streams.
+The ICSSG firmware is laid out the way TI's [open-pru](https://github.com/TexasInstruments/open-pru) projects are: `pru/pwm/` and `pru/logic_analyzer/`, a directory per core with its own makefile and linker script, and shared sources and a memory map per project ([The ICSSG firmware](pru/README.md#the-icssg-firmware)). In ICSSG0 **the RTU talks, and the PRU and Tx_PRU keep time**: the RTU is the slice's only link to the rest of the SoC, and the PRU and Tx_PRU only touch their slice's own RAM, apart from the Tx_PRU's one GTC read a period, which never reaches an edge, so nothing elsewhere on the chip can stretch their timing. ICSSG1's PRU0 is the exception: it writes DDR itself, through XFR2VBUS, a write engine in its slice that takes a 64-byte block and writes it in the background, so the PRU never waits on DDR and keeps exact time while it streams.
 
 ### How the cores connect
 
@@ -215,7 +215,7 @@ Every command below runs from this directory unless it says "on the board".
 
 Download [BeagleBone AI-64 Debian 13.7 IoT, v6.18 k3](https://www.beagleboard.org/distros/bbai64-debian-13-7-2026-10-09-iot-v6-18-x-k3), the file `bbai64-debian-13.7-iot-v6.18-k3-arm64-2026-10-09-10gb.img.xz`. A fresh image has no login until you give it one. Pick either way:
 
-- **BeagleBoard Imager** (easiest). Choose the image, and in its settings set a user name, a password, a hostname, and your SSH public key. Imager writes them for you. Below, use your own user name and hostname wherever this says `debian` and `bbai64`.
+- **BeagleBoard Imager** (easiest). Choose the image, and in its settings set a user name, a password, and your SSH public key. Imager writes them for you. Below, use your own user name wherever this says `debian`, and if the board's hostname is not `bbai64`, its address wherever this says `bbai64.local`.
 - **By hand.**
   1. Write the image: `xz -dc bbai64-debian-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress`. Replace `/dev/sdX` with your card. Check it with `lsblk` first: `dd` overwrites whatever you give it.
   2. Mount the card's `BOOT` partition, the first one: take the card out and put it back in, and most desktops mount it by its label; or `sudo mount /dev/sdX1 /mnt`, then `sudo umount /mnt` when step 3 is done.
@@ -230,7 +230,7 @@ Download [BeagleBone AI-64 Debian 13.7 IoT, v6.18 k3](https://www.beagleboard.or
 
      The key line is the contents of your `~/.ssh/id_ed25519.pub`. Run `ssh-keygen -t ed25519` if you don't have one. With the key in place, the build steps below don't keep asking for a password.
 
-Put the card in the board and power it. With a card in the slot the board boots from it; the console prints `Trying to boot from MMC1`. If yours boots its eMMC instead, hold the button marked BOOT while you apply power.
+Put the card in the board and power it. With a card in the slot the board boots from it; the console prints `Trying to boot from MMC1`. If yours boots its eMMC instead, hold the BOOT button while you apply power.
 
 A fresh card reboots twice on its own before it stays up: the first boot applies `sysconf.txt` and grows the root partition, and the second resizes the filesystem. Give it about three minutes. Then log in over the network:
 
@@ -282,7 +282,7 @@ ai64-demo --tmux
 
 - It asks for your `sudo` password once.
 - It restarts the four R5F cores, the nine ICSSG cores the demo runs, and the DSPs with the installed firmware, then opens a tmux session with fifteen windows: `linux`, `r5f0_0`, `r5f0_1`, `r5f1_0`, `r5f1_1` (Zephyr on each R5F core), `rtu0` (ICSSG0 RTU0), `pwm`, `la` (ICSSG1's logic analyzer), `c66x0`, `c66x1`, `c7x`, `fabric`, `pipe`, `web`, which serves [the web page](#the-web-page) on port 8064, and `mcp`, the logic analyzer's MCP server on port 8065. Before it stops each R5F and DSP, it asks the core to go idle ([why](dsp/README.md#restarting-the-c7x)), and it stops the pipeline until the `linux` window starts it again. The `fabric` window is about 100 columns wide, and `pipe` about 130.
-- The demo is up when the `linux` window prints `linux window ready. commands: ...` and then runs its startup script; the pipeline's training adds 3 s more.
+- The demo is up when the `linux` window, after its startup script and the pipeline's 3 s of training, prints `linux window ready. commands: ...`.
 - [What you should see](#what-you-should-see) shows the output of a passing run, and [Commands](#commands) lists what you can type in the `linux` window.
 
 tmux keys: Ctrl+b then w lists the windows to pick from; Ctrl+b then n and p go to the next and previous; Ctrl+b then 0–9 goes straight to one of the first ten. Detach, leaving the demo running, with Ctrl+b then d. Come back with `ai64-demo --attach --tmux`.
@@ -441,7 +441,7 @@ c7x up 20 s
 - **The `pipe` window** has a line per stage: how many windows it passed on a second, the time from the window's last sample on P8.31 until the stage was done with it, and the time the stage itself spent; then R5F0_1's score against the step the input was really on. The pipeline runs 1953 windows a second: 2048 samples each, at 2 MHz, a new one every 1024 samples. P9.25 has its class about 126 µs after a window ends: that is the cores' own time, and it moves a few µs from run to run (the web page showed 130 µs). The pin itself follows about 1.5 ms behind the input, because a window is 1.024 ms long and has to be mostly the new step before it names it, and R5F0_1 changes P9.25 only once two windows in a row agree; [The pipeline](docs/pipeline.md#the-pipeline-p831-to-p925) has why. `across a step` counts windows that straddle one of the input's steps, which have no single right answer and are not scored.
 - **RTU0's `runs request` line** comes when PRU0 starts running the last request. An ICSSG0 RTU keeps counting requests across restarts, so the number is not always the same.
 
-The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps. Its `113 in all` is not a failure: those are blocks of samples lost since the window started, about 68 µs of signal in an hour and a half, each one marked as a [hole](pru/logic_analyzer/README.md#holes); [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#from-the-shell) has more.
+The `fabric` window, the latency of every core to every other, is in [The fabric](docs/fabric.md). The `/dev/rpmsg` numbers in the window headers can differ on your board. `la`'s frequency and duty are over the whole second, so the PWM channels show the average of their steps. Its `113 in all` is not a failure: those are blocks of samples lost since the window started, about 68 µs of signal in all, each one marked as a [hole](pru/logic_analyzer/README.md#holes); [ICSSG1: a logic analyzer](pru/logic_analyzer/README.md#from-the-shell) has more.
 
 The other three R5F cores have no console UART. Each logs into its remoteproc trace buffer instead:
 
@@ -683,7 +683,7 @@ KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 Flash the timestamped `yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz` the same way as the Debian image:
 
 ```
-xz -dc yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-*.wic.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+xz -dc yocto/build/deploy-ti/images/beaglebone-ai64/ai64-demo-image-beaglebone-ai64.rootfs-<timestamp>.wic.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 The login is `root` with no password, on the serial console or over SSH: `ssh root@<board>`, where `<board>` is the address your router gave it (dropbear, DHCP on the Ethernet port). It is a development image: give root a password, or keep it off networks you don't trust. `ai64` and `ai64-demo` are in `/usr/bin`, the firmware in `/lib/firmware`, and the `ai64_la` module is in the image. Then run `ai64-demo --tmux`.

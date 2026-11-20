@@ -85,7 +85,7 @@ Both DSPs run their own path in `ai64_dsp_job.h`, with the plain C loop left for
 | `0x40000000` | 1 GiB | device, apart from the L2 SRAM pages below | |
 | `0x64800000` | 4 KiB | normal, non-cacheable | the job block header |
 | `0x64801000` | 60 KiB | normal, write-back | the rest of the job block |
-| `0x64810000` | 4 KiB | normal, non-cacheable | the pipeline's features, which C66x 0 writes ([the pipeline](../docs/pipeline.md)) |
+| `0x64810000` | 4 KiB | normal, non-cacheable | the pipeline's features, which both C66x cores write ([the pipeline](../docs/pipeline.md)) |
 | `0x64811000` | 12 KiB | normal, write-back | the pipeline's weights and outputs |
 | `0xa8000000` | 2 MiB | normal, non-cacheable | the DMA pool, then the trace buffer and resource table at `0xa8100000` |
 | `0xa8200000` | 14 MiB | normal, write-back | code, data, stack, and the page tables |
