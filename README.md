@@ -2,7 +2,7 @@
 
 The BeagleBone AI-64's TI TDA4VM (J721E) has 23 cores of seven kinds: two Cortex-A72s, six Cortex-R5Fs, two C66x DSPs, a C7x DSP with a matrix accelerator, and twelve PRU, RTU, and Tx_PRU cores in its two ICSSGs. Most projects use only the A72s, because getting the rest booted, talking, and restartable is a lot of work spread over TI documents, kernel drivers, and forum threads.
 
-This repo does that work, and puts **16 of the other cores** to work alongside Linux in one demo. Each piece is small and written up next to its code, so you can take only the parts you need into your own project:
+This repo does that work, and puts **19 of the other cores** to work alongside Linux: all four main-domain R5Fs, all three DSPs, and all twelve ICSSG cores. Each piece is small and written up next to its code, so you can take only the parts you need into your own project:
 
 - **Booting and restarting every core from Linux**, as often as you like, on stock Linux 6.18 (BeagleBoard Debian, or a Yocto image built here).
 - **Talking to each one**: RPMsg and eRPC from Linux, Zephyr's `ipc_service` between the R5Fs, and *the fabric*, a set of shared-memory inboxes and doorbells that lets any core message any other directly, with no Linux in the path.
@@ -17,14 +17,24 @@ This repo does that work, and puts **16 of the other cores** to work alongside L
 | 2 × Cortex-A72, Linux | `ai64`, one program that starts every core, talks to them, and serves the web pages | [`linux-app/`](linux-app/README.md) |
 | 4 × Cortex-R5F, Zephyr | one sysbuild app, four images: SPI and DMA, PWM, a square wave, and a monitor | [`zephyr/r5/`](zephyr/r5/README.md) |
 | ICSSG0: 2 PRUs, 2 RTUs, 2 Tx_PRUs | PWM three ways (software, the ICSSG's PWM module, and its eCAP), and the pipeline's sampler | [`pru/`](pru/README.md) |
-| ICSSG1: PRU0, 2 RTUs | the logic analyzer | [`pru/logic_analyzer/`](pru/logic_analyzer/README.md) |
+| ICSSG1, by default: PRU0, 2 RTUs | the logic analyzer | [`pru/logic_analyzer/`](pru/logic_analyzer/README.md) |
+| ICSSG1, with `--icssg1 scheduler`: all 6 | TI's multicore scheduler, in place of the analyzer | [`extra-demos/`](extra-demos/README.md) |
 | 2 × C66x | FIR jobs, and the pipeline's FFT | [`dsp/`](dsp/README.md) |
 | C7x and its MMA | FIR jobs, and the pipeline's classifier | [`dsp/`](dsp/README.md#the-c7xs-matrix-multiply-accelerator) |
 | all of the above | the fabric: any core to any other, timed on the SoC's shared clock | [`docs/fabric.md`](docs/fabric.md) |
 
 The two MCU-domain R5Fs are left alone: they run the board's device manager.
 
-**If the PRU names are new to you:** an *ICSSG* (Industrial Communication Subsystem, Gigabit) is a block of small real-time cores that TI built for industrial Ethernet, with its own RAM, timers (*IEP*), and direct access to header pins. Each ICSSG has two *slices*, and each slice has three 32-bit cores at 250 MHz that run one instruction a cycle: a *PRU* (Programmable Real-time Unit), an *RTU* (a second, auxiliary PRU), and a *Tx_PRU* (a third, meant for transmit). The PRU reads its pins through register R31 and writes them through R30 in a single cycle, which is what makes it good at exact timing. The BeagleBone AI-64 has two ICSSGs, so twelve of these cores. `ai64 cores` lists 19 demo cores: the 16 that run, and ICSSG1's PRU1 and two Tx_PRUs, which stay free.
+**Which of the 19 run at once.** ICSSG1 runs one of two firmware sets, and `ai64-demo` picks which:
+
+| `ai64-demo` | R5Fs | DSPs | ICSSG0 | ICSSG1 | Running |
+| --- | --- | --- | --- | --- | --- |
+| default | 4 | 3 | 6 | 3: the logic analyzer (PRU0, RTU0, RTU1) | 16 |
+| `--icssg1 scheduler` | 4 | 3 | 6 | 6: TI's multicore scheduler | 19 |
+
+In the default demo ICSSG1's PRU1, Tx_PRU0, and Tx_PRU1 have nothing to do: the analyzer needs only PRU0, and its two RTUs as fabric nodes. They stay stopped, and `ai64 cores` and the web page show them as free.
+
+**If the PRU names are new to you:** an *ICSSG* (Industrial Communication Subsystem, Gigabit) is a block of small real-time cores that TI built for industrial Ethernet, with its own RAM, timers (*IEP*), and direct access to header pins. Each ICSSG has two *slices*, and each slice has three 32-bit cores at 250 MHz that run one instruction a cycle: a *PRU* (Programmable Real-time Unit), an *RTU* (a second, auxiliary PRU), and a *Tx_PRU* (a third, meant for transmit). The PRU reads its pins through register R31 and writes them through R30 in a single cycle, which is what makes it good at exact timing. The BeagleBone AI-64 has two ICSSGs, so twelve of these cores.
 
 **To try it**, you need the board, a microSD card, and a Linux PC with podman or docker; every compiler runs in a container. [Quick start](#quick-start-beagleboard-debian) takes you from a blank card to the running demo in four steps. Ten jumper wires let the logic analyzer watch the demo's own signals, and one more feeds the pipeline; without them everything else still runs. [How it works](#how-it-works) maps which README covers which part.
 
@@ -513,7 +523,7 @@ Periods run from 2000 ns to 1 s; P9.25's EHRPWM, which makes every edge in hardw
 
 While the demo runs, open `http://<board>:8064/` in a browser on the same network; the `web` window prints the board's addresses. The page is one file, `linux-app/web/index.html`, built into `ai64`, and asks the board for `/status.json` twice a second. It shows:
 
-- **Cores**: each of the 19 demo cores' remoteproc state and firmware (ICSSG1's three free cores show as offline), what its job is, what it reports doing, and whether it beats on the fabric.
+- **Cores**: each of the 19 demo cores' remoteproc state and firmware (with the analyzer on ICSSG1, its three free cores show as offline), what its job is, what it reports doing, and whether it beats on the fabric.
 - **The pipeline**: windows a second, the time from a window's last sample to P9.25 set, the score since training, what P9.25 runs; each stage's rate, latency, and work; that latency over the last 2 minutes; and the confusion matrix.
 - **The PWM generators**: what each runs now, and what it was asked for: steps, a sweep, a fixed period, or the pipeline.
 - **The fabric**: the one-way latency of every path, and each node's starts, pings, and tally.

@@ -34,7 +34,7 @@ Each core's makefile names its image, its sources, and its defines, and includes
 | ICSSG0 PRU1 | `b038000.pru` | `ai64-icssg0-pru1.elf` | pwm, slice 1: the ICSSG PWM module |
 | ICSSG1 PRU0 | `b134000.pru` | `ai64-la-pru0.elf` | logic_analyzer: samples 10 pins, and writes the samples to DDR through XFR2VBUS ([its README](logic_analyzer/README.md)) |
 | ICSSG1 RTU0, RTU1 | `b104000.rtu`, `b106000.rtu` | `ai64-la-rtu0.elf`, `ai64-la-rtu1.elf` | fabric nodes 10 and 11 (`g1rtu0`, `g1rtu1`) |
-| ICSSG1 PRU1, Tx_PRU0, Tx_PRU1 | `b138000.pru`, `b10a000.txpru`, `b10c000.txpru` | none | free: they stay stopped |
+| ICSSG1 PRU1, Tx_PRU0, Tx_PRU1 | `b138000.pru`, `b10a000.txpru`, `b10c000.txpru` | none | free with the analyzer: they stay stopped. With `ai64-demo --icssg1 scheduler`, all six ICSSG1 cores run the multicore scheduler instead |
 
 In ICSSG0, **the RTU talks, and the PRU and Tx_PRU keep time**:
 
