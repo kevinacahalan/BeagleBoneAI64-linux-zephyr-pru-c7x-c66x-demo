@@ -40,7 +40,7 @@ Each slice's data RAM is split the way open-pru's linker files for this example 
 
 ## Build
 
-From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project and the PWM project; this one's images are `pru/build/ai64-mcs-<core><slice>.elf`, with the rules in `pru/pru_rules.mak`.
+From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project, the PWM project, and the logic analyzer; this one's images are `pru/build/ai64-mcs-<core><slice>.elf`, with the rules in `pru/pru_rules.mak`.
 
 ## Run
 

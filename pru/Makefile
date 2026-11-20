@@ -8,6 +8,10 @@
 #                         RTU talks, the Tx_PRU modulates, the PRU makes
 #                         the edges.
 #
+#   logic_analyzer/       ICSSG1. PRU0 samples 10 pins into a DDR ring
+#                         through XFR2VBUS; the RTUs are fabric nodes. Its
+#                         images are ai64-la-<core><slice>.elf.
+#
 # The extra demos' ICSSG projects build here too, with the same rules:
 #
 #   ../extra-demos/icssg1-multicore-scheduler/  ICSSG1. A port of open-pru's
@@ -15,7 +19,7 @@
 #                         each of the six cores in turn. Its images are
 #                         ai64-mcs-<core><slice>.elf.
 #
-# The images land in build/ as ai64-icssg<N>-<core><slice>.elf. PRU_CGT and
+# The images land in build/: pwm's as ai64-icssg0-<core><slice>.elf. PRU_CGT and
 # PSSP are set by beagle-linux/scripts/build.sh. TRACE=0 builds the trace
 # out of the real-time cores.
 

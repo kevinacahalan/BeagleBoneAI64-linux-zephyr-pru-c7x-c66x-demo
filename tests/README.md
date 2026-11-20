@@ -23,7 +23,7 @@ Each check prints a line, `ok` or `FAIL`, and the test ends with `PASS` or how m
 What `check`, and each run of `soak`, looks at:
 
 - **The `linux` window's startup script**: RTU0 echoes `ping` over RPMsg; each R5F core answers `say` over eRPC; R5F0_0 checks the bulk buffer and writes SPI7; R5F1_0 passes `spi` to R5F0_0 over `ipc_service`; the monitor lost no pings; R5F0_0's UDMA feeds the C7x's MMA, and the result matches the A72; the pipeline trains to 100%; and no line says `failed`, `link down`, or `did not`.
-- **Every core in `ai64 cores`** runs, with its own firmware.
+- **Every core in `ai64 cores`** that has firmware runs it, and the free ones (ICSSG1's PRU1 and Tx_PRUs) are stopped.
 - **The pipeline** (`ai64 pipe once`): no window named wrong since training, and no stage lost a window or failed one.
 - **The fabric**, from its window: the spinlock tally agrees, and no node timed out or saw an error in the last second.
 - **The DSPs**: FIR jobs on both C66x cores and the C7x, and the MMA layer, all match the A72, while the pipeline runs on the same cores.

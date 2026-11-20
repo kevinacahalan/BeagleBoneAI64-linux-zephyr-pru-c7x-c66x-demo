@@ -98,7 +98,7 @@ The PRU reads `pwm_next` in the middle of a period, so it is a seqlock: the Tx_P
 
 ## Build
 
-From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project and the multicore scheduler into `pru/build/ai64-icssg0-<core><slice>.elf`. Each image's memory use is printed after it links, and a region over 95% fails the build. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace out of the PRUs and Tx_PRUs.
+From the repo root, `./beagle-linux/scripts/build.sh pru` builds this project, the logic analyzer, and the multicore scheduler; this project's images are `pru/build/ai64-icssg0-<core><slice>.elf`. Each image's memory use is printed after it links, and a region over 95% fails the build. `TRACE=0 ./beagle-linux/scripts/build.sh pru` builds the trace out of the PRUs and Tx_PRUs.
 
 ## Run
 

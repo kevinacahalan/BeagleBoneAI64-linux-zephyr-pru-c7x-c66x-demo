@@ -1,5 +1,5 @@
 SUMMARY = "BeagleBone AI-64 ICSSG firmware: the PWM project on ICSSG0, the logic analyzer on ICSSG1, and the multicore scheduler extra demo"
-DESCRIPTION = "Compiles the twelve ICSSG images with TI CGT and the PRU software support package, from three open-pru style projects: pru/pwm (ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1), pru/logic_analyzer (ICSSG1: a 19-channel logic analyzer), and extra-demos/icssg1-multicore-scheduler (a port of open-pru's examples/multicore_scheduler, which ICSSG1 can run instead)."
+DESCRIPTION = "Compiles the fifteen ICSSG images with TI CGT and the PRU software support package, from three open-pru style projects: pru/pwm (ICSSG0: PWM in software on slice 0, with the ICSSG PWM module on slice 1), pru/logic_analyzer (ICSSG1: a 10-channel logic analyzer), and extra-demos/icssg1-multicore-scheduler (a port of open-pru's examples/multicore_scheduler, which ICSSG1 can run instead)."
 # The demo is MIT. The PRU Software Support Package it links, and the
 # multicore scheduler ported from open-pru, are BSD-3-Clause.
 LICENSE = "MIT & BSD-3-Clause"

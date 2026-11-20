@@ -8,7 +8,7 @@ ICSSG1 PRU0 samples 10 header pins at once, at a rate you pick from 125 MS/s dow
 
 Jumper wires bring it the demo's own signals (the PWM generators, SPI7, the square wave, and EHRPWM4 as a fast test signal), so the board can measure itself.
 
-You choose the channels and the sample rate. The more bytes a second that setup writes, the less of it the board can stream live: about 300 MB/s, which is every channel at 62.5 MS/s. A faster setup, up to every channel at 125 MS/s, still captures whole, read back from the ring after ([Faster than live](#faster-than-live)). PRU0 itself never falls behind. Anything lost along the way is a [marked hole](#holes), never a false level.
+You choose the channels and the sample rate. The more bytes a second that setup writes, the less of it the board can stream live: up to about 300 MB/s, enough for every channel at 62.5 MS/s (267 MB/s). A faster setup, up to every channel at 125 MS/s, still captures whole, read back from the ring after ([Faster than live](#faster-than-live)). PRU0 itself never falls behind. Anything lost along the way is a [marked hole](#holes), never a false level.
 
 ![The web viewer on the board's own signals: a pulse on ch8 measured by pointing at it, its width above and its period below, and markers A and B one period apart on ch5](../../media/la-viewer.png)
 
@@ -132,7 +132,7 @@ Frequency and duty are over the whole second, so the PWM channels show the avera
 
 ## Rates and lanes
 
-What a setup writes is the rate times the bytes a sample, and the bytes a sample depend on which channels are on. At 125 and 62.5 MS/s, channels whose GPI bits all fall within 0–7 or 8–15 take one byte a sample, four to a word; within 0–15 or 8–23, two bytes; otherwise a whole word. Slower rates always take a whole word, since the bytes are few.
+What a setup writes is the rate times the bytes a sample, and the bytes a sample depend on which channels are on. PRU0 packs samples into 32-bit words in one of three *lanes*: one byte a sample (four to a word), two bytes (two to a word), or a whole word. At 125 and 62.5 MS/s, channels whose GPI bits all fall within 0–7 or 8–15 take one byte a sample, four to a word; within 0–15 or 8–23, two bytes; otherwise a whole word. Slower rates always take a whole word, since the bytes are few.
 
 | Rate | A sample | Every channel | GPI 0–15 or 8–23 | GPI 0–7 or 8–15 | The ring holds, every channel |
 | --- | --- | --- | --- | --- | --- |
@@ -166,7 +166,9 @@ flowchart LR
 | RTU0, RTU1 | fabric nodes 10 and 11 ([The fabric](../../docs/fabric.md)), nothing else | `firmware/la_rtu.c` |
 | PRU1, Tx_PRU0, Tx_PRU1 | free: they stay stopped | |
 
-**PRU0's loop** (`la_cap.asm`) takes R31 through the channels' mask into the next sample of a block every `period` cycles of its 250 MHz clock: 2 cycles at 125 MS/s, up to 200 at 1.25 MS/s. A block is 15 words of samples (one, two, or four samples a word, by the lane; see [Rates and lanes](#rates-and-lanes)) and a tag. The instruction after each sample does one piece of the block's own work: the tag's `ADD`, the address's `ADD` and wrap, a look at XFR2VBUS's status two samples before the end, the branch on it, the `XOUT` after the last sample, the jump back, or a no-op. Slower rates add a fixed delay after each. So sample n of a run is exactly n periods after the first, whose IEP0 time PRU0 stores before the loop starts.
+**PRU0's loop** (`la_cap.asm`) takes R31 through the channels' mask into the next sample of a block every `period` cycles of its 250 MHz clock: 2 cycles at 125 MS/s, up to 200 at 1.25 MS/s. A block is 15 words of samples (one, two, or four samples a word, by the lane; see [Rates and lanes](#rates-and-lanes)) and a tag.
+
+At 125 MS/s there is one spare instruction between samples, so the block's bookkeeping is spread over them, one piece per sample: the tag's `ADD`, the address's `ADD` and wrap, a look at XFR2VBUS's status two samples before the end, the branch on it, the `XOUT` after the last sample, the jump back, or a no-op. Slower rates add a fixed delay after each. So sample n of a run is exactly n periods after the first, whose IEP0 time PRU0 stores before the loop starts.
 
 **XFR2VBUS** (SPRUJ61, the J721E PRU guide, 7.3.1) is a write engine in each ICSSG slice. One `XOUT` of r2–r19 hands it 64 bytes and a DDR address, and it writes them on its own, so PRU0 never waits for DDR. It takes one write at a time. If the previous write is still going when a block is done, which happens when the SoC holds DDR for a while, PRU0 drops the block rather than wait, and its slot keeps what it held. At the fastest setups that is about once every 100 ms, a hole of 4 to 13 µs; at 25 MS/s, a block or none in most seconds.
 

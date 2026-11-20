@@ -1,6 +1,6 @@
 # The fabric
 
-The demo's other links go through Linux, or join two cores that sit next to each other. The fabric joins every demo core that talks directly to every other one, Linux included: twelve nodes, 132 one-way paths, and no Linux in any of them. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the RTUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
+The demo's other links go through Linux, or join two cores that sit next to each other. The fabric joins every demo core that talks directly to every other one, Linux included: twelve nodes and 132 one-way paths, none of them relayed through Linux. One header, `zephyr/include/ai64_fabric.h`, holds the layout and the whole protocol, and every image compiles it: Zephyr with GCC, the DSPs with TI's C6000 and C7000 compilers, the RTUs with clpru, and `ai64` with the Linux compiler. Each image only adds a few lines of glue: how to read the clock, and how it maps the memory.
 
 | Node | Name | Core | When it looks at its inbox |
 | --- | --- | --- | --- |
@@ -14,16 +14,22 @@ The demo's other links go through Linux, or join two cores that sit next to each
 
 The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The ICSSG firmware](../pru/README.md#the-icssg-firmware)). ICSSG1's RTUs are nodes and nothing else: the logic analyzer's PRU0 writes to DDR on its own ([ICSSG1: a logic analyzer](../pru/logic_analyzer/README.md#how-it-works)), and they poll every 100 µs, so as not to load ICSSG1's port to the SoC while it does. With the multicore scheduler on ICSSG1 instead (`ai64-demo --icssg1 scheduler`), nodes 10 and 11 do not answer, as a stopped node. The layout's twelve slots (`AI64_FAB_SLOTS`) are all used.
 
-**What carries it.** Four pieces of SoC hardware that every one of those cores can reach:
+## What carries it
+
+Four pieces of SoC hardware that every one of those cores can reach:
 
 - **DDR**, 128 KiB at `0xA9000000`, in the gap between the C7x's carveout and the IPC region above it. The overlay reserves 1 MiB there (`ai64-fabric@a9000000`, no-map) so that Linux keeps out, and `ai64-demo` refuses to start the cores on a kernel that booted without it. Each node owns an 8 KiB page: its inbox, and the counts it publishes for Linux to read. A spinlock tally follows the pages.
 - **Mailbox cluster 11** (`0x31F8B000`) for doorbells. Linux's device tree leaves clusters 5–11 disabled; 5, 6, 8, and 9 hold messages from the device manager's firmware, and 11 is empty. FIFO n is node n's doorbell.
 - **The GTC** (`0x00A90000`), the 200 MHz counter Linux's arch timer counts too. Every core reads the same clock, so a latency measured from one core's stamp to another's is real, one way.
 - **Hardware spinlock 255** (`0x30E00000`), which no kernel driver uses, for the tally.
 
-**Read your own page, write to the others.** An uncached read costs 0.1 to 0.5 µs, and a write is posted and costs almost nothing. So a node only ever reads its own page. A message goes into the receiver's page, and the stamps a tour collects go straight into its origin's page. The sender then writes its own node number into the receiver's mailbox FIFO, and the receiver, which polls only its FIFO's status register, reads its page when something has arrived. A FIFO holds four doorbells; a sender that finds it full skips the doorbell, and every node also scans its whole inbox once a millisecond.
+## Read your own page, write to the others
 
-**A message.** Each inbox has one 64-byte slot for every sender and message class, and only that sender writes it. The sender writes the message, then bumps its count for that class in a word of the receiver's page that only it writes, then rings. The receiver remembers the counts it last saw, so a changed count is a new message, and nothing is ever cleared. Every class allows one message in flight per sender and receiver, so a slot is never overwritten before it is read, and no core ever waits on another:
+An uncached read costs 0.1 to 0.5 µs, and a write is posted and costs almost nothing. So a node only ever reads its own page. A message goes into the receiver's page, and the stamps a tour collects go straight into its origin's page. The sender then writes its own node number into the receiver's mailbox FIFO, and the receiver, which polls only its FIFO's status register, reads its page when something has arrived. A FIFO holds four doorbells; a sender that finds it full skips the doorbell, and every node also scans its whole inbox once a millisecond.
+
+## A message
+
+Each inbox has one 64-byte slot for every sender and message class, and only that sender writes it. The sender writes the message, then bumps its count for that class in a word of the receiver's page that only it writes, then rings. The receiver remembers the counts it last saw, so a changed count is a new message, and nothing is ever cleared. Every class allows one message in flight per sender and receiver, so a slot is never overwritten before it is read, and no core ever waits on another:
 
 | Class | Sent by | What it does |
 | --- | --- | --- |
@@ -34,9 +40,12 @@ The ICSSG0 PRUs and Tx_PRUs are not nodes: each slice's RTU talks for them ([The
 
 A node that starts takes the counts it finds as already seen, and zeroes its own counters. A message sent to a stopped node is simply lost, and its sender times out, so `ai64-demo` can restart any core while the others keep going.
 
-**The spinlock tally.** Every 10 ms each node takes hardware spinlock 255, adds one to a shared total and one to its own count, and frees the lock. The adds are plain loads and stores to uncached DDR, so without the lock two cores would lose each other's adds. The viewer takes the lock too, and checks that the ten counts sum to the total.
+## The spinlock tally
 
-**Each core's view of the memory.**
+Every 10 ms each node takes hardware spinlock 255, adds one to a shared total and one to its own count, and frees the lock. The adds are plain loads and stores to uncached DDR, so without the lock two cores would lose each other's adds. The viewer takes the lock too, and checks that the twelve counts sum to the total.
+
+## Each core's view of the memory
+
 
 | Core | The fabric | The GTC, mailbox, and spinlock |
 | --- | --- | --- |
@@ -46,7 +55,9 @@ A node that starts takes the counts it finds as already seen, and zeroes its own
 | RTU | its global address; a message moves in one or two `LBBO`/`SBBO` bursts | the same |
 | Linux | `/dev/mem` | `/dev/mem` |
 
-**What you see.** The `fabric` window, `ai64 fabric`, redraws once a second. On the Yocto image, with every core running:
+## What you see
+
+The `fabric` window, `ai64 fabric`, redraws once a second. On the Yocto image, with every core running:
 
 ```
 fabric: one-way latency in us, from the row's node to the column's, over the last 1.0 s
@@ -91,7 +102,9 @@ tally under hardware spinlock 255: 117315 adds, and the 12 counts sum to 117315
 
 The merged console prints one `[Fabric]` line every 10 s instead (`ai64 fabric lines`).
 
-**A route with an action.** On the board, while the demo runs:
+## A route with an action
+
+On the board, while the demo runs:
 
 ```
 $ sudo ai64 fabric route c7x r5f1_1 g0rtu1 c66x1 pwm 20000 5000
@@ -116,6 +129,10 @@ g0rtu0 -> linux       2.5 us
 
 P9.25 then runs at 2 kHz, a fixed 25%. A route's `steps 5` starts the steps again, one generator per route: `sudo ai64 fabric route r5f0_1 steps 5` for P9.25 and `sudo ai64 fabric route g0rtu1 steps 5` for slice 1, and `rtu0 steps 5` in the `linux` window for slice 0. Any order of nodes works, a node can appear more than once, and a route without an action just goes round. `sudo ai64 fabric reset` frees the spinlock and zeroes the tally, for a core that was stopped while it held the lock; `ai64-demo` runs it before it starts the cores.
 
-**Restarts.** `ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting all 19 demo cores each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both. Those runs had ten nodes, with the multicore scheduler on ICSSG1; with the analyzer's two RTUs as nodes 10 and 11, `tests/run.sh soak` restarts every core and checks the same, all twelve up.
+## Restarts
 
-**What it costs.** Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ICSSG0 RTUs' polling does not show in their slices' edges: with both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late. And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr apps park in WFI with their interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
+`ai64-demo` ran 10 times in a row on the Debian image and 15 times on the Yocto image, then 5 more on a freshly built Yocto image, stopping and starting every demo core each time while the others kept talking. Every run came back with all ten nodes up, RTU0 answering over RPMsg, both ICSSG0 PWM slices running with no late edges, all six ICSSG1 tasks firing, no fabric timeouts or errors in the 10 s after, the tally agreeing, and no kernel errors. Routes with `pwm` actions changed the ICSSG PWM and P9.25 the same way on both. Those runs had ten nodes, with the multicore scheduler on ICSSG1; with the analyzer's two RTUs as nodes 10 and 11, `tests/run.sh soak` restarts every core and checks the same, all twelve up.
+
+## What it costs
+
+Every node except Linux now spins on its inbox, so no core sits in WFI any more. The ICSSG0 RTUs' polling does not show in their slices' edges: with both RTUs and the whole fabric running, the software slice's latest edge was 24 ns late. And a core that is always on the bus must not be stopped in the middle of an access: putting a busy R5F in reset on the BeagleBoard kernel wedged the device manager (`ti-sci ... Mbox timedout in resp(caller: k3_r5_rproc_stop ...)`), and the SoC locked up a few seconds later. TI's kernel sends each core `RP_MBOX_SHUTDOWN` first, and the Zephyr apps park in WFI with their interrupts masked; on the BeagleBoard kernel `ai64-demo` now sends it with `ai64 shutdown`, as it already did for the DSPs.
