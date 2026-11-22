@@ -15,7 +15,7 @@ A source line looks like:
 J721E_IOPAD(0x0b8, PIN_OUTPUT, 3) /* (AE27) P9.12 PRG0_PWM2_A0 */
 ```
 
-`J721E_IOPAD()` keeps the low 12 bits of the pad address (`0x0011c0b8`). `PIN_OUTPUT` compiles to `0x10000`, `PIN_INPUT` to `0x54000`, and `PIN_DISABLE` to `0x200000` (the transmit-disable bit). The mux mode is added to that cell. The Zephyr pins use `K3_PINMUX()` with the same pad offsets, and `0x200000 | mode 7` for a held-off ball. The modes are TI's, from the TDA4VM datasheet's pin attributes.
+`J721E_IOPAD()` keeps the low 12 bits of the pad address (`0x0011c0b8`). `PIN_OUTPUT` compiles to `0x10000`, `PIN_INPUT` to `0x54000`, `PIN_INPUT_PULLDOWN` to `0x44000`, and `PIN_DISABLE` to `0x200000` (the transmit-disable bit). The mux mode is added to that cell. The Zephyr pins use `K3_PINMUX()` with the same pad offsets, and `0x200000 | mode 7` for a held-off ball. The modes are TI's, from the TDA4VM datasheet's pin attributes.
 
 ## The pins
 
@@ -113,7 +113,8 @@ With the demo running, the pad registers at `0x0011c000 + pad` read:
 | `0x0b8`, `0x0c0`, `0x00c` | `0x10003` | output, mode 3 |
 | `0x100` | `0x54001` | input, mode 1 |
 | `0x1a4` | `0x10006` | output, mode 6 |
-| `0x200`, `0x0b0`, `0x0b4`, `0x0d4`, `0x084` | `0x200007` | held off |
+| `0x200`, `0x0b0`, `0x0b4`, `0x0d4`, `0x084`, `0x104`, `0x1c0`, `0x1d4`, `0x1a8`, `0x16c` | `0x200007` | held off |
+| `0x054`, `0x03c`, `0x038`, `0x044`, `0x040`, `0x020`, `0x024`, `0x004`, `0x008`, `0x028` (the analyzer's 10 channels); `0x088`, `0x08c`, `0x07c`, `0x080`, `0x090`, `0x06c`, `0x068`, `0x064`, `0x0a0` (ICSSG1 PRU1's, free) | `0x44001` | input, pull-down, mode 1 |
 | `0x230`, `0x234`, `0x238` | `0x10006` | output, mode 6 |
 | `0x01c` | `0x1000e` | output, mode 14 |
 | `0x014` | `0x5000e` | input, mode 14 |

@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Build the demo in the container images under containers/.
-#   containers/linux/Containerfile    Linux userspace and the two kernel modules
-#   containers/pru-cgt/Containerfile  TI CGT 2.3.3, then the ICSSG0 firmware
+#   containers/linux/Containerfile    Linux userspace and the three kernel modules
+#   containers/pru-cgt/Containerfile  TI CGT 2.3.3, then the ICSSG0 and ICSSG1 firmware
 #   containers/zephyr/Containerfile   Zephyr SDK for the main-domain R5Fs
 #   containers/dsp-cgt/Containerfile  TI C6000 and C7000 CGT for the DSP images
 # The Poky image stays at yocto/kas/ai64-poky.yml. This script does not flash.
@@ -165,10 +165,11 @@ build_pru() {
 		TRACE="${TRACE:-1}"
 }
 
-# Both modules have to match the board kernel. Headers are copied from the
+# The modules have to match the board kernel. Headers are copied from the
 # board once; the modules themselves are cross-compiled in the Linux image.
 #   pru_rproc            adds the virtio kick RTU0's RPMsg needs
 #   ti_k3_r5_remoteproc  lets a stopped R5F core start again
+#   ai64_la              maps the logic analyzer's ring cached (/dev/ai64-la)
 build_kmod() {
 	local host=${AI64_SSH:-}
 	local krel headers

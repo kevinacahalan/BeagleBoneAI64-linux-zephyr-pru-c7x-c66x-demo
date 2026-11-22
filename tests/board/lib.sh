@@ -116,7 +116,7 @@ check_demo() {
 	fabric=$(tmux capture-pane -p -J -t ai64:fabric 2>/dev/null)
 	echo "$fabric" | grep -q -E 'and the 12 counts sum to' &&
 		ok "the fabric's spinlock tally agrees" || bad "the fabric's tally: $(echo "$fabric" | grep tally)"
-	n=$(echo "$fabric" | awk '$1 ~ /^(linux|r5f|c66x|c7x|g0rtu)/ && NF >= 10 && $3 ~ /^[0-9]+$/ { s += $9 + $10 } END { print s + 0 }')
+	n=$(echo "$fabric" | awk '$1 ~ /^(linux|r5f|c66x|c7x|g0rtu|g1rtu)/ && NF >= 10 && $3 ~ /^[0-9]+$/ { s += $9 + $10 } END { print s + 0 }')
 	[ "$n" -eq 0 ] && ok "no fabric timeouts or errors in the last second" || bad "$n fabric timeouts or errors in the last second"
 
 	# Linux's jobs on each DSP, while the pipeline runs on them too.

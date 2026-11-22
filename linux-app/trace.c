@@ -2,8 +2,8 @@
 /*
  * ai64 trace <core>
  *   Follows a core's remoteproc trace log, such as c66x0 or 4d80800000.dsp.
- *   It reads the buffer through /dev/mem, so it needs no root and no
- *   debugfs.
+ *   It reads the buffer through /dev/mem, so it needs no debugfs; like the
+ *   other subcommands, it needs CAP_SYS_RAWIO and access to /dev/mem.
  */
 #define _GNU_SOURCE
 

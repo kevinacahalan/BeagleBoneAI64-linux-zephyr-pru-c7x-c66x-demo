@@ -3,7 +3,7 @@
 # Run the BeagleBone AI-64 demo on the board. This does not start at boot.
 #
 #   ai64-demo                 (re)start the four main-domain R5F cores, the
-#                             twelve ICSSG cores, and the DSPs with their
+#                             ICSSG cores (nine by default), and the DSPs with their
 #                             firmware, then one merged console
 #   ai64-demo --tmux          same start, in tmux session ai64 (fifteen windows)
 #   ai64-demo --attach        do not stop or start any core
@@ -82,15 +82,16 @@ usage() {
 	cat <<'EOF'
 usage: ai64-demo [--tmux] [--attach] [--icssg1 la|scheduler|off]
 
-  (default)  Restart the four R5F cores, the twelve ICSSG cores, and the
-             DSPs with their firmware. Then print one console. Each line is
+  (default)  Restart the four R5F cores, the ICSSG cores (nine by
+             default), and the DSPs with their
+             firmware. Then print one console. Each line is
              prefixed [Linux], [R5F0_0], [R5F0_1], [R5F1_0], [R5F1_1],
              [RTU0], [PWM], [LA], [C66x0], [C66x1], [C7x], [Fabric],
-             [Pipe], or [Web]. The web page, on port 8064, shows every
+             [Pipe], [Web], or [MCP]. The web page, on port 8064, shows every
              core live (ai64 web).
   --tmux     Same start, in tmux session ai64. Windows: linux, r5f0_0,
              r5f0_1, r5f1_0, r5f1_1, rtu0, pwm, la, c66x0, c66x1, c7x,
-             fabric, pipe, web.
+             fabric, pipe, web, and mcp with the analyzer.
   --attach   Do not stop or start any core. Connect to what is already
              running. If session ai64 exists, attach to it.
   --icssg1 SET

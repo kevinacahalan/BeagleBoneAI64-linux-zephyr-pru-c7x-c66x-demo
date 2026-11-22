@@ -9,7 +9,8 @@
 #   - ai64 and ai64-demo on PATH, the ICSSG, R5F, and DSP firmwares in
 #     /lib/firmware
 #   - the patched pru_rproc and ti_k3_r5_remoteproc, so the kernel loads them
-#     instead of the stock modules
+#     instead of the stock modules, and the demo's ai64_la, which ai64-demo
+#     loads
 #   - the demo overlay on the default extlinux label, in place of the stock
 #     P9.25 PWM overlay (both mux ball W26)
 #   - a udev rule that makes /dev/rpmsg* usable by the dialout group

@@ -15,7 +15,8 @@
  *
  *   It only reads: sysfs, and shared memory through /dev/mem, mapped read
  *   only. It joins no link and takes no lock, so it changes nothing the
- *   demo does, and the counters it sends are the cores' own running totals;
+ *   demo does, except the logic analyzer's rate and channels, which the
+ *   /la viewer can set (la_ws.c), and the counters it sends are the cores' own running totals;
  *   the page turns them into rates. ai64-demo starts it; nothing starts it
  *   at boot.
  *

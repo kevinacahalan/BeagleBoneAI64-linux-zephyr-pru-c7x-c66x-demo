@@ -474,8 +474,8 @@ static const char *t_channels(const struct jv *args, struct sb *o)
 	}
 	sb_add(o, "],\"note\":\"Each channel is an ICSSG1 PRU0 GPI pin, 3.3 V only, no protection. "
 		  "PRU0 samples every channel at once at the rate set (la_mode), with no gap, so every "
-		  "pulse a sample long or more is there, timed to a sample. wired_to is what the demo's "
-		  "jumpers bring; the others are spare.\"}");
+		  "pulse a sample long or more is there, timed to a sample. wired_to is the demo signal "
+		  "its jumper brings.\"}");
 	return NULL;
 }
 
@@ -1198,7 +1198,7 @@ static int rpc(const char *body, struct sb *o)
 		sb_add(o, "\"result\":{\"protocolVersion\":\"%s\",\"capabilities\":{\"tools\":{"
 			  "\"listChanged\":false}},\"serverInfo\":{\"name\":\"ai64-la\",\"title\":"
 			  "\"BeagleBone AI-64 logic analyzer\",\"version\":\"1.0\"},\"instructions\":"
-			  "\"A 19-channel logic analyzer on the BeagleBone AI-64's ICSSG1, watching the "
+			  "\"A 10-channel logic analyzer on the BeagleBone AI-64's ICSSG1, watching the "
 			  "demo's own signals through jumper wires: start with la_channels, then "
 			  "la_measure, or la_capture and la_edges or la_decode.\"}}", ver);
 	} else if (!strcmp(method, "ping")) {

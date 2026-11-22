@@ -50,7 +50,7 @@ Every 10 ms each node takes hardware spinlock 255, adds one to a shared total an
 | Core | The fabric | The GTC, mailbox, and spinlock |
 | --- | --- | --- |
 | R5F | MPU region 7, normal non-cacheable (`mpu.c`) | in the low 2 GiB the MPU maps as device memory |
-| C66x | MAR register for `0xA9xxxxxx` cleared, which turns off the XMC prefetch it resets with | the mailbox and spinlock directly. The GTC, below `0x0C000000`, is the C66x's own internal space, so MPAX segment 2 maps a logical page at `0x7FFFF000` onto it (`c66x/main.c`). |
+| C66x | MAR register for `0xA9xxxxxx` cleared, which turns off the XMC prefetch it resets with | the mailbox and spinlock directly. The GTC, below `0x0C000000`, is the C66x's own internal space, so MPAX segment 2 maps a logical page at `0x7FFFF000` onto it (`dsp/c66x/fabric.c`). |
 | C7x | 32 level-3 MMU pages, normal non-cacheable (`dsp/c7x/mmu.c`) | the device-memory GiB at `0` |
 | RTU | its global address; a message moves in one or two `LBBO`/`SBBO` bursts | the same |
 | Linux | `/dev/mem` | `/dev/mem` |

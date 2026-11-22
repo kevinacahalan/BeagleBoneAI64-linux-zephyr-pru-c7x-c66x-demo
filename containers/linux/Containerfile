@@ -1,5 +1,5 @@
 # Linux userspace image for linux-app/ and the Debian device-tree overlays.
-# The same image cross-compiles the two out-of-tree kernel modules. python3
+# The same image cross-compiles the three out-of-tree kernel modules. python3
 # and libfl-dev are only for building erpcgen (zephyr/erpc/regen.sh).
 FROM docker.io/library/debian:13
 
