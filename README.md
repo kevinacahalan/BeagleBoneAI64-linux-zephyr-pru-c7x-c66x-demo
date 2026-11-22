@@ -49,169 +49,160 @@ This repository brings up **19 of the coprocessors alongside Linux 6.18** (Beagl
 
 ## Architecture
 
-Every core has its own block below. The system is split into three views so each diagram stays readable at full size without dropping any core, peripheral, or link:
+Every core in the main demo has its own block below. The architecture is organized into three clean views so nothing is dropped and the ICSSG1 alternatives don't clutter the core demo:
 
 - **Thick arrows (`==>`)** trace the 5-core-type real-time pipeline (`P8.31` → `P9.25`).
 - **Solid arrows (`-->` / `<-->`)** show host control, IPC, slice internals, and peripheral ownership.
-- **Dashed arrows (`-.->`)** show TI-SCI service requests to the MCU device manager and the `P9.15` → `P8.31` jumper wire.
+- **Dashed arrows (`-.->`)** show TI-SCI service requests to the MCU device manager, the `P9.15` → `P8.31` physical jumper, optional links, and read-only polling by Linux.
 - Linux also loads and restarts every coprocessor via `remoteproc` (omitted for clarity).
 
-### 1. Host, Zephyr R5Fs, DSPs & real-time pipeline
+### 1. Main demo architecture
 
 ```mermaid
 flowchart LR
-  classDef host fill:#1f6feb22,stroke:#388bfd,stroke-width:2px
-  classDef r5 fill:#23863622,stroke:#3fb950,stroke-width:2px
-  classDef dsp fill:#8957e522,stroke:#a371f7,stroke-width:2px
-  classDef g0 fill:#d2992222,stroke:#d29922,stroke-width:2px
-  classDef periph fill:#8b949e18,stroke:#8b949e,stroke-width:1.5px,stroke-dasharray:3 2
-  classDef dm fill:#6e768122,stroke:#8b949e,stroke-width:1.5px
+  classDef host fill:#1f4e8c,stroke:#3b76c4,stroke-width:1px,color:#ffffff
+  classDef r5 fill:#1e5631,stroke:#3a8252,stroke-width:1px,color:#ffffff
+  classDef dsp fill:#4c2c72,stroke:#764fa6,stroke-width:1px,color:#ffffff
+  classDef g0 fill:#7c4d0f,stroke:#b07323,stroke-width:1px,color:#ffffff
+  classDef dm fill:#3b424c,stroke:#66707d,stroke-width:1px,color:#ffffff
+  classDef periph fill:#2d333b,stroke:#6e7681,stroke-width:1px,stroke-dasharray:3 2,color:#e6edf3
 
-  subgraph HOST["Host & System Services"]
-    ai64["Linux ai64<br/>2× Cortex-A72"]:::host
-    dm["Device Manager<br/>MCU R5F (TI-SCI)"]:::dm
-    g0in["ICSSG0 Slice 1<br/>RTU1 ← PRU1 ← P8.31"]:::g0
+  ai64["Linux ai64<br/>2x Cortex-A72"]:::host
+  dm["Device Manager<br/>2x MCU R5F (TI-SCI)"]:::dm
+
+  subgraph G0["ICSSG0 (6 cores)"]
+    subgraph S0["Slice 0 cores"]
+      rtu0["RTU0"]:::g0
+      tx0["Tx_PRU0<br/>modulator"]:::g0
+      pru0["PRU0<br/>SW edges"]:::g0
+    end
+    subgraph S1["Slice 1 cores"]
+      rtu1["RTU1"]:::g0
+      tx1["Tx_PRU1<br/>modulator"]:::g0
+      pru1["PRU1<br/>HW PWM + GPI"]:::g0
+    end
+    iep0["IEP0<br/>counts ns"]:::periph
+    r30["PRU0 R30<br/>P8.11 A, P8.12 B"]:::periph
+    ecap["eCAP0 APWM<br/>P8.15 (A copy)"]:::periph
+    iep1["IEP1<br/>CMP0, CMP1, CMP2"]:::periph
+    pwm2["PWM module set 2<br/>P9.12 A, P9.15 B"]:::periph
   end
 
-  subgraph ZEPH["4× Main Cortex-R5F · Zephyr (one sysbuild)"]
-    r500["R5F0_0<br/>SPI7 · UDMA"]:::r5
+  p831["P8.31<br/>jumpered input"]:::periph
+
+  subgraph ZEPH["Zephyr, 4x R5F (one sysbuild)"]
+    r500["R5F0_0<br/>SPI7, UDMA"]:::r5
     r501["R5F0_1<br/>EHRPWM4"]:::r5
     r510["R5F1_0<br/>1 kHz blink"]:::r5
     r511["R5F1_1<br/>monitor"]:::r5
-    ipc(("ipc_service<br/>icmsg")):::r5
+    ipc(("ipc_service<br/>icmsg, per pair")):::r5
     r500 <--> ipc
     r501 <--> ipc
     r510 <--> ipc
     r511 <--> ipc
   end
 
-  uart2["UART2 console<br/>P8.34 TX · P8.22 RX"]:::periph
-  spi7["SPI7<br/>P9.31 CLK · P9.28 CS0 · P9.30 MOSI"]:::periph
-  udma["main NAVSS UDMA<br/>memcpy channel"]:::periph
+  uart2["UART2 console<br/>P8.34 TX, P8.22 RX"]:::periph
+  spi7["SPI7<br/>P9.31 CLK<br/>P9.28 CS0<br/>P9.30 MOSI"]:::periph
+  udma["NAVSS UDMA<br/>memcpy channel"]:::periph
   ep["EHRPWM4<br/>P9.25"]:::periph
   gpio2["GPIO2<br/>P8.18"]:::periph
 
-  subgraph DSPS["3× DSPs · Bare-metal"]
-    c660["C66x 0<br/>FIR · even FFT"]:::dsp
-    c661["C66x 1<br/>FIR · odd FFT"]:::dsp
-    c7x["C7x<br/>FIR · classifier"]:::dsp
-    mma["C7x MMA<br/>matrix accelerator"]:::dsp
+  subgraph DSPS["3x DSPs (bare-metal)"]
+    c660["C66x 0<br/>FIR, even FFT"]:::dsp
+    c661["C66x 1<br/>FIR, odd FFT"]:::dsp
+    c7x["C7x<br/>FIR, classifier"]:::dsp
+    mma["C7x MMA<br/>matrix engine"]:::dsp
   end
 
+  %% Linux links
+  ai64 <-->|"RPMsg text"| rtu0
   ai64 <-->|"eRPC, bulk, shutdown"| r500
   ai64 <-->|"eRPC, trace, shutdown"| r501
   ai64 <-->|"eRPC, trace, shutdown"| r510
   ai64 <-->|"eRPC, trace, shutdown"| r511
   ai64 <-->|"FIR, trace, shutdown"| c660
   ai64 <-->|"FIR, trace, shutdown"| c661
-  ai64 <-->|"FIR & layer, trace, shutdown"| c7x
+  ai64 <-->|"FIR/layer, trace, shutdown"| c7x
 
-  dm <-.->|"IRQ routes, UDMA rings/ch"| r500
-  dm <-.->|"IRQ routes, EHRPWM4 clk"| r501
-  dm <-.->|"IRQ routes, GPIO2 pwr"| r510
+  %% Device Manager (TI-SCI)
+  dm <-.->|"IRQ routes, UDMA"| r500
+  dm <-.->|"IRQ routes, PWM clk"| r501
+  dm <-.->|"IRQ routes, GPIO pwr"| r510
   dm <-.->|"IRQ routes"| r511
   dm -.->|"clock, power"| ep
 
+  %% ICSSG0 Slice 0
+  rtu0 -->|"pwm_ctl"| tx0
+  tx0 -->|"pwm_next"| pru0
+  tx0 -->|"period, duty"| ecap
+  pru0 -->|"sets up, polls"| iep0
+  pru0 -->|"writes edges"| r30
+
+  %% ICSSG0 Slice 1 + Pipeline input
+  rtu1 -->|"pwm_ctl"| tx1
+  tx1 -->|"pwm_next"| pru1
+  pru1 -->|"sets up, rearms"| iep1
+  pru1 -->|"sets up"| pwm2
+  iep1 -->|"CMP1/2 toggle"| pwm2
+  pwm2 -.->|"P9.15 jumper"| p831
+  p831 ==>|"2 MHz R31 shift"| pru1
+  pru1 ==>|"shared RAM windows"| rtu1
+  rtu1 ==>|"window doorbell"| r500
+
+  %% R5F peripherals and Pipeline compute
   r500 -->|"console"| uart2
   r500 -->|"SPI driver"| spi7
   r510 -->|"GPIO, k_timer"| gpio2
-
-  g0in ==>|"window doorbell"| r500
   r500 ==>|"TR descriptors"| udma
-  udma ==>|"even windows → L2"| c660
-  udma ==>|"odd windows → L2"| c661
-  udma -->|"DDR → L2 (layer)"| c7x
+  udma ==>|"even windows to L2"| c660
+  udma ==>|"odd windows to L2"| c661
+  udma -->|"DDR to L2 (layer)"| c7x
   c660 ==>|"64 FFT features"| c7x
   c661 ==>|"64 FFT features"| c7x
-  c7x -->|"16 rows/block"| mma
-  c7x ==>|"class, via mailbox"| r501
+  c7x ==>|"16 feature rows"| mma
+  c7x ==>|"class, mailbox"| r501
   r501 ==>|"PWM driver"| ep
 ```
 
-### 2. ICSSG0 (PWM three ways & sampler) & ICSSG1 (logic analyzer)
+### 2. Shared-memory fabric (12 nodes, 132 paths)
 
-```mermaid
-flowchart TB
-  classDef host fill:#1f6feb22,stroke:#388bfd,stroke-width:2px
-  classDef r5 fill:#23863622,stroke:#3fb950,stroke-width:2px
-  classDef g0 fill:#d2992222,stroke:#d29922,stroke-width:2px
-  classDef g1 fill:#db61a222,stroke:#db61a2,stroke-width:2px
-  classDef periph fill:#8b949e18,stroke:#8b949e,stroke-width:1.5px,stroke-dasharray:3 2
-
-  subgraph S00["ICSSG0 · Slice 0 · Software PWM + eCAP0"]
-    direction LR
-    ai64_0["Linux ai64"]:::host <-->|"RPMsg text"| rtu0["RTU0<br/>fabric node 8"]:::g0
-    rtu0 -->|"pwm_ctl"| tx0["Tx_PRU0<br/>modulator"]:::g0
-    tx0 -->|"pwm_next"| pru0["PRU0<br/>SW edges"]:::g0
-    tx0 -->|"period, duty"| ecap["eCAP0 APWM<br/>P8.15 (A copy)"]:::periph
-    pru0 -->|"sets up, polls"| iep0["IEP0<br/>counts ns"]:::periph
-    pru0 -->|"writes edges"| r30["PRU0 R30<br/>P8.11 (A) · P8.12 (B)"]:::periph
-  end
-
-  subgraph S01["ICSSG0 · Slice 1 · HW PWM module + 2 MHz Pipeline Sampler"]
-    direction LR
-    r500_1["R5F0_0"]:::r5
-    rtu1["RTU1<br/>fabric node 9"]:::g0 ==>|"window doorbell"| r500_1
-    rtu1 -->|"pwm_ctl"| tx1["Tx_PRU1<br/>modulator"]:::g0
-    tx1 -->|"pwm_next"| pru1["PRU1<br/>HW PWM + 2 MHz GPI"]:::g0
-    pru1 -->|"sets up, rearms"| iep1["IEP1<br/>CMP0 · CMP1 · CMP2"]:::periph
-    pru1 -->|"sets up"| pwm2["PWM module set 2<br/>P9.12 (A) · P9.15 (B)"]:::periph
-    iep1 -->|"compares toggle"| pwm2
-    pwm2 -.->|"P9.15 jumper"| p831["P8.31<br/>jumpered from P9.15"]:::periph
-    p831 ==>|"2 MHz shift reg"| pru1
-    pru1 ==>|"sample windows"| rtu1
-  end
-
-  subgraph G1["ICSSG1 · Logic Analyzer (default: 3 cores; 6 with --icssg1 scheduler)"]
-    direction LR
-    g1iep["IEP0<br/>counts ns"]:::periph <-->|"starts / t0"| lapru["PRU0<br/>10 jumpered pins"]:::g1
-    lapru -->|"sample blocks"| lax2v["XFR2VBUS<br/>DMA write engine"]:::periph
-    lax2v -->|"DDR ring"| ai64_1["Linux ai64"]:::host
-    g1r0["RTU0 · fabric node 10"]:::g1
-    g1r1["RTU1 · fabric node 11"]:::g1
-  end
-
-  ai64_0 ~~~ r500_1 ~~~ g1iep
-```
-
-### 3. The shared-memory fabric (12 nodes, 132 paths)
-
-`RTU1` takes requests only over the fabric; `RTU0` accepts both fabric and RPMsg. In ICSSG0, the fabric stops at the RTUs so nothing on the SoC can perturb `Tx_PRU`/`PRU` timing.
+`RTU1` takes requests only over the fabric; `RTU0` accepts both fabric and RPMsg. In ICSSG0, the fabric stops at the RTUs so nothing outside ICSSG0 can perturb `Tx_PRU`/`PRU` timing. Nodes 10 and 11 (`ICSSG1 RTU0`/`RTU1`) participate in pings, tours, and the spinlock tally when `--icssg1 la` runs (default) and stay silent with `--icssg1 scheduler` or `off`.
 
 ```mermaid
 flowchart LR
-  classDef host fill:#1f6feb22,stroke:#388bfd,stroke-width:2px
-  classDef r5 fill:#23863622,stroke:#3fb950,stroke-width:2px
-  classDef dsp fill:#8957e522,stroke:#a371f7,stroke-width:2px
-  classDef g0 fill:#d2992222,stroke:#d29922,stroke-width:2px
-  classDef g1 fill:#db61a222,stroke:#db61a2,stroke-width:2px
-  classDef fab fill:#58a6ff18,stroke:#58a6ff,stroke-width:2.5px
+  classDef host fill:#1f4e8c,stroke:#3b76c4,stroke-width:1px,color:#ffffff
+  classDef r5 fill:#1e5631,stroke:#3a8252,stroke-width:1px,color:#ffffff
+  classDef dsp fill:#4c2c72,stroke:#764fa6,stroke-width:1px,color:#ffffff
+  classDef g0 fill:#7c4d0f,stroke:#b07323,stroke-width:1px,color:#ffffff
+  classDef g1opt fill:#5c203c,stroke:#b04a78,stroke-width:1px,stroke-dasharray:4 2,color:#ffffff
+  classDef fab fill:#1b3b5a,stroke:#4a86c8,stroke-width:1.5px,color:#ffffff
 
-  fab(["Shared-Memory Fabric<br/>DDR inboxes · mailbox doorbells<br/>200 MHz GTC · HW spinlock 255"]):::fab
+  fab(["Shared-Memory Fabric<br/>DDR inboxes, mbox 11<br/>200 MHz GTC<br/>spinlock 255"]):::fab
 
   subgraph H["Host"]
-    l["Linux ai64 · node 0"]:::host
+    l["Linux ai64 - node 0"]:::host
   end
   subgraph R["Zephyr R5Fs"]
-    r500["R5F0_0 · node 1"]:::r5
-    r501["R5F0_1 · node 2"]:::r5
-    r510["R5F1_0 · node 3"]:::r5
-    r511["R5F1_1 · node 4"]:::r5
+    r500["R5F0_0 - node 1"]:::r5
+    r501["R5F0_1 - node 2"]:::r5
+    r510["R5F1_0 - node 3"]:::r5
+    r511["R5F1_1 - node 4"]:::r5
   end
   subgraph D["DSPs"]
-    c660["C66x 0 · node 5"]:::dsp
-    c661["C66x 1 · node 6"]:::dsp
-    c7x["C7x · node 7"]:::dsp
+    c660["C66x 0 - node 5"]:::dsp
+    c661["C66x 1 - node 6"]:::dsp
+    c7x["C7x - node 7"]:::dsp
   end
   subgraph G0F["ICSSG0"]
-    rtu0["RTU0 · node 8"]:::g0
-    rtu1["RTU1 · node 9"]:::g0
-    s0["Slice 0: Tx_PRU0 & PRU0"]:::g0
-    s1["Slice 1: Tx_PRU1 & PRU1"]:::g0
+    rtu0["RTU0 - node 8"]:::g0
+    rtu1["RTU1 - node 9"]:::g0
+    s0["Slice 0: Tx_PRU0, PRU0"]:::g0
+    s1["Slice 1: Tx_PRU1, PRU1"]:::g0
   end
-  subgraph G1F["ICSSG1"]
-    g1r0["RTU0 · node 10"]:::g1
-    g1r1["RTU1 · node 11"]:::g1
+  subgraph G1F["ICSSG1 RTUs (--icssg1 la; silent otherwise)"]
+    g1r0["RTU0 - node 10"]:::g1opt
+    g1r1["RTU1 - node 11"]:::g1opt
   end
 
   l <--> fab
@@ -225,16 +216,65 @@ flowchart LR
   fab <-->|"requests, status"| rtu0
   fab <-->|"requests, status"| rtu1
   rtu0 <-->|"slice RAM only"| s0
-  rtu1 <-->|"slice RAM only"| s1
-  fab <-->|"pings"| g1r0
-  fab <-->|"pings"| g1r1
+  rtu1 <-->|"slice RAM + shared RAM ring"| s1
+  fab <-.->|"ping, tour"| g1r0
+  fab <-.->|"ping, tour"| g1r1
+```
+
+### 3. ICSSG1 options (alternative firmware sets)
+
+ICSSG1 is independent of the main demo and runs one of two mutually exclusive firmware sets (or stays stopped with `--icssg1 off`):
+
+**Option A: Logic analyzer (`--icssg1 la`, default — 3 of 6 cores active)**
+
+```mermaid
+flowchart TB
+  classDef host fill:#1f4e8c,stroke:#3b76c4,stroke-width:1px,color:#ffffff
+  classDef g1la fill:#7a284e,stroke:#b04a78,stroke-width:1px,color:#ffffff
+  classDef periph fill:#2d333b,stroke:#6e7681,stroke-width:1px,stroke-dasharray:3 2,color:#e6edf3
+  classDef fab fill:#1b3b5a,stroke:#4a86c8,stroke-width:1.5px,color:#ffffff
+
+  subgraph CAP["Capture path (1 core)"]
+    direction LR
+    pins["10 GPI pins<br/>open reads low"]:::periph -->|"R31 every N cyc"| lapru["PRU0<br/>sampler"]:::g1la
+    lapru -->|"starts, reads t0"| g1iep["IEP0<br/>counts ns"]:::periph
+    lapru -->|"XOUT 64 B"| lax2v["XFR2VBUS<br/>slice write engine"]:::periph
+    lax2v -->|"writes"| ddr[("DDR ring<br/>32 MiB")]:::periph
+    ddr -->|"/dev/ai64-la<br/>or /dev/mem"| lahost["Linux ai64<br/>web /la, MCP, CLI"]:::host
+    lahost -.->|"reads count"| g1iep
+  end
+
+  subgraph OTHER["Other ICSSG1 cores (not in capture)"]
+    direction LR
+    g1r0["RTU0"]:::g1la --> g1fab["Fabric nodes 10-11<br/>ping, tour, tally"]:::fab
+    g1r1["RTU1"]:::g1la --> g1fab
+    g1free["PRU1, Tx_PRU0, Tx_PRU1<br/>stopped (free)"]:::periph
+  end
+```
+
+**Option B: TI multicore scheduler (`--icssg1 scheduler` — all 6 cores active)**
+
+```mermaid
+flowchart LR
+  classDef host fill:#1f4e8c,stroke:#3b76c4,stroke-width:1px,color:#ffffff
+  classDef g1mcs fill:#2c5e63,stroke:#4f9da6,stroke-width:1px,color:#ffffff
+  classDef periph fill:#2d333b,stroke:#6e7681,stroke-width:1px,stroke-dasharray:3 2,color:#e6edf3
+
+  mcs_iep["IEP0<br/>100 ns, step 4 ns"]:::periph -->|"CMP7 then CMP2-6"| mcs_tm["6 Task Managers<br/>one per core"]:::periph
+  mcs_tm -->|"zero-delay trigger"| mcs_cores["All 6 ICSSG1 cores<br/>PRU0/1, RTU0/1, Tx_PRU0/1"]:::g1mcs
+  mcs_cores -->|"PRU0 sets up, starts"| mcs_iep
+  mcs_cores -->|"each arms its TM"| mcs_tm
+  mcs_cores -->|"writes init state"| mcs_pwm["PWM2_0 init state<br/>P8.17"]:::periph
+  mcshost["Linux ai64 sched"]:::host -.->|"reads"| mcs_iep
+  mcshost -.->|"reads"| mcs_tm
+  mcshost -.->|"reads"| mcs_pwm
 ```
 
 Three design principles tie the system together:
 
-1. **The 5-core-type pipeline ([`docs/pipeline.md`](docs/pipeline.md)):** jumper `P9.15` → `P8.31` to feed ICSSG0's 15-step PWM (10/15/20 kHz × 10–90% duty, changing every 5 ms) back into the board. ICSSG0 `PRU1` samples `P8.31` at 2 MHz into overlapping 1.024 ms windows (1,953 windows/s), `RTU1` timestamps them on the GTC, `R5F0_0`'s UDMA copies even/odd windows into `C66x 0`/`C66x 1` L2 SRAM for 2048-pt FFTs, the `C7x` MMA classifies each spectrum with weights trained by Linux at startup, and `R5F0_1` drives `P9.25` to match (~126 µs compute latency, ~1.5 ms pin-to-pin, 100% accuracy on steady steps).
+1. **The 5-core-type pipeline ([`docs/pipeline.md`](docs/pipeline.md)):** jumper `P9.15` → `P8.31` to feed ICSSG0's 15-step PWM (10/15/20 kHz × 10–90% duty, changing every 5 ms) back into the board. ICSSG0 `PRU1` samples `P8.31` at 2 MHz into overlapping 1.024 ms windows (1,953 windows/s), `RTU1` timestamps them on the GTC, `R5F0_0`'s UDMA copies even/odd windows into `C66x 0`/`C66x 1` L2 SRAM for 2048-pt FFTs, the `C7x` MMA classifies each spectrum with weights trained by Linux at startup, and `R5F0_1` drives `P9.25` to match (~126 µs from the end of the window to `P9.25`, ~1.5 ms pin-to-pin, 100% accuracy on steady steps).
 2. **The direct fabric ([`docs/fabric.md`](docs/fabric.md)):** 12 nodes (Linux, 4 R5Fs, 3 DSPs, both ICSSG0 RTUs, both ICSSG1 RTUs) communicating through dedicated DDR inboxes, mailbox cluster 11 doorbells, GTC timestamps, and hardware spinlock 255. Every node pings every other, `R5F0_0` runs a multi-hop tour across all core families, and `ai64 fabric route` can send custom multi-hop actions (e.g., Linux → C7x → C66x → ICSSG0 RTU1 PWM).
-3. **Deterministic ICSSG split ([`pru/README.md`](pru/README.md)):** in ICSSG0, **the RTU talks while the PRU and Tx_PRU keep time**. Only the RTU touches DDR, mailboxes, or RPMsg; the PRU and Tx_PRU touch only slice-local RAM (save one GTC read per period on the Tx_PRU, away from edges), keeping hardware edges jitter-free. In ICSSG1, `PRU0` streams directly to DDR via its slice's background `XFR2VBUS` engine without ever stalling on memory.
+3. **Deterministic ICSSG split ([`pru/README.md`](pru/README.md)):** in ICSSG0, **the RTU talks while the PRU and Tx_PRU keep time**. Only the RTU touches DDR, mailboxes, or RPMsg; the PRU and Tx_PRU stay on slice data RAM, ICSSG peripherals, and—for `PRU1`—the shared-RAM pipeline ring, while the `Tx_PRU` reads the GTC once a period away from edges, keeping hardware edges jitter-free. In ICSSG1, `PRU0` streams directly to DDR via its slice's background `XFR2VBUS` engine without ever stalling on memory.
 
 ---
 
@@ -326,7 +366,7 @@ This prompts once for `sudo`, cleanly restarts every core with its installed fir
 - **Swap ICSSG1 to TI's multicore scheduler:** `ai64-demo --icssg1 scheduler` (or `--icssg1 off`).
 - **tmux basics:** `Ctrl+b w` (window list), `Ctrl+b n`/`p` (next/prev), `Ctrl+b 0–9` (jump), `Ctrl+b d` (detach leaving demo running), `tmux kill-session -t ai64` (close session; cores keep running until next `ai64-demo` or reboot).
 
-**What a passing run shows:** `RTU0` echoes RPMsg, all 4 R5Fs answer eRPC, `R5F1_0` forwards SPI7 to `R5F0_0` over `ipc_service` (~80 µs R5F round trips), `R5F0_0`'s UDMA copies 16 KiB to `C7x` L2 in ~34 µs (~486 MB/s) and the MMA matches the A72 in < 4 µs, the pipeline trains to 100% and tracks all 15 steps at 1,953 windows/s (~126 µs compute latency, 0 wrong), and both ICSSG0 PWM slices report 0 late edges. See **[Sample Output](docs/sample-output.md)** for full multi-window logs and `ai64 trace` examples.
+**What a passing run shows:** `RTU0` echoes RPMsg, all 4 R5Fs answer eRPC, `R5F1_0` forwards SPI7 to `R5F0_0` over `ipc_service` (~80 µs R5F round trips), `R5F0_0`'s UDMA copies 16 KiB to `C7x` L2 in ~34 µs (~486 MB/s) and the MMA matches the A72 in < 4 µs, the pipeline trains to 100% and tracks all 15 steps at 1,953 windows/s (~126 µs from window end to `P9.25`, 0 wrong), and both ICSSG0 PWM slices report 0 late edges. See **[Sample Output](docs/sample-output.md)** for full multi-window logs and `ai64 trace` examples.
 
 #### After you change code
 
