@@ -67,7 +67,7 @@
 
 `MEMORY.md` — every shared memory region: its address, who writes it, and how each core caches it.
 
-`docs/` — what spans several kinds of core: the fabric (`fabric.md`), the pipeline (`pipeline.md`), and the Debian and Yocto images' two kernels (`kernels.md`). What belongs to one kind of core is in that core's directory: `zephyr/r5/README.md`, `pru/README.md`, `dsp/README.md`, `linux-app/README.md`.
+`docs/` — cross-cutting guides and references: the fabric (`fabric.md`), the pipeline (`pipeline.md`), the Debian and Yocto images' two kernels (`kernels.md`), hardware probing and Saleae captures (`probing.md`), full passing terminal output (`sample-output.md`), and troubleshooting (`troubleshooting.md`). What belongs to one kind of core is in that core's directory: `zephyr/r5/README.md`, `pru/README.md`, `dsp/README.md`, `linux-app/README.md`, `yocto/README.md`.
 
 `tests/` — board tests, run from the PC over SSH: `run.sh` copies `board/` to the board and runs `check`, `soak`, `routes`, or `stress` there. `tests/README.md` lists what each checks.
 
