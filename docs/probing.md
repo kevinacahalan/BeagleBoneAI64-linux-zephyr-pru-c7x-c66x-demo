@@ -50,7 +50,7 @@ This matches half-bridge gate-drive timing so high-side and low-side switches ne
 
 ![Captured: each period's duty on P9.12, P8.31, and P9.25 through one pass of the steps, P9.25 1.18 to 1.75 ms behind; and a 4 ms zoom on one step change](../media/pipe.svg)
 
-`P9.25` reproduces each input step 1.18 to 1.75 ms after `P9.12` (1.47 ms median), with zero false steps.
+`P9.25` reproduces each input step 1.18 to 1.75 ms after `P9.12` (1.47 ms in the middle), with zero false steps.
 
 Most of that delay is windowing and debouncing: a 1.024 ms window must be predominantly the new step before classifying it, and `R5F0_1` waits for the next overlapping window (512 µs later) to agree before changing `P9.25`. (Without 50% window overlap, `P9.25` lagged 1.7 to 2.8 ms.) The actual cross-core compute path takes only ~127 µs from the window's final sample to `R5F0_1` receiving the class; EHRPWM4 then applies the new period and duty at the end of its current cycle. Because `P8.31` is jumpered from `P9.15` (output B), its duty runs inverted relative to `P9.12` (output A). See [The pipeline](pipeline.md).
 

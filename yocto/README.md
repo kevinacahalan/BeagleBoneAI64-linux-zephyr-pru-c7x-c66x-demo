@@ -18,7 +18,7 @@ chmod +x kas-container
 KAS_BUILD_DIR=yocto/build ./kas-container build yocto/kas/ai64-poky.yml
 ```
 
-Both `podman` and `docker` work. Set `KAS_CONTAINER_ENGINE=podman` or `KAS_CONTAINER_ENGINE=docker` to choose explicitly (unset, `kas-container` prefers Docker if installed, otherwise Podman). `kas-container build` does not write to an SD card.
+Both `podman` and `docker` work. Set `KAS_CONTAINER_ENGINE=podman` or `KAS_CONTAINER_ENGINE=docker` to choose explicitly. `kas-container build` does not write to an SD card.
 
 ## Flash & run
 
@@ -52,4 +52,4 @@ ai64-demo --tmux
 
 ## Board verification
 
-On hardware, this TI 6.18 Yocto image completed 20 consecutive `ai64-demo` restarts (15 with copied firmware, 5 from a fresh image build)—stopping and restarting every demo core each run with all cores healthy, the fabric clean, zero kernel errors, and matching PWM, fabric, and DSP timings compared to Debian.
+On hardware, before ICSSG1 held the logic analyzer, this TI 6.18 Yocto image completed 20 consecutive `ai64-demo` restarts (15 with copied firmware, 5 from a fresh image build)—stopping and restarting every demo core each run with all cores healthy, the fabric clean, zero kernel errors, and matching PWM, fabric, and DSP timings compared to Debian.

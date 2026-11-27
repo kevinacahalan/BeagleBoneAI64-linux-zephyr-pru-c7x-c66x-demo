@@ -54,6 +54,6 @@ Common issues when flashing, building, installing, or running the demo on Beagle
 - **Don't run `west init -l .` from the repo root.**
   - That places `.west/` in the parent directory. `build.sh` runs `west init -l zephyr` instead.
 - **`build.sh kmod` fails to copy `/usr/src/linux-headers-...`.**
-  - BeagleBoard Debian images usually include kernel headers. If yours does not, install them on the board with `sudo apt install linux-headers-$(uname -r)`.
+  - The BeagleBoard image ships the headers for its kernel. If yours does not, install them on the board with `sudo apt install linux-headers-$(uname -r)`.
 - **`git.ti.com` times out while fetching the PRU Software Support Package.**
   - `git.ti.com` intermittently drops first requests; `build.sh` retries three times. If all three fail, retry later or manually clone the commit pinned in `beagle-linux/scripts/build.sh` into `third_party/pru-software-support-package`.

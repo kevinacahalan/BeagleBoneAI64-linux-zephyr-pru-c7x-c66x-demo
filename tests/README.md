@@ -31,3 +31,14 @@ What `check`, and each run of `soak`, looks at:
 - **The pads** (`ai64 pads`), and one web server.
 
 The tests are shell scripts for `/bin/sh` on the board, BusyBox's included, and need `tmux`, which the demo needs anyway. `board/lib.sh` has the checks; add one there, and it runs in both `check` and `soak`.
+
+## Automated hardware test bench
+
+None of this hardware is required to run the demo. The demo was developed on a bench that the PC runs on its own: going from a build to a freshly written card, a power cycle, a booted board, and a logic analyzer capture needs nobody at the board, except to move a probe. It uses:
+
+- **Power:** USB relay switching 5 V onto `P9.05`/`P9.06`
+- **microSD:** SDWire3 SD card mux (reflash, verify, inject `sysconf.txt`, switch back to board)
+- **Consoles:** FTDI TTL-232R-3V3 on the boot debug header + Raspberry Pi Debug Probe UART on `P8.34`/`P8.22`
+- **Network & signals:** Ethernet SSH + Saleae Logic Pro 8 via a P8/P9 screw-terminal breakout driven through Logic 2's automation API
+
+![The BeagleBone AI-64 test bench with screw-terminal breakout, SDWire3 mux, and Saleae Logic Pro 8](../media/test-bench.jpg)
